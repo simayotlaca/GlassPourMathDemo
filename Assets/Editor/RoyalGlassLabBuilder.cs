@@ -8,10 +8,12 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Builds the independent four-vessel Royal art lab. The authored sprites own every
-/// glass highlight; RoyalBottleLiquid owns the moving liquid, curved caps, band
-/// junctions and pour animation. Royal profiles and material are canonical assets:
-/// rebuilding never reads from the retired All Glasses Playground setup.
+/// Builds the independent four-vessel Royal art lab. The authored sprites own the glass
+/// contours. Shot and mug also carry their painted centre reflections; cocktail and
+/// tumbler receive the same two-column cue from a cavity-clipped overlay. The
+/// RoyalBottleLiquid material still owns the moving liquid, curved caps, band junctions
+/// and pour animation. The Royal profiles and material are canonical assets: rebuilding
+/// this lab never reads from or recreates the retired All Glasses Playground setup.
 /// </summary>
 [InitializeOnLoad]
 public static class RoyalGlassLabBuilder
@@ -50,6 +52,7 @@ public static class RoyalGlassLabBuilder
     private const string RoyalLiquidMaterial =
         MaterialRoot + "RoyalBottleLiquid.mat";
     private const string SpriteMaterial = MaterialRoot + "RoyalGlassSprite.mat";
+    private const string GlassLightMaterial = MaterialRoot + "RoyalGlassLight.mat";
     private const string PourStreamMaterial =
         "Assets/LiquidSort/Materials/PourStream.mat";
 
@@ -108,6 +111,7 @@ public static class RoyalGlassLabBuilder
         ConfigureSpriteImporter(TallTraceSprite);
 
         Material liquid = EnsureRoyalLiquidMaterial();
+        Material glassLight = EnsureGlassLightMaterial();
         VesselProfile shot = EnsureProfile("Shot Royal", ShotCapacity,
             ShotProfile, ShotSprite, liquid, ShotTraceSprite);
         VesselProfile cocktail = EnsureProfile("Cocktail Royal", CocktailCapacity,
@@ -164,25 +168,25 @@ public static class RoyalGlassLabBuilder
             // transforms align the rendered silhouettes rather than merely copying
             // numerically identical Transform values.
             board.bottles.Add(BuildVessel(root.transform, "01 Shot Royal", shot,
-                new Vector2(-1.20f, 1.574f), 0.654f, theme,
+                new Vector2(-1.20f, 1.574f), 0.654f, theme, null, 0f,
                 new[] { Hex(0xF39A12) }));
             LiquidBottle cocktailBottle = BuildVessel(root.transform,
                 "02 Cocktail Royal", cocktail,
-                new Vector2(1.20f, 2.091f), 0.539f, theme,
+                new Vector2(1.20f, 2.091f), 0.539f, theme, glassLight, 0.32f,
                 new[] { Hex(0x008E57), Hex(0xF44F8D) });
             board.bottles.Add(cocktailBottle);
             board.bottles.Add(BuildVessel(root.transform, "03 Mug Royal", mug,
-                new Vector2(-1.20f, -2.10f), 0.66f, theme,
+                new Vector2(-1.20f, -2.10f), 0.66f, theme, null, 0f,
                 new[] { Hex(0xF39A12), Hex(0x008E57) }));
             board.bottles.Add(BuildVessel(root.transform, "04 Tumbler Royal", tall,
-                new Vector2(1.20f, -2.202f), 0.783f, theme,
+                new Vector2(1.20f, -2.202f), 0.783f, theme, glassLight, 0.26f,
                 new[] { Hex(0x09A9E6), Hex(0x792DC4) }));
 
             var note = new GameObject("HELP - Click source, then click target");
             note.transform.SetParent(root.transform, false);
             SetLayerRecursively(root.transform, LabLayer);
 
-            Validate(board, liquid);
+            Validate(board, liquid, cocktail, tall, glassLight);
             if (!EditorSceneManager.SaveScene(scene, ScenePath))
                 throw new IOException("Could not save " + ScenePath);
             RenderPreview(camera);
@@ -254,9 +258,10 @@ public static class RoyalGlassLabBuilder
 
         profile.name = displayName;
         profile.front = sprite;
-        // Neutral vertical reflections are baked into the visible front sprites.
-        // Keep each clean pre-reflection alpha as the geometry source so liquid
-        // capacity, bands, tilt and pour math are unchanged.
+        // Shot and mug include neutral vertical reflections in their visible fronts;
+        // cocktail and tumbler receive equivalent cavity-clipped light in BuildVessel.
+        // Keep every clean pre-reflection alpha as the geometry source so liquid
+        // capacity, bands, tilt and pour math remain independent of the visible cue.
         profile.traceSource = traceSprite;
         profile.back = null;
         profile.frame = null;
@@ -315,6 +320,28 @@ public static class RoyalGlassLabBuilder
         return material;
     }
 
+    private static Material EnsureGlassLightMaterial()
+    {
+        Material material = AssetDatabase.LoadAssetAtPath<Material>(GlassLightMaterial);
+        Shader shader = Shader.Find("LiquidSort/GlassLight");
+        if (shader == null)
+            throw new InvalidOperationException("Glass light shader is unavailable.");
+
+        if (material == null)
+        {
+            material = new Material(shader) { name = "Royal Glass Light" };
+            AssetDatabase.CreateAsset(material, GlassLightMaterial);
+        }
+        else if (material.shader != shader)
+        {
+            material.shader = shader;
+        }
+
+        material.color = Color.white;
+        EditorUtility.SetDirty(material);
+        return material;
+    }
+
     private static GlassVisualTheme EnsureTheme()
     {
         GlassVisualTheme theme = AssetDatabase.LoadAssetAtPath<GlassVisualTheme>(ThemePath);
@@ -365,7 +392,8 @@ public static class RoyalGlassLabBuilder
 
     private static LiquidBottle BuildVessel(Transform parent, string name,
         VesselProfile profile, Vector2 localPosition, float scale,
-        GlassVisualTheme theme, IReadOnlyList<Color> contents)
+        GlassVisualTheme theme, Material glassLight, float glassLightIntensity,
+        IReadOnlyList<Color> contents)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
@@ -384,8 +412,14 @@ public static class RoyalGlassLabBuilder
         shell.theme = theme;
         shell.thinFxIntensity = 0f;
         shell.thinFxSelectionBoost = 0f;
-        shell.drawGlassLight = false;
-        shell.lightIntensity = 0f;
+        shell.drawGlassLight = glassLight != null;
+        shell.glassLightMaterial = glassLight;
+        GlassLightProfile lightProfile = GlassLightProfile.Reference;
+        lightProfile.rimStrength = 0f;
+        lightProfile.fillStrength = 0f;
+        lightProfile.shoulderStrength = 0f;
+        shell.lightProfile = lightProfile;
+        shell.lightIntensity = glassLight != null ? glassLightIntensity : 0f;
         shell.selectionBoost = 0f;
         shell.shadowStrength = 0.34f;
         shell.shadowWidth = 0.76f;
@@ -398,7 +432,8 @@ public static class RoyalGlassLabBuilder
         return bottle;
     }
 
-    private static void Validate(WaterSortBoard board, Material liquid)
+    private static void Validate(WaterSortBoard board, Material liquid,
+        VesselProfile cocktail, VesselProfile tall, Material glassLight)
     {
         if (board.bottles.Count != 4)
             throw new InvalidOperationException("Expected four Royal vessels.");
@@ -413,6 +448,15 @@ public static class RoyalGlassLabBuilder
             if (bottle.profile.interiorBounds.width <= 0.20f
                 || bottle.profile.interiorBounds.height <= 0.35f)
                 throw new InvalidOperationException(bottle.name + " traced an implausible interior.");
+
+            bool needsCentreReflection = bottle.profile == cocktail || bottle.profile == tall;
+            BottleShell shell = bottle.GetComponent<BottleShell>();
+            if (shell == null || shell.drawGlassLight != needsCentreReflection)
+                throw new InvalidOperationException(bottle.name
+                    + " has an inconsistent centre-reflection setup.");
+            if (needsCentreReflection && shell.glassLightMaterial != glassLight)
+                throw new InvalidOperationException(bottle.name
+                    + " is missing the serialized Royal glass-light material.");
         }
     }
 

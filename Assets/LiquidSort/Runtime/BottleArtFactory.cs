@@ -23,6 +23,10 @@ namespace LiquidSort
         [Range(0f, 1f)] public float glossStrength;
         [Tooltip("The narrow hard line inside the column. This is what reads as glass.")]
         [Range(0f, 1f)] public float streakStrength;
+        [Tooltip("Centre of the smaller reflection on the opposite side of the glass.")]
+        [Range(-1f, 1f)] public float secondaryGlossX;
+        [Range(0.02f, 1f)] public float secondaryGlossWidth;
+        [Range(0f, 1f)] public float secondaryGlossStrength;
         [Range(0f, 1f)] public float shoulderStrength;
         [Tooltip("Height of the shoulder glint, 0 at the base and 1 at the brim.")]
         [Range(0f, 1f)] public float shoulderHeight;
@@ -41,6 +45,9 @@ namespace LiquidSort
             glossWidth = 0.26f,
             glossStrength = 0.55f,
             streakStrength = 0.42f,
+            secondaryGlossX = 0.54f,
+            secondaryGlossWidth = 0.12f,
+            secondaryGlossStrength = 0.42f,
             shoulderStrength = 0.42f,
             shoulderHeight = 0.84f
         };
@@ -56,6 +63,9 @@ namespace LiquidSort
                 hash = hash * 31 + glossWidth.GetHashCode();
                 hash = hash * 31 + glossStrength.GetHashCode();
                 hash = hash * 31 + streakStrength.GetHashCode();
+                hash = hash * 31 + secondaryGlossX.GetHashCode();
+                hash = hash * 31 + secondaryGlossWidth.GetHashCode();
+                hash = hash * 31 + secondaryGlossStrength.GetHashCode();
                 hash = hash * 31 + shoulderStrength.GetHashCode();
                 hash = hash * 31 + shoulderHeight.GetHashCode();
                 return hash;
@@ -308,7 +318,8 @@ namespace LiquidSort
 
         /// <summary>
         /// Additive light pass drawn over the whole bottle: the specular along the glass
-        /// wall, the wide gloss column with its hard streak, and the shoulder glint.
+        /// wall, the wide gloss column with its hard streak, the smaller opposite-side
+        /// reflection, and the shoulder glint.
         ///
         /// This is a separate layer rather than part of the liquid shader on purpose.
         /// The highlight is painted on the glass, so it has to cross the empty part of
@@ -390,6 +401,10 @@ namespace LiquidSort
                                       * lengthwise * inside * profile.glossStrength);
                         lit += warm * (Gauss(u - streakX, profile.glossWidth * 0.14f)
                                        * lengthwise * inside * profile.streakStrength);
+                        lit += sky * (Gauss(u - profile.secondaryGlossX,
+                                           Mathf.Max(0.02f, profile.secondaryGlossWidth))
+                                      * lengthwise * inside
+                                      * profile.secondaryGlossStrength);
                         lit += warm * (Gauss(u - profile.glossX * 0.75f, 0.20f)
                                        * shoulder * inside * profile.shoulderStrength);
                     }

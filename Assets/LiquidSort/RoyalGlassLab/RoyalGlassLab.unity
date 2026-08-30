@@ -730,9 +730,9 @@ MonoBehaviour:
   accessoryLightScale: 1
   bottomRimLightScale: 1
   thinFxOrder: 7
-  drawGlassLight: 0
+  drawGlassLight: 1
   lightOrder: 7
-  glassLightMaterial: {fileID: 0}
+  glassLightMaterial: {fileID: 2100000, guid: 950504bac15b946a982cde2eb0d2775d, type: 2}
   lightProfile:
     keyDirection: {x: -0.5, y: 0.87}
     rimStrength: 0
@@ -741,9 +741,12 @@ MonoBehaviour:
     glossWidth: 0.26
     glossStrength: 0.55
     streakStrength: 0.42
-    shoulderStrength: 0.42
+    secondaryGlossX: 0.54
+    secondaryGlossWidth: 0.12
+    secondaryGlossStrength: 0.42
+    shoulderStrength: 0
     shoulderHeight: 0.84
-  lightIntensity: 0
+  lightIntensity: 0.26
   selectionBoost: 0
   drawShadow: 1
   shadowOrder: -1
@@ -1397,9 +1400,9 @@ MonoBehaviour:
   accessoryLightScale: 1
   bottomRimLightScale: 1
   thinFxOrder: 7
-  drawGlassLight: 0
+  drawGlassLight: 1
   lightOrder: 7
-  glassLightMaterial: {fileID: 0}
+  glassLightMaterial: {fileID: 2100000, guid: 950504bac15b946a982cde2eb0d2775d, type: 2}
   lightProfile:
     keyDirection: {x: -0.5, y: 0.87}
     rimStrength: 0
@@ -1408,9 +1411,12 @@ MonoBehaviour:
     glossWidth: 0.26
     glossStrength: 0.55
     streakStrength: 0.42
-    shoulderStrength: 0.42
+    secondaryGlossX: 0.54
+    secondaryGlossWidth: 0.12
+    secondaryGlossStrength: 0.42
+    shoulderStrength: 0
     shoulderHeight: 0.84
-  lightIntensity: 0
+  lightIntensity: 0.32
   selectionBoost: 0
   drawShadow: 1
   shadowOrder: -1
