@@ -1,37 +1,35 @@
 # Glass Pour Math Demo (Unity 6)
 
-Bu proje, verilen `GlassFront.png` kontur/FX asset'iyle videodaki temel sıvı davranışını kurar.
-Her bardak üç açık katmandan oluşur:
+Bu proje, farklı bardak geometrilerinde hacmi koruyan sıvı katmanlarını ve bardaktan
+bardağa dökme animasyonunu içerir.
 
-```text
-GlassBase       ← boş iç alan ve yalnız arkada kalan ana yansıma
-LiquidSegments ← opak, silindir biçimli renk parçaları
-FrameFX        ← ince kontur ve küçük kenar parlaması
-```
+## Ana sahneler
 
-- Kadeh dönerken sıvı sınırları dünya/ekran ekseninde yatay kalır ve dönen iç şekle kırpılır.
-- Sıvı parçalarının gövdesi doğrudan iç poligon dilimlerinden üretilir; `SpriteMask` gerekmez.
-- Doluluk yüksekliği sabit bir Y yüzdesiyle değil, poligon alanı korunarak hesaplanır.
-- Üst renk katmanı kaynak kadehten azalırken hedef kadehte aynı miktarda büyür.
-- Sıvı merkezleri tamamen opaktır; arkadaki cam yansımasını örter.
-- Sıvının üzerinde geniş bir cam yüzeyi yoktur. Yalnız ince `FrameFX` ve küçük bir kenar parlaması vardır.
+- `Assets/LiquidSort/RoyalGlassLab/RoyalGlassLab.unity`
+- `Assets/LiquidSort/AllGlassesPlayground.unity`
 
-## Açılış
+Bu iki sahne aynı sıvı çizim ve animasyon çekirdeğini kullanır. Royal sahnesi ayrı
+görsel/profile setine sahiptir; `MugRoyal.asset` iki sahne arasında ortaktır.
 
-1. Klasörü Unity Hub ile açın (Unity 6 önerilir).
-2. İlk derleme bittiğinde `Assets/Scenes/GlassPourDemo.unity` otomatik oluşur.
-3. Sahneyi açın ve **Play** düğmesine basın.
-4. Fareyle tıklayın veya **Space** tuşuna basın.
+Sahneleri yeniden üretmek için:
 
-Sahne otomatik oluşmazsa: `Tools > Glass Pour Demo > Rebuild Demo Scene`.
+- `Tools > LiquidSort > Rebuild Royal Glass Lab`
+- `Tools > LiquidSort > Rebuild All Glasses Playground`
 
-Matematik kontrolü: `Tools > Glass Pour Demo > Validate Liquid Math`.
+## Korunan çekirdek
 
-## En önemli ayar noktaları
+- `VesselProfile`: bardak iç poligonu, görünür taban, kapasite ve dökme pozları
+- `LiquidBottle`: sıvı bantlarının çizimi ve profil verisi
+- `BottleShell`: bardak çerçevesi, gölge ve görsel tema
+- `PourAnimator` + `PourStream`: taşıma, eğilme, akış ve geri dönüş animasyonu
+- `WaterSortBoard`: seçim ve geçerli sıvı aktarımı
+- `VesselProfileBaker`: yeni veya güncellenen bardak profilini üretme
 
-- İç hazne şekli: `GlassVessel.InteriorPolygon`
-- Dönme açısı ve süre: `GlassPourController.tiltAngle`, `pourDuration`
-- Başlangıç renkleri/dolulukları: `GlassPourController.Start()`
-- Asset hizası: `GlassPourDemoBuilder.ConfigureTexture()` (512 PPU)
+Aktif profillerin `front`, `traceSource`, materyal veya bake tablolarını eski deneme
+asset'leriyle değiştirmeyin. Yeni bir bardak eklerken ayrı bir `VesselProfile` oluşturup
+profili baker ile yeniden üretin.
 
-Bu örnek dökme mantığını ve katman aktarımını gösterir. Videodaki köpük, sıçrama, ses ve hedef seçme oyun kuralları ayrı VFX/gameplay katmanlarıdır.
+## Unity sürümü
+
+Proje `6000.0.30f1` ile oluşturulmuştur. `Library`, `Temp`, `Logs` ve `UserSettings`
+yeniden üretilebilir yerel klasörlerdir ve Git'e dahil edilmez.

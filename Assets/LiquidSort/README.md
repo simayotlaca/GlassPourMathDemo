@@ -1,42 +1,28 @@
-# LiquidSort
+# LiquidSort runtime
 
-Water/liquid sort liquid rendering and pouring for Unity 6. **No editor tools, no extra
-packages, no build step.** Put the component on a GameObject, give it your glass drawing,
-press Play.
+The runtime renders and animates layered liquid inside pre-baked vessel profiles.
 
-## Setup
+## Main components
 
-1. Add `LiquidBottle` to a GameObject.
-2. Drop your glass artwork into its **Glass Art** field.
-3. Tick **Read/Write** on that texture's import settings (the interior is traced from its
-   pixels, so they have to be readable).
+| Component | Responsibility |
+| --- | --- |
+| `VesselProfile` | Baked interior geometry, capacity, fill tables and pour pose |
+| `LiquidBottle` | Liquid state and shader data |
+| `BottleShell` | Authored glass front, contour, shadow and theme |
+| `WaterSortBoard` | Selection and legal transfer rules |
+| `PourAnimator` | Carry, tilt, transfer, settle and return sequence |
+| `PourStream` | Procedural stream mesh |
 
-That is the whole configuration. On Awake the bottle traces the drawing and works out its
-own interior polygon, pour lip, whether the rim is open or a narrow neck, and how far down
-its own outline hides the liquid. A different glass is a different drawing and nothing
-else — no numbers to copy, no tool to run, nothing to re-bake when the art changes.
+The two reference scenes are `RoyalGlassLab/RoyalGlassLab.unity` and
+`AllGlassesPlayground.unity`. Their rebuild recipes live in
+`RoyalGlassLabBuilder.cs` and `AllGlassesPlaygroundBuilder.cs`.
 
-Add `BottleShell` alongside it to get the dark interior behind the liquid, and
-`WaterSortBoard` + `PourAnimator` on a parent for the puzzle and the pouring.
+## Adding or changing a vessel
 
-## What is going on
+1. Create or update a `VesselProfile` asset.
+2. Assign the visible `front` sprite and, when necessary, a separate `traceSource`.
+3. Bake the profile with `Tools > LiquidSort > Bake Selected Vessel Profiles`.
+4. Validate the profile in the playground before using it in gameplay.
 
-| Piece | File | Idea |
-| --- | --- | --- |
-| Interior from art | `GlassInteriorFitter.cs` | Flood fill from the border marks the outside; the largest transparent pocket the outline encloses is the bowl. Traced, simplified, converted to local units. |
-| Waterline math | `VesselFillMath.cs` | Rotate the interior into the "liquid frame", bisect for the height that leaves the right area below it. Volume holds at any tilt. |
-| Rendering | `BottleLiquid.shader` | Up to 8 bands, one draw call. The fragment rotates its object space position into the liquid frame, so waterlines stay level while the glass turns. |
-| Stream | `PourStream.cs` | Procedural strip mesh: short bezier off the lip, then a fall under gravity. |
-| Rules | `WaterSortBoard.cs` | Integer stack per bottle. Move the whole matching run on top. |
-
-## Numbers measured off the reference art
-
-These are not taste, they were sampled from the source material and can be re-derived:
-
-| Setting | Value | Where it came from |
-| --- | --- | --- |
-| `innerJunctionDepth` | 0.098 | junction sags 14px on a 143px chord |
-| `maxCapDepth` | 0.075 | cap half depth against interior height |
-| `brimHeadroom` | 0.34 | a full vessel never reaches its own brim |
-| `visibleBottomShare` | 0.47 | where the outline stops hiding the liquid |
-| `evenBandHeights` | 1 | players read pixel heights, not volumes |
+Do not replace a final profile with an old generated `_v2`, staged or comparison image.
+The baked profile owns the geometry used by fill rendering and animation.

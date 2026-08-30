@@ -54,7 +54,6 @@ public static class RoyalGlassLabBuilder
     private const string RoyalLiquidMaterial =
         MaterialRoot + "RoyalBottleLiquid.mat";
     private const string SpriteMaterial = MaterialRoot + "RoyalGlassSprite.mat";
-    private const string BackdropMaterial = MaterialRoot + "RoyalBackdrop.mat";
     private const string PourStreamMaterial =
         "Assets/LiquidSort/Materials/PourStream.mat";
 
@@ -381,58 +380,6 @@ public static class RoyalGlassLabBuilder
         camera.cullingMask = 1 << LabLayer;
         cameraObject.AddComponent<AudioListener>();
         return camera;
-    }
-
-    private static void BuildBackdrop()
-    {
-        GameObject backdrop = GameObject.CreatePrimitive(PrimitiveType.Quad);
-        backdrop.name = "Royal Showcase Background";
-        backdrop.layer = LabLayer;
-        backdrop.transform.position = new Vector3(0f, 0f, 5f);
-        backdrop.transform.localScale = new Vector3(40f, 20f, 1f);
-        Collider collider = backdrop.GetComponent<Collider>();
-        if (collider != null) UnityEngine.Object.DestroyImmediate(collider);
-        MeshRenderer renderer = backdrop.GetComponent<MeshRenderer>();
-        renderer.sharedMaterial = EnsureBackdropMaterial();
-        renderer.sortingLayerName = "Default";
-        renderer.sortingOrder = -100;
-    }
-
-    private static Material EnsureBackdropMaterial()
-    {
-        Material material = AssetDatabase.LoadAssetAtPath<Material>(BackdropMaterial);
-        Shader shader = Shader.Find("LiquidSort/PlaygroundBackdrop");
-        if (shader == null)
-            throw new InvalidOperationException("Playground backdrop shader unavailable.");
-        if (material == null)
-        {
-            material = new Material(shader) { name = "Royal Backdrop" };
-            AssetDatabase.CreateAsset(material, BackdropMaterial);
-        }
-        else if (material.shader != shader)
-        {
-            material.shader = shader;
-        }
-
-        material.SetFloat("_WorldHeight", 10.1f);
-        material.SetColor("_TopColor", Hex(0x071A3E));
-        material.SetColor("_BottomColor", Hex(0x260B35));
-        material.SetColor("_BayTopColor", Hex(0x0B2148));
-        material.SetColor("_BayBottomColor", Hex(0x1C1139));
-        material.SetColor("_PillarColor", Hex(0x4B123D));
-        material.SetColor("_BevelColor", Hex(0xA93268));
-        material.SetColor("_CanopyColor", Hex(0x32103F));
-        material.SetColor("_AlcoveUpper", Hex(0x0A2045));
-        material.SetColor("_AlcoveLower", Hex(0x1C1038));
-        material.SetColor("_ArchColor", Hex(0x92507F));
-        material.SetColor("_CeilingColor", Hex(0x59D9EF));
-        material.SetColor("_ShelfShadow", Hex(0x25091D));
-        material.SetColor("_ShelfBody", Hex(0x74173D));
-        material.SetColor("_ShelfLip", Hex(0xC33268));
-        material.SetColor("_ShelfHighlight", Hex(0xF0648B));
-        material.SetColor("_ShelfUnderlight", Hex(0x12BADA));
-        EditorUtility.SetDirty(material);
-        return material;
     }
 
     private static LiquidBottle BuildVessel(Transform parent, string name,

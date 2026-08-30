@@ -5,7 +5,6 @@ using LiquidSort;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.Rendering.PostProcessing;
 using UnityEngine.SceneManagement;
 
 /// <summary>
@@ -26,15 +25,12 @@ public static class AllGlassesPlaygroundBuilder
         "Assets/LiquidSort/RoyalGlassLab/Profiles/MugRoyal.asset";
     private const string TumblerPath = "Assets/LiquidSort/Profiles/Tumbler.asset";
     private const string TumblerAuthoredFrontPath = "Assets/Art/Uzundeneme2.png";
-    private const string BloomProfilePath =
-        "Assets/LiquidSort/PostProcessing/PremiumCasualBloom.asset";
     private const string GlassThemePath =
         "Assets/LiquidSort/Themes/PremiumCasualGlassTheme.asset";
     private const string AuthoredSpriteMaterialPath =
         "Assets/LiquidSort/Materials/AuthoredGlassSprite.mat";
     private const string BackdropMaterialPath =
         "Assets/LiquidSort/Materials/PlaygroundBackdrop.mat";
-    private const int PostProcessingLayer = 8;
     private const int PlaygroundLayer = 30;
 
     private static bool refreshed;
@@ -263,68 +259,6 @@ public static class AllGlassesPlaygroundBuilder
         return material;
     }
 
-    private static void ConfigureBloom(Camera camera)
-    {
-        // Bloom is intentionally a finishing pass, not a replacement for the authored
-        // glass light. A threshold just above white makes only HDR highlights glow, so
-        // the lavender background and the liquid body stay crisp and colour-readable.
-        var postLayer = camera.gameObject.AddComponent<PostProcessLayer>();
-        postLayer.volumeTrigger = camera.transform;
-        postLayer.volumeLayer = 1 << PostProcessingLayer;
-        postLayer.antialiasingMode = PostProcessLayer.Antialiasing.None;
-        postLayer.stopNaNPropagation = true;
-        postLayer.finalBlitToCameraTarget = false;
-
-        var volumeObject = new GameObject("Premium Casual Bloom");
-        volumeObject.layer = PostProcessingLayer;
-        volumeObject.transform.SetParent(camera.transform, false);
-
-        var volume = volumeObject.AddComponent<PostProcessVolume>();
-        volume.isGlobal = true;
-        volume.priority = 100f;
-        volume.weight = 1f;
-        volume.sharedProfile = EnsureBloomProfile();
-    }
-
-    private static PostProcessProfile EnsureBloomProfile()
-    {
-        string folder = Path.GetDirectoryName(BloomProfilePath);
-        if (!Directory.Exists(folder)) Directory.CreateDirectory(folder);
-
-        PostProcessProfile profile =
-            AssetDatabase.LoadAssetAtPath<PostProcessProfile>(BloomProfilePath);
-        if (profile == null)
-        {
-            profile = ScriptableObject.CreateInstance<PostProcessProfile>();
-            profile.name = "Premium Casual Bloom";
-            AssetDatabase.CreateAsset(profile, BloomProfilePath);
-        }
-
-        Bloom bloom = profile.GetSetting<Bloom>();
-        if (bloom == null)
-        {
-            bloom = profile.AddSettings<Bloom>();
-            AssetDatabase.AddObjectToAsset(bloom, profile);
-        }
-
-        bloom.enabled.Override(true);
-        bloom.intensity.Override(0.28f);
-        bloom.threshold.Override(1.10f);
-        bloom.softKnee.Override(0.65f);
-        bloom.diffusion.Override(4f);
-        bloom.anamorphicRatio.Override(0f);
-        bloom.color.Override(new Color(1f, 0.97f, 0.92f, 1f));
-        bloom.fastMode.Override(true);
-        bloom.dirtTexture.Override(null);
-        bloom.dirtIntensity.Override(0f);
-
-        profile.isDirty = true;
-        EditorUtility.SetDirty(bloom);
-        EditorUtility.SetDirty(profile);
-        AssetDatabase.ImportAsset(BloomProfilePath);
-        return profile;
-    }
-
     private static GlassVisualTheme EnsurePremiumGlassTheme()
     {
         const string folder = "Assets/LiquidSort/Themes";
@@ -529,10 +463,7 @@ public static class AllGlassesPlaygroundBuilder
         const int width = 675;
         const int height = 1200;
         const string path = "Temp/AllGlassesPlayground.png";
-        const string toyBaselinePath = "Temp/AllGlassesPlayground.before-toy-mug.png";
 
-        // Preserve the >1.0 highlight values until the post-process pass. ARGB32 clamps
-        // them too early and makes the Bloom profile look inactive in this preview.
         var target = new RenderTexture(width, height, 24, RenderTextureFormat.DefaultHDR)
         {
             name = "AllGlassesPlaygroundPreview",
@@ -552,12 +483,7 @@ public static class AllGlassesPlaygroundBuilder
             pixels.ReadPixels(new Rect(0, 0, width, height), 0, 0);
             pixels.Apply(false, false);
             byte[] png = pixels.EncodeToPNG();
-            // Keep one immutable baseline for the mug-only painted-toy experiment. The
-            // same camera and vessel state make a later A/B comparison honest; this file
-            // is intentionally not overwritten on subsequent scene rebuilds.
-            if (!File.Exists(toyBaselinePath)) File.WriteAllBytes(toyBaselinePath, png);
             File.WriteAllBytes(path, png);
-            WriteMugToyComparison(pixels, toyBaselinePath);
         }
         finally
         {
@@ -566,47 +492,6 @@ public static class AllGlassesPlaygroundBuilder
             if (pixels != null) UnityEngine.Object.DestroyImmediate(pixels);
             target.Release();
             UnityEngine.Object.DestroyImmediate(target);
-        }
-    }
-
-    private static void WriteMugToyComparison(Texture2D after, string beforePath)
-    {
-        if (after == null || !File.Exists(beforePath)) return;
-
-        Texture2D before = null;
-        Texture2D comparison = null;
-        try
-        {
-            before = new Texture2D(2, 2, TextureFormat.RGB24, false);
-            if (!before.LoadImage(File.ReadAllBytes(beforePath), false)) return;
-
-            // Bottom-left portrait cell, with enough room for the lip and contact shadow.
-            const int cropX = 50;
-            const int cropY = 120;
-            const int cropWidth = 330;
-            const int cropHeight = 450;
-            const int gap = 16;
-            if (before.width < cropX + cropWidth || before.height < cropY + cropHeight
-                || after.width < cropX + cropWidth || after.height < cropY + cropHeight)
-                return;
-
-            comparison = new Texture2D(cropWidth * 2 + gap, cropHeight,
-                TextureFormat.RGB24, false);
-            Color divider = Hex(0x4B315F);
-            Color[] fill = new Color[comparison.width * comparison.height];
-            for (int i = 0; i < fill.Length; i++) fill[i] = divider;
-            comparison.SetPixels(fill);
-            comparison.SetPixels(0, 0, cropWidth, cropHeight,
-                before.GetPixels(cropX, cropY, cropWidth, cropHeight));
-            comparison.SetPixels(cropWidth + gap, 0, cropWidth, cropHeight,
-                after.GetPixels(cropX, cropY, cropWidth, cropHeight));
-            comparison.Apply(false, false);
-            File.WriteAllBytes("Temp/MugToyLightingAB.png", comparison.EncodeToPNG());
-        }
-        finally
-        {
-            if (before != null) UnityEngine.Object.DestroyImmediate(before);
-            if (comparison != null) UnityEngine.Object.DestroyImmediate(comparison);
         }
     }
 

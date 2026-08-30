@@ -5,6 +5,10 @@
 [Bb]uilds/
 [Ll]ogs/
 [Uu]ser[Ss]ettings/
+[Bb]ackups/
+.codex-backups/
+tmp/
 .DS_Store
+*.bak
 *.csproj
 *.sln
