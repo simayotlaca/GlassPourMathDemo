@@ -1,0 +1,73 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: Royal Bottle Liquid
+  m_Shader: {fileID: 4800000, guid: 2413c28bb7b414b5880cc35a3005f17e, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _MaskTex:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _Alpha: 1
+    - _BodySettle: 0.97
+    - _BodyShade: 0
+    - _BoundaryShade: 0.16
+    - _Bulge: 0.135
+    - _BulgeMax: 0.16
+    - _CapDesat: 0.1
+    - _CapDesatPale: 0.45
+    - _CapFalloff: 0.58
+    - _CapFlash: 0
+    - _CapRim: 0.38
+    - _CapValue: 1.22
+    - _CylinderKey: 0.84
+    - _CylinderShade: 0.12
+    - _DepthRange: 2
+    - _EdgeShade: 0.08
+    - _FarRim: 0.24
+    - _FloorGlow: 0
+    - _FloorGlowWidth: 0.26
+    - _FloorShade: 0
+    - _InnerBulge: 0.098
+    - _InnerCurve: 1
+    - _InnerMax: 0.36
+    - _Overbright: 1.35
+    - _RoundShade: 0.04
+    - _Shine: 0.3
+    - _ShineWidth: 0.38
+    - _ShineX: -0.42
+    - _SplashAmp: 0
+    - _SplashLife: 0
+    - _SplashWidth: 0.3
+    - _SplashX: 0
+    - _WallBias: 0.28
+    - _WallShade: 0.1
+    - _WallWidth: 0.06
+    - _Wave: 0
+    - _WaveFreq: 9
+    - _WaveSpeed: 7
+    m_Colors:
+    - _QuadSize: {r: 1, g: 1, b: 0, a: 0}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

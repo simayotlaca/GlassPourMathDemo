@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 684fca7fd4e59984e969e5a23a14b076, type: 3}
+  m_Name: BsPalette
+  m_EditorClassIdentifier: Assembly-CSharp::BartenderSort.Core.BsPalette
+  Colors:
+  - Name: "K\u0131rm\u0131z\u0131"
+    Color: {r: 0.9098039, g: 0.27058825, b: 0.23529412, a: 1}
+  - Name: Turuncu
+    Color: {r: 0.9607843, g: 0.5372549, b: 0.23137255, a: 1}
+  - Name: "Sar\u0131"
+    Color: {r: 0.96862745, g: 0.80784315, b: 0.27450982, a: 1}
+  - Name: "Ye\u015Fil"
+    Color: {r: 0.35686275, g: 0.7607843, b: 0.29411766, a: 1}
+  - Name: Mavi
+    Color: {r: 0.24313726, g: 0.5568628, b: 0.87058824, a: 1}
+  - Name: Mor
+    Color: {r: 0.6039216, g: 0.35686275, b: 0.81960785, a: 1}
+  - Name: Pembe
+    Color: {r: 0.93333334, g: 0.43529412, b: 0.65882355, a: 1}

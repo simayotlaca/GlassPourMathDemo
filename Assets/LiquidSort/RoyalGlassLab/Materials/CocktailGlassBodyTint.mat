@@ -1,0 +1,46 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: CocktailGlassBodyTint
+  m_Shader: {fileID: 4800000, guid: d99ac6f734a2d49288a7a82566b241e1, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _MaskTex:
+        m_Texture: {fileID: -8088553468108524754, guid: 973fb34ef3fb64b3fbed4cd269308cb9, type: 2}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _BottomCutoff: 0.3682667
+    - _BottomFeather: 0.025
+    - _CoreAlpha: 0.026
+    - _CoreWidth: 0.044
+    - _EdgeAlpha: 0.052
+    - _EdgeWidthPixels: 10
+    - _ReflectionAlpha: 0.072
+    - _ReflectionCenter: 0.235
+    - _ReflectionWidth: 0.18
+    m_Colors:
+    - _EdgeColor: {r: 0.025, g: 0.03, b: 0.1, a: 1}
+    - _ReflectionColor: {r: 0.79, g: 0.75, b: 1, a: 1}
+    - _TintColor: {r: 0.12, g: 0.095, b: 0.28, a: 0.18}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

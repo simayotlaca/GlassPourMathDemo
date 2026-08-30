@@ -1,0 +1,55 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: BottleLiquid
+  m_Shader: {fileID: 4800000, guid: 2413c28bb7b414b5880cc35a3005f17e, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _MaskTex:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _Alpha: 1
+    - _BodyShade: 0.1
+    - _BoundaryShade: 0.1
+    - _Bulge: 0.055
+    - _CapFlash: 0
+    - _CapRim: 0.16
+    - _DepthRange: 2
+    - _EdgeShade: 0.05
+    - _FloorShade: 0.24
+    - _InnerCurve: 1
+    - _Overbright: 1.8
+    - _Shine: 0.22
+    - _ShineWidth: 0.42
+    - _ShineX: -0.15
+    - _SurfaceLift: 0.42
+    - _WallBias: 0.45
+    - _WallShade: 0.2
+    - _WallWidth: 0.11
+    - _Wave: 0
+    - _WaveFreq: 9
+    - _WaveSpeed: 7
+    m_Colors: []
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1
