@@ -3,18 +3,22 @@
 Bu proje, farklı bardak geometrilerinde hacmi koruyan sıvı katmanlarını ve bardaktan
 bardağa dökme animasyonunu içerir.
 
-## Ana sahneler
+## Ana bardak referans sahnesi
 
 - `Assets/LiquidSort/RoyalGlassLab/RoyalGlassLab.unity`
-- `Assets/LiquidSort/AllGlassesPlayground.unity`
 
-Bu iki sahne aynı sıvı çizim ve animasyon çekirdeğini kullanır. Royal sahnesi ayrı
-görsel/profile setine sahiptir; `MugRoyal.asset` iki sahne arasında ortaktır.
+Royal Glass Lab, bardakların son görünümü, geometrisi, sıvı profilleri ve dökme
+animasyonu için tek canonical referanstır. Royal builder yalnız Royal profil ve
+materyallerini kullanır; eski genel profillerden sessizce kopya üretmez.
 
-Sahneleri yeniden üretmek için:
+Sahneyi yeniden üretmek için:
 
 - `Tools > LiquidSort > Rebuild Royal Glass Lab`
-- `Tools > LiquidSort > Rebuild All Glasses Playground`
+
+Eski `AllGlassesPlayground` sahnesi ve yalnız ona ait görsel zincir proje dışındaki
+yerel arşive taşınmıştır. Gerekirse ana projeye değil, ayrı bir deneme projesine
+aktarılmalıdır. `Assets/LiquidSort/Profiles` altındaki genel profiller ve bunların
+kaynak görselleri gelecekte yeni bardak üretimi için korunur; ikinci bir sahne değildir.
 
 ## Korunan çekirdek
 

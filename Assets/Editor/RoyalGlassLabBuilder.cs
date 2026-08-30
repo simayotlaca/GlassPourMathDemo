@@ -9,9 +9,9 @@ using UnityEngine.SceneManagement;
 
 /// <summary>
 /// Builds the independent four-vessel Royal art lab. The authored sprites own every
-/// glass highlight; the cloned BottleLiquid material still owns the moving liquid,
-/// curved caps, band junctions and pour animation. Nothing here changes the original
-/// four-glass profiles or their shared liquid material.
+/// glass highlight; RoyalBottleLiquid owns the moving liquid, curved caps, band
+/// junctions and pour animation. Royal profiles and material are canonical assets:
+/// rebuilding never reads from the retired All Glasses Playground setup.
 /// </summary>
 [InitializeOnLoad]
 public static class RoyalGlassLabBuilder
@@ -38,19 +38,15 @@ public static class RoyalGlassLabBuilder
     private const string TallSprite = ArtRoot + "TallRoyalFrameEmpty.png";
     private const string TallTraceSprite = ArtRoot + "TallRoyalFrameGeometry.png";
 
-    private const string ShotSource = "Assets/LiquidSort/Profiles/Shot.asset";
-    private const string CocktailSource =
-        "Assets/LiquidSort/Profiles/CocktailGlass.asset";
-    private const string MugSource = "Assets/LiquidSort/Profiles/Mug.asset";
-    private const string TallSource = "Assets/LiquidSort/Profiles/Tumbler.asset";
-
     private const string ShotProfile = ProfileRoot + "ShotRoyal.asset";
     private const string CocktailProfile = ProfileRoot + "CocktailRoyal.asset";
     private const string MugProfile = ProfileRoot + "MugRoyal.asset";
     private const string TallProfile = ProfileRoot + "TumblerRoyal.asset";
+    private const int ShotCapacity = 1;
+    private const int CocktailCapacity = 2;
+    private const int MugCapacity = 3;
+    private const int TallCapacity = 4;
 
-    private const string SourceLiquidMaterial =
-        "Assets/LiquidSort/Materials/BottleLiquid.mat";
     private const string RoyalLiquidMaterial =
         MaterialRoot + "RoyalBottleLiquid.mat";
     private const string SpriteMaterial = MaterialRoot + "RoyalGlassSprite.mat";
@@ -112,13 +108,13 @@ public static class RoyalGlassLabBuilder
         ConfigureSpriteImporter(TallTraceSprite);
 
         Material liquid = EnsureRoyalLiquidMaterial();
-        VesselProfile shot = EnsureProfile("Shot Royal", ShotSource,
+        VesselProfile shot = EnsureProfile("Shot Royal", ShotCapacity,
             ShotProfile, ShotSprite, liquid, ShotTraceSprite);
-        VesselProfile cocktail = EnsureProfile("Cocktail Royal", CocktailSource,
+        VesselProfile cocktail = EnsureProfile("Cocktail Royal", CocktailCapacity,
             CocktailProfile, CocktailSprite, liquid, CocktailTraceSprite);
-        VesselProfile mug = EnsureProfile("Mug Royal", MugSource,
+        VesselProfile mug = EnsureProfile("Mug Royal", MugCapacity,
             MugProfile, MugSprite, liquid, MugTraceSprite);
-        VesselProfile tall = EnsureProfile("Tumbler Royal", TallSource,
+        VesselProfile tall = EnsureProfile("Tumbler Royal", TallCapacity,
             TallProfile, TallSprite, liquid, TallTraceSprite);
         GlassVisualTheme theme = EnsureTheme();
 
@@ -163,10 +159,10 @@ public static class RoyalGlassLabBuilder
 
             // Royal Smash-inspired saturated palette. These are still dynamic liquid
             // colours; none of them is baked into the glass sprites.
-            // Match the visible All Glasses Playground composition. Royal sprites use
-            // different pixels-per-unit values and transparent canvas bounds, so these
-            // compensated transforms align the rendered silhouettes rather than merely
-            // copying numerically identical Transform values.
+            // Preserve the approved four-glass composition. Royal sprites use different
+            // pixels-per-unit values and transparent canvas bounds, so these compensated
+            // transforms align the rendered silhouettes rather than merely copying
+            // numerically identical Transform values.
             board.bottles.Add(BuildVessel(root.transform, "01 Shot Royal", shot,
                 new Vector2(-1.20f, 1.574f), 0.654f, theme,
                 new[] { Hex(0xF39A12) }));
@@ -238,23 +234,14 @@ public static class RoyalGlassLabBuilder
         importer.SaveAndReimport();
     }
 
-    private static VesselProfile EnsureProfile(string displayName, string sourcePath,
+    private static VesselProfile EnsureProfile(string displayName, int expectedCapacity,
         string profilePath, string spritePath, Material liquid,
         string traceSpritePath = null)
     {
-        VesselProfile source = AssetDatabase.LoadAssetAtPath<VesselProfile>(sourcePath);
-        if (source == null) throw new FileNotFoundException("Missing source profile", sourcePath);
-
         VesselProfile profile = AssetDatabase.LoadAssetAtPath<VesselProfile>(profilePath);
         if (profile == null)
-        {
-            if (!AssetDatabase.CopyAsset(sourcePath, profilePath))
-                throw new IOException("Could not clone profile to " + profilePath);
-            AssetDatabase.ImportAsset(profilePath, ImportAssetOptions.ForceUpdate);
-            profile = AssetDatabase.LoadAssetAtPath<VesselProfile>(profilePath);
-        }
-        if (profile == null)
-            throw new InvalidOperationException(displayName + " profile did not load.");
+            throw new FileNotFoundException(
+                displayName + " canonical Royal profile is missing.", profilePath);
 
         Sprite sprite = AssetDatabase.LoadAssetAtPath<Sprite>(spritePath);
         if (sprite == null)
@@ -281,7 +268,7 @@ public static class RoyalGlassLabBuilder
         profile.bottomRimGlassLight = 0f;
         profile.liquidBounceScale = 0f;
         profile.clipRightInterior = false;
-        profile.capacity = source.capacity;
+        profile.capacity = expectedCapacity;
         EditorUtility.SetDirty(profile);
 
         if (!VesselProfileBaker.Bake(profile))
@@ -295,14 +282,8 @@ public static class RoyalGlassLabBuilder
     {
         Material material = AssetDatabase.LoadAssetAtPath<Material>(RoyalLiquidMaterial);
         if (material == null)
-        {
-            if (!AssetDatabase.CopyAsset(SourceLiquidMaterial, RoyalLiquidMaterial))
-                throw new IOException("Could not clone BottleLiquid material.");
-            AssetDatabase.ImportAsset(RoyalLiquidMaterial, ImportAssetOptions.ForceUpdate);
-            material = AssetDatabase.LoadAssetAtPath<Material>(RoyalLiquidMaterial);
-        }
-        if (material == null)
-            throw new InvalidOperationException("Royal liquid material did not load.");
+            throw new FileNotFoundException(
+                "Canonical Royal liquid material is missing.", RoyalLiquidMaterial);
 
         material.name = "Royal Bottle Liquid";
         // Keep the proven liquid-light recipe but isolate it from the original scene.
