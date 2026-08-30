@@ -19,19 +19,70 @@ namespace LiquidSort.Levels
     {
         None,
         NoLegalMoves,
-        OrderTimedOut,
-        PresentationDesynced
+        OrderTimedOut
     }
 
     /// <summary>
-    /// Thin runtime host for the imported BartenderSort campaign. BsBoard remains the
-    /// sole gameplay authority; LiquidBottle and PourAnimator are presentation ports.
-    /// No source scene, UI, prefab, tween package, economy or menu code is required.
+    /// Detached description of one committed rule move. A later view layer can animate
+    /// these snapshots without owning or mutating the live board.
+    /// </summary>
+    public sealed class BartenderPourReceipt
+    {
+        public int Revision { get; }
+        public int Amount { get; }
+        public int ColorIndex { get; }
+        public RtGlass SourceBefore { get; }
+        public RtGlass SourceAfter { get; }
+        public RtGlass TargetBefore { get; }
+        public RtGlass TargetAfter { get; }
+
+        internal BartenderPourReceipt(int revision, PourResult result,
+                                      RtGlass sourceBefore, RtGlass sourceAfter,
+                                      RtGlass targetBefore, RtGlass targetAfter)
+        {
+            Revision = revision;
+            Amount = result.Amount;
+            ColorIndex = result.Color;
+            SourceBefore = sourceBefore;
+            SourceAfter = sourceAfter;
+            TargetBefore = targetBefore;
+            TargetAfter = targetAfter;
+        }
+    }
+
+    /// <summary>Detached data needed to present one committed delivery.</summary>
+    public sealed class BartenderDeliveryReceipt
+    {
+        public int Revision { get; }
+        public int SlotIndex { get; }
+        public RtGlass DeliveredGlass { get; }
+        public OrderDef DeliveredOrder { get; }
+        public OrderDef ReplacementOrder { get; }
+
+        internal BartenderDeliveryReceipt(int revision, int slotIndex,
+                                           RtGlass deliveredGlass,
+                                           OrderDef deliveredOrder,
+                                           OrderDef replacementOrder)
+        {
+            Revision = revision;
+            SlotIndex = slotIndex;
+            DeliveredGlass = deliveredGlass;
+            DeliveredOrder = deliveredOrder;
+            ReplacementOrder = replacementOrder;
+        }
+    }
+
+    /// <summary>
+    /// Scene-independent campaign host for the imported BartenderSort levels.
+    ///
+    /// It owns level loading, the authoritative BsBoard, rule commands, order clocks and
+    /// saved campaign progress. It deliberately does not create GameObjects, read pointer
+    /// input, lay out glasses or run animations. Final artwork can be connected later via
+    /// a small view adapter and the detached command receipts.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class BartenderLevelController : MonoBehaviour
     {
-        private const string DefaultLibraryResource = "BartenderGlassLibrary";
         private const string DefaultPaletteResource = "BsPalette";
 
         [Header("Campaign")]
@@ -40,58 +91,39 @@ namespace LiquidSort.Levels
         [SerializeField, Min(1)] private int startingLevelNumber = 1;
         [SerializeField] private string progressKey = "LiquidSort.Bartender.NextLevelSlot";
 
-        [Header("Glass mapping")]
-        [SerializeField] private BartenderGlassLibrary glassLibrary;
+        [Header("Campaign data")]
         [SerializeField] private BsPalette palette;
-
-        [Header("Scene ports")]
-        [SerializeField] private Transform glassRoot;
-        [SerializeField] private PourAnimator pourAnimator;
-        [SerializeField] private Camera boardCamera;
-
-        [Header("Runtime layout")]
-        [SerializeField] private Vector2 boardCenter = new Vector2(0f, 0.25f);
-        [SerializeField] private Vector2 glassSpacing = new Vector2(1.55f, 2.05f);
-        [SerializeField] private float pickPadding = 0.15f;
-        [SerializeField] private float selectionLift = 0.18f;
-        [SerializeField] private float selectionSpeed = 14f;
-
-        [Header("Temporary input (replaceable by final UI)")]
-        [SerializeField] private bool allowPointerInput = true;
-        [SerializeField] private bool clickMatchedGlassAgainToDeliver = true;
 
         private static List<BsLevel> cachedCampaign;
 
-        private readonly List<LiquidBottle> bottleViews = new List<LiquidBottle>();
-        private readonly Dictionary<LiquidBottle, int> idByBottle =
-            new Dictionary<LiquidBottle, int>();
-        private readonly Dictionary<int, LiquidBottle> bottleById =
-            new Dictionary<int, LiquidBottle>();
-        private readonly Dictionary<LiquidBottle, float> homeYByBottle =
-            new Dictionary<LiquidBottle, float>();
         private readonly Dictionary<OrderDef, float> orderRemaining =
             new Dictionary<OrderDef, float>(ReferenceComparer<OrderDef>.Instance);
         private readonly List<OrderDef> timerRemovalScratch = new List<OrderDef>();
-        private readonly List<Color> colorScratch = new List<Color>(LiquidBottle.MaxBands);
 
-        private Transform runtimeRoot;
-        private LiquidBottle selected;
-        private PendingPour pendingPour;
-        private int generation;
+        private BsBoard board;
+        private bool commandInProgress;
+        private bool notificationInProgress;
+        private bool hasPendingStateNotification;
+        private BartenderLevelState pendingStateNotification;
 
         public BsLevel CurrentLevel { get; private set; }
-        public BsBoard Board { get; private set; }
         public int CurrentCampaignSlot { get; private set; } = -1;
+        public int BoardRevision { get; private set; }
         public BartenderLevelState State { get; private set; } = BartenderLevelState.Unloaded;
         public BartenderFailureReason FailureReason { get; private set; }
         public int TimedOutOrderSlot { get; private set; } = -1;
-        public IReadOnlyList<LiquidBottle> BottleViews => bottleViews;
         public int CampaignCount => Campaign.Count;
+        public BsPalette Palette => palette;
 
         /// <summary>
-        /// Zero-based slot of the next unlocked level. CampaignCount is a valid sentinel
-        /// meaning that the campaign is complete; it is intentionally not clamped back
-        /// to the final playable slot.
+        /// A detached board clone. UI, tests and future presentation adapters cannot mutate
+        /// the live rule state by editing this value.
+        /// </summary>
+        public BsBoard Board => board?.Clone();
+
+        /// <summary>
+        /// Zero-based slot of the next unlocked level. CampaignCount is the sentinel that
+        /// means the campaign has been completed.
         /// </summary>
         public int NextUnlockedCampaignSlot => Mathf.Clamp(
             PlayerPrefs.GetInt(progressKey, 0), 0, Campaign.Count);
@@ -100,7 +132,8 @@ namespace LiquidSort.Levels
         public event Action BoardChanged;
         public event Action OrdersChanged;
         public event Action<BartenderLevelState> StateChanged;
-        public event Action<int, int, OrderDef> GlassDelivered;
+        public event Action<BartenderPourReceipt> Poured;
+        public event Action<BartenderDeliveryReceipt> Delivered;
 
         private static List<BsLevel> Campaign
         {
@@ -110,7 +143,13 @@ namespace LiquidSort.Levels
 
                 BsLevel[] found = Resources.LoadAll<BsLevel>("Levels");
                 cachedCampaign = new List<BsLevel>(found);
-                cachedCampaign.Sort((a, b) => a.Index.CompareTo(b.Index));
+                cachedCampaign.Sort((a, b) =>
+                {
+                    if (ReferenceEquals(a, b)) return 0;
+                    if (a == null) return 1;
+                    if (b == null) return -1;
+                    return a.Index.CompareTo(b.Index);
+                });
                 return cachedCampaign;
             }
         }
@@ -134,38 +173,17 @@ namespace LiquidSort.Levels
             LoadCampaignSlot(slot);
         }
 
-        private void OnEnable()
-        {
-            SubscribeToAnimator();
-        }
-
-        private void OnDisable()
-        {
-            UnsubscribeFromAnimator();
-            if (pourAnimator != null) pourAnimator.CancelActivePour();
-            pendingPour = default;
-            SetSelected(null);
-        }
-
-        private void OnDestroy()
-        {
-            DestroyRuntimeViews();
-        }
-
         private void Update()
         {
-            if (State != BartenderLevelState.Playing) return;
+            Tick(Time.unscaledDeltaTime);
+        }
 
-            TickOrderDeadlines(Time.unscaledDeltaTime);
-            if (State != BartenderLevelState.Playing) return;
-
-            AnimateSelection();
-            if (!allowPointerInput || pendingPour.Active
-                || (pourAnimator != null && pourAnimator.Busy)
-                || !Input.GetMouseButtonDown(0))
-                return;
-
-            HandlePointer(Input.mousePosition);
+        /// <summary>Advances order clocks; public for deterministic tests and hosts.</summary>
+        public void Tick(float unscaledDeltaTime)
+        {
+            if (MutationBlocked || State != BartenderLevelState.Playing
+                || unscaledDeltaTime <= 0f) return;
+            TickOrderDeadlines(unscaledDeltaTime);
         }
 
         public bool LoadLevelNumber(int oneBasedLevelNumber)
@@ -176,6 +194,11 @@ namespace LiquidSort.Levels
 
         public bool LoadCampaignSlot(int zeroBasedSlot)
         {
+            if (MutationBlocked)
+            {
+                Debug.LogWarning("Başka bir level işlemi sürerken level yüklenemez.", this);
+                return false;
+            }
             ResolveDependencies();
             if (zeroBasedSlot < 0 || zeroBasedSlot >= Campaign.Count)
             {
@@ -190,26 +213,29 @@ namespace LiquidSort.Levels
                 return false;
             }
 
-            unchecked { generation++; }
-            pendingPour = default;
-            if (pourAnimator != null) pourAnimator.CancelActivePour();
-            SetSelected(null);
-            DestroyRuntimeViews();
+            commandInProgress = true;
+            try
+            {
+                CurrentCampaignSlot = zeroBasedSlot;
+                CurrentLevel = level;
+                board = BsBoard.FromLevel(level);
+                BoardRevision = 0;
+                FailureReason = BartenderFailureReason.None;
+                TimedOutOrderSlot = -1;
+                ResetOrderDeadlines();
 
-            CurrentCampaignSlot = zeroBasedSlot;
-            CurrentLevel = level;
-            Board = BsBoard.FromLevel(level);
-            FailureReason = BartenderFailureReason.None;
-            TimedOutOrderSlot = -1;
-
-            SpawnRuntimeViews();
-            ResetOrderDeadlines();
-            SetState(BartenderLevelState.Playing);
-            LevelLoaded?.Invoke(level);
-            BoardChanged?.Invoke();
-            OrdersChanged?.Invoke();
-            EvaluateTerminalState();
-            return true;
+                SetState(BartenderLevelState.Playing);
+                EvaluateTerminalState();
+                InvokeSafely(LevelLoaded, level);
+                InvokeSafely(BoardChanged);
+                InvokeSafely(OrdersChanged);
+                return true;
+            }
+            finally
+            {
+                commandInProgress = false;
+                FlushPendingStateChanged();
+            }
         }
 
         public bool ReloadCurrentLevel()
@@ -219,6 +245,7 @@ namespace LiquidSort.Levels
 
         public bool LoadNextLevel()
         {
+            if (MutationBlocked) return false;
             int next = CurrentCampaignSlot + 1;
             if (next < 0) next = 0;
             if (next >= Campaign.Count)
@@ -231,140 +258,152 @@ namespace LiquidSort.Levels
 
         public void UnloadLevel()
         {
+            if (MutationBlocked) return;
             UnloadInternal(BartenderLevelState.Unloaded);
         }
 
         public bool Pause()
         {
-            if (State != BartenderLevelState.Playing || pendingPour.Active
-                || (pourAnimator != null && pourAnimator.Busy))
-                return false;
-            SetSelected(null);
+            if (MutationBlocked || State != BartenderLevelState.Playing) return false;
             SetState(BartenderLevelState.Paused);
             return true;
         }
 
         public bool Resume()
         {
-            if (State != BartenderLevelState.Paused) return false;
+            if (MutationBlocked || State != BartenderLevelState.Paused) return false;
             SetState(BartenderLevelState.Playing);
             return true;
         }
 
-        public PourResult CanPour(LiquidBottle source, LiquidBottle target)
+        public PourResult CanPour(int sourceGlassId, int targetGlassId)
         {
-            if (Board == null || !TryGetModel(source, out RtGlass sourceModel)
-                              || !TryGetModel(target, out RtGlass targetModel))
-                return PourResult.Fail("Bardak level modeline bağlı değil");
-            return Board.CanPour(sourceModel, targetModel);
+            if (board == null)
+                return PourResult.Fail("Level yüklü değil");
+            return board.CanPour(board.GlassById(sourceGlassId), board.GlassById(targetGlassId));
         }
 
-        public bool TryStartPour(LiquidBottle source, LiquidBottle target,
-                                 out string rejectionReason)
+        /// <summary>
+        /// Commits a rule move immediately. Presentation is downstream: it receives
+        /// detached before/after data and cannot delay or roll back domain state.
+        /// </summary>
+        public bool TryPour(int sourceGlassId, int targetGlassId,
+                            out BartenderPourReceipt receipt,
+                            out string rejectionReason)
         {
+            receipt = null;
             rejectionReason = null;
-            if (State != BartenderLevelState.Playing)
-            {
-                rejectionReason = "Level oynanır durumda değil";
-                return false;
-            }
+            if (!CanAcceptCommand(out rejectionReason)) return false;
 
-            if (ExpireOrderIfNeeded() || pendingPour.Active
-                || (pourAnimator != null && pourAnimator.Busy))
-            {
-                rejectionReason = "Başka bir işlem sürüyor";
-                return false;
-            }
-
-            if (!TryGetModel(source, out RtGlass sourceModel)
-                || !TryGetModel(target, out RtGlass targetModel))
-            {
-                rejectionReason = "Bardak level modeline bağlı değil";
-                return false;
-            }
-
-            PourResult rule = Board.CanPour(sourceModel, targetModel);
+            RtGlass source = board.GlassById(sourceGlassId);
+            RtGlass target = board.GlassById(targetGlassId);
+            PourResult rule = board.CanPour(source, target);
             if (!rule.Success)
             {
                 rejectionReason = rule.Reason;
                 return false;
             }
 
-            SyncBottleIfDifferent(sourceModel, source);
-            SyncBottleIfDifferent(targetModel, target);
-            float homeY = homeYByBottle.TryGetValue(source, out float cached)
-                ? cached
-                : source.transform.position.y;
-
-            if (pourAnimator == null
-                || !pourAnimator.TryStartPour(source, target, rule.Amount, homeY, false))
+            commandInProgress = true;
+            try
             {
-                rejectionReason = "Dökme animasyonu başlatılamadı";
+                RtGlass sourceBefore = source.Clone();
+                RtGlass targetBefore = target.Clone();
+                PourResult committed = board.Pour(source, target);
+                if (!committed.Success)
+                {
+                    rejectionReason = committed.Reason;
+                    return false;
+                }
+
+                BoardRevision++;
+                receipt = new BartenderPourReceipt(
+                    BoardRevision, committed, sourceBefore, source.Clone(),
+                    targetBefore, target.Clone());
+
+                // Settle all domain invariants before calling code owned by a future view.
+                EvaluateTerminalState();
+                InvokeSafely(Poured, receipt);
+                InvokeSafely(BoardChanged);
+                return true;
+            }
+            finally
+            {
+                commandInProgress = false;
+                FlushPendingStateChanged();
+            }
+        }
+
+        public int MatchedOrderSlot(int glassId)
+        {
+            return board == null ? -1 : board.MatchedSlot(board.GlassById(glassId));
+        }
+
+        public bool TryDeliver(int glassId, out BartenderDeliveryReceipt receipt,
+                               out string rejectionReason)
+        {
+            receipt = null;
+            rejectionReason = null;
+            if (!CanAcceptCommand(out rejectionReason)) return false;
+
+            RtGlass glass = board.GlassById(glassId);
+            if (glass == null)
+            {
+                rejectionReason = "Bardak bu levelda yok";
                 return false;
             }
 
-            pendingPour = new PendingPour
+            int matchedSlot = board.MatchedSlot(glass);
+            if (matchedSlot < 0)
             {
-                Active = true,
-                Generation = generation,
-                OperationId = pourAnimator.ActiveOperationId,
-                SourceId = sourceModel.Id,
-                TargetId = targetModel.Id,
-                ExpectedAmount = rule.Amount,
-                ExpectedColor = rule.Color
-            };
-            SetSelected(null);
-            return true;
-        }
-
-        public int MatchedOrderSlot(LiquidBottle bottle)
-        {
-            return Board != null && TryGetModel(bottle, out RtGlass model)
-                ? Board.MatchedSlot(model)
-                : -1;
-        }
-
-        public bool TryDeliver(LiquidBottle bottle, out int slotIndex)
-        {
-            slotIndex = -1;
-            if (State != BartenderLevelState.Playing || ExpireOrderIfNeeded()
-                || pendingPour.Active || (pourAnimator != null && pourAnimator.Busy)
-                || !TryGetModel(bottle, out RtGlass model))
+                rejectionReason = "Bardak açık bir siparişi karşılamıyor";
                 return false;
+            }
 
-            int matched = Board.MatchedSlot(model);
-            if (matched < 0) return false;
-            OrderDef deliveredOrder = Board.Slots[matched];
-            int deliveredGlassId = model.Id;
-            if (!Board.Deliver(model, out slotIndex)) return false;
+            commandInProgress = true;
+            try
+            {
+                RtGlass deliveredGlass = glass.Clone();
+                OrderDef deliveredOrder = LiveOrderAtSlot(matchedSlot)?.Clone();
+                if (!board.Deliver(glass, out int committedSlot) || committedSlot != matchedSlot)
+                {
+                    rejectionReason = "Teslim kuralı işlemi reddetti";
+                    return false;
+                }
 
-            idByBottle.Remove(bottle);
-            bottleById.Remove(deliveredGlassId);
-            homeYByBottle.Remove(bottle);
-            bottle.gameObject.SetActive(false);
-            if (selected == bottle) selected = null;
+                BoardRevision++;
+                RefreshOrderDeadlinesAfterDelivery();
+                receipt = new BartenderDeliveryReceipt(
+                    BoardRevision, committedSlot, deliveredGlass, deliveredOrder,
+                    LiveOrderAtSlot(committedSlot)?.Clone());
 
-            RefreshOrderDeadlinesAfterDelivery();
-            SyncAllViews();
-            GlassDelivered?.Invoke(deliveredGlassId, slotIndex, deliveredOrder);
-            BoardChanged?.Invoke();
-            OrdersChanged?.Invoke();
-            EvaluateTerminalState();
-            return true;
+                EvaluateTerminalState();
+                InvokeSafely(Delivered, receipt);
+                InvokeSafely(BoardChanged);
+                InvokeSafely(OrdersChanged);
+                return true;
+            }
+            finally
+            {
+                commandInProgress = false;
+                FlushPendingStateChanged();
+            }
+        }
+
+        public RtGlass GlassById(int glassId)
+        {
+            return board?.GlassById(glassId)?.Clone();
         }
 
         public OrderDef OrderAtSlot(int slotIndex)
         {
-            return Board != null && Board.Slots != null
-                && slotIndex >= 0 && slotIndex < Board.Slots.Length
-                ? Board.Slots[slotIndex]
-                : null;
+            return LiveOrderAtSlot(slotIndex)?.Clone();
         }
 
         public bool TryGetOrderTimeRemaining(int slotIndex, out float remaining,
                                              out float duration)
         {
-            OrderDef order = OrderAtSlot(slotIndex);
+            OrderDef order = LiveOrderAtSlot(slotIndex);
             duration = order != null ? order.TimeLimit : 0f;
             if (order != null && orderRemaining.TryGetValue(order, out remaining))
                 return true;
@@ -374,14 +413,10 @@ namespace LiquidSort.Levels
 
         public bool TryValidateLevel(BsLevel level, out string error)
         {
+            ResolveDependencies();
             if (level == null)
             {
                 error = "Level asseti boş.";
-                return false;
-            }
-            if (glassLibrary == null)
-            {
-                error = "BartenderGlassLibrary bulunamadı.";
                 return false;
             }
             if (palette == null || palette.Count == 0)
@@ -389,17 +424,11 @@ namespace LiquidSort.Levels
                 error = "BsPalette bulunamadı veya boş.";
                 return false;
             }
-
-            for (int i = 0; i < palette.Count; i++)
+            if (level.ColumnsPerRow <= 0 || level.OrderSlots <= 0)
             {
-                for (int j = i + 1; j < palette.Count; j++)
-                {
-                    if (!LiquidBottle.Same(palette.ColorAt(i), palette.ColorAt(j))) continue;
-                    error = $"Palet renkleri {i} ve {j}, LiquidBottle için ayırt edilemiyor.";
-                    return false;
-                }
+                error = "Sütun veya sipariş slotu sayısı geçersiz.";
+                return false;
             }
-
             if (level.Glasses == null || level.Glasses.Count == 0)
             {
                 error = "Levelda bardak yok.";
@@ -409,12 +438,16 @@ namespace LiquidSort.Levels
             for (int i = 0; i < level.Glasses.Count; i++)
             {
                 GlassDef glass = level.Glasses[i];
-                if (glass == null)
+                if (glass == null || glass.Layers == null)
                 {
-                    error = $"Bardak {i} boş.";
+                    error = $"Bardak {i} boş veya katman listesi yok.";
                     return false;
                 }
-                if (!glassLibrary.TryValidate(glass.Type, out error)) return false;
+                if (!IsKnownGlassType(glass.Type))
+                {
+                    error = $"Bardak {i}: tip değeri {(int)glass.Type} geçersiz.";
+                    return false;
+                }
                 if (glass.Layers.Count > glass.Capacity)
                 {
                     error = $"Bardak {i}, kapasitesinden fazla katman taşıyor.";
@@ -438,12 +471,16 @@ namespace LiquidSort.Levels
             for (int i = 0; i < level.Orders.Count; i++)
             {
                 OrderDef order = level.Orders[i];
-                if (order == null)
+                if (order == null || order.Contents == null)
                 {
-                    error = $"Sipariş {i} boş.";
+                    error = $"Sipariş {i} boş veya içerik listesi yok.";
                     return false;
                 }
-                if (!glassLibrary.TryValidate(order.Glass, out error)) return false;
+                if (!IsKnownGlassType(order.Glass))
+                {
+                    error = $"Sipariş {i}: bardak tip değeri {(int)order.Glass} geçersiz.";
+                    return false;
+                }
                 if (order.Contents.Count != order.Capacity)
                 {
                     error = $"Sipariş {i}, {order.Capacity} yerine "
@@ -465,243 +502,37 @@ namespace LiquidSort.Levels
 
         private void ResolveDependencies()
         {
-            if (glassLibrary == null)
-                glassLibrary = Resources.Load<BartenderGlassLibrary>(DefaultLibraryResource);
             if (palette == null)
                 palette = Resources.Load<BsPalette>(DefaultPaletteResource);
-            if (boardCamera == null) boardCamera = Camera.main;
-            if (pourAnimator == null) pourAnimator = GetComponent<PourAnimator>();
-            if (pourAnimator == null) pourAnimator = gameObject.AddComponent<PourAnimator>();
-            SubscribeToAnimator();
         }
 
-        private void SubscribeToAnimator()
+        private static bool IsKnownGlassType(GlassType type)
         {
-            if (pourAnimator == null) return;
-            pourAnimator.PourFinished -= HandlePourFinished;
-            pourAnimator.PourFinished += HandlePourFinished;
+            int index = (int)type;
+            return index >= 0 && index < BsRules.CapacityTable.Length;
         }
 
-        private void UnsubscribeFromAnimator()
+        private bool MutationBlocked => commandInProgress || notificationInProgress;
+
+        private bool CanAcceptCommand(out string reason)
         {
-            if (pourAnimator != null) pourAnimator.PourFinished -= HandlePourFinished;
-        }
-
-        private void SpawnRuntimeViews()
-        {
-            var rootObject = new GameObject("Runtime Level Glasses");
-            runtimeRoot = rootObject.transform;
-            runtimeRoot.SetParent(glassRoot != null ? glassRoot : transform, false);
-
-            int count = Board.Glasses.Count;
-            int columns = Mathf.Max(1, CurrentLevel.ColumnsPerRow);
-            for (int i = 0; i < count; i++)
+            if (MutationBlocked)
             {
-                RtGlass model = Board.Glasses[i];
-                glassLibrary.TryGet(model.Type, out VesselProfile profile, out float scale);
-
-                var glassObject = new GameObject($"Glass_{model.Id:00}_{model.Type}");
-                glassObject.transform.SetParent(runtimeRoot, false);
-                glassObject.transform.localPosition = LayoutPosition(i, count, columns);
-                glassObject.transform.localScale = Vector3.one * scale;
-
-                var bottle = glassObject.AddComponent<LiquidBottle>();
-                bottle.profile = profile;
-                bottle.capacity = model.Capacity;
-                bottle.sortingOrder = 1;
-                bottle.Invalidate();
-
-                var shell = glassObject.AddComponent<BottleShell>();
-                shell.backOverride = profile.back;
-                shell.drawNeck = false;
-                shell.restyleLine = glassLibrary.RestyleLine;
-                shell.theme = glassLibrary.Theme;
-
-                bottleViews.Add(bottle);
-                idByBottle.Add(bottle, model.Id);
-                bottleById.Add(model.Id, bottle);
-                homeYByBottle.Add(bottle, glassObject.transform.position.y);
-                SyncBottleIfDifferent(model, bottle);
-                bottle.Refresh();
-                shell.Build();
+                reason = "Başka bir level komutu işleniyor";
+                return false;
             }
-        }
-
-        private Vector3 LayoutPosition(int index, int total, int columns)
-        {
-            int row = index / columns;
-            int column = index % columns;
-            int firstInRow = row * columns;
-            int rowCount = Mathf.Min(columns, total - firstInRow);
-            float centeredColumn = column - (rowCount - 1) * 0.5f;
-            return new Vector3(
-                boardCenter.x + centeredColumn * glassSpacing.x,
-                boardCenter.y - row * glassSpacing.y,
-                0f);
-        }
-
-        private void HandlePointer(Vector3 screenPoint)
-        {
-            LiquidBottle hit = Pick(screenPoint);
-            if (hit == null)
+            if (State != BartenderLevelState.Playing || board == null)
             {
-                SetSelected(null);
-                return;
+                reason = "Level oynanır durumda değil";
+                return false;
             }
-
-            if (selected == null)
+            if (ExpireOrderIfNeeded())
             {
-                if (!hit.IsEmpty) SetSelected(hit);
-                return;
+                reason = "Sipariş süresi doldu";
+                return false;
             }
-
-            if (hit == selected)
-            {
-                if (clickMatchedGlassAgainToDeliver && TryDeliver(hit, out _)) return;
-                SetSelected(null);
-                return;
-            }
-
-            LiquidBottle source = selected;
-            if (TryStartPour(source, hit, out _)) return;
-            SetSelected(hit.IsEmpty ? null : hit);
-        }
-
-        private LiquidBottle Pick(Vector3 screenPoint)
-        {
-            if (boardCamera == null) return null;
-            Vector3 world = boardCamera.ScreenToWorldPoint(screenPoint);
-            LiquidBottle best = null;
-            float bestDistance = float.MaxValue;
-
-            for (int i = 0; i < bottleViews.Count; i++)
-            {
-                LiquidBottle bottle = bottleViews[i];
-                if (bottle == null || !bottle.gameObject.activeInHierarchy) continue;
-                Vector3 local = bottle.transform.InverseTransformPoint(
-                    new Vector3(world.x, world.y, bottle.transform.position.z));
-                Rect bounds = bottle.InteriorBounds;
-                if (local.x < bounds.xMin - pickPadding || local.x > bounds.xMax + pickPadding
-                    || local.y < bounds.yMin - pickPadding || local.y > bounds.yMax + pickPadding)
-                    continue;
-
-                float distance = Mathf.Abs(local.x - bounds.center.x);
-                if (distance >= bestDistance) continue;
-                bestDistance = distance;
-                best = bottle;
-            }
-            return best;
-        }
-
-        private void AnimateSelection()
-        {
-            float follow = 1f - Mathf.Exp(-selectionSpeed * Time.unscaledDeltaTime);
-            for (int i = 0; i < bottleViews.Count; i++)
-            {
-                LiquidBottle bottle = bottleViews[i];
-                if (bottle == null || !bottle.gameObject.activeSelf
-                    || !homeYByBottle.TryGetValue(bottle, out float home))
-                    continue;
-                bool isSelected = bottle == selected;
-                Vector3 position = bottle.transform.position;
-                position.y = Mathf.Lerp(position.y,
-                    isSelected ? home + selectionLift : home, follow);
-                bottle.transform.position = position;
-                BottleShell shell = bottle.GetComponent<BottleShell>();
-                if (shell != null)
-                    shell.highlight = Mathf.Lerp(shell.highlight, isSelected ? 1f : 0f, follow);
-            }
-        }
-
-        private void SetSelected(LiquidBottle next)
-        {
-            if (selected != null && homeYByBottle.TryGetValue(selected, out float oldHome))
-            {
-                Vector3 oldPosition = selected.transform.position;
-                oldPosition.y = oldHome;
-                selected.transform.position = oldPosition;
-                BottleShell oldShell = selected.GetComponent<BottleShell>();
-                if (oldShell != null) oldShell.highlight = 0f;
-            }
-            selected = next;
-        }
-
-        private void HandlePourFinished(int operationId, PourOutcome outcome)
-        {
-            if (!pendingPour.Active || pendingPour.OperationId != operationId) return;
-            PendingPour completed = pendingPour;
-            pendingPour = default;
-            if (completed.Generation != generation || Board == null) return;
-
-            RtGlass source = Board.GlassById(completed.SourceId);
-            RtGlass target = Board.GlassById(completed.TargetId);
-            if (outcome != PourOutcome.Completed)
-            {
-                SyncAllViews();
-                return;
-            }
-
-            PourResult result = Board.Pour(source, target);
-            if (!result.Success || result.Amount != completed.ExpectedAmount
-                || result.Color != completed.ExpectedColor)
-            {
-                Debug.LogError("Dökme sunumu ile BsBoard modeli ayrıştı; level durduruldu.", this);
-                SyncAllViews();
-                Fail(BartenderFailureReason.PresentationDesynced, -1);
-                return;
-            }
-
-            if (bottleById.TryGetValue(source.Id, out LiquidBottle sourceView))
-                SyncBottleIfDifferent(source, sourceView);
-            if (bottleById.TryGetValue(target.Id, out LiquidBottle targetView))
-                SyncBottleIfDifferent(target, targetView);
-            BoardChanged?.Invoke();
-            EvaluateTerminalState();
-        }
-
-        private void SyncAllViews()
-        {
-            if (Board == null) return;
-            for (int i = 0; i < Board.Glasses.Count; i++)
-            {
-                RtGlass model = Board.Glasses[i];
-                if (bottleById.TryGetValue(model.Id, out LiquidBottle view))
-                    SyncBottleIfDifferent(model, view);
-            }
-        }
-
-        private void SyncBottleIfDifferent(RtGlass model, LiquidBottle view)
-        {
-            if (model == null || view == null) return;
-            colorScratch.Clear();
-            for (int i = 0; i < model.Layers.Count; i++)
-            {
-                Layer layer = model.Layers[i];
-                colorScratch.Add(layer.Hidden
-                    ? glassLibrary.HiddenLayerColor
-                    : palette.ColorAt(layer.Color));
-            }
-
-            bool same = view.capacity == model.Capacity && view.UnitCount == colorScratch.Count;
-            if (same)
-            {
-                for (int i = 0; i < colorScratch.Count; i++)
-                {
-                    if (LiquidBottle.Same(view.Units[i], colorScratch[i])) continue;
-                    same = false;
-                    break;
-                }
-            }
-
-            view.capacity = model.Capacity;
-            if (!same) view.SetUnits(colorScratch);
-        }
-
-        private bool TryGetModel(LiquidBottle bottle, out RtGlass model)
-        {
-            model = null;
-            return bottle != null && idByBottle.TryGetValue(bottle, out int id)
-                && Board != null && (model = Board.GlassById(id)) != null;
+            reason = null;
+            return true;
         }
 
         private void ResetOrderDeadlines()
@@ -712,7 +543,7 @@ namespace LiquidSort.Levels
 
         private void RefreshOrderDeadlinesAfterDelivery()
         {
-            if (Board == null || Board.Slots == null)
+            if (board == null || board.Slots == null)
             {
                 orderRemaining.Clear();
                 return;
@@ -721,16 +552,16 @@ namespace LiquidSort.Levels
             timerRemovalScratch.Clear();
             foreach (KeyValuePair<OrderDef, float> pair in orderRemaining)
             {
-                if (!ContainsOrderReference(Board.Slots, pair.Key))
+                if (!ContainsOrderReference(board.Slots, pair.Key))
                     timerRemovalScratch.Add(pair.Key);
             }
             for (int i = 0; i < timerRemovalScratch.Count; i++)
                 orderRemaining.Remove(timerRemovalScratch[i]);
 
-            if (!Board.TimedOrdersEnabled) return;
-            for (int i = 0; i < Board.Slots.Length; i++)
+            if (!board.TimedOrdersEnabled) return;
+            for (int i = 0; i < board.Slots.Length; i++)
             {
-                OrderDef order = Board.Slots[i];
+                OrderDef order = board.Slots[i];
                 if (order == null || order.TimeLimit <= 0f || orderRemaining.ContainsKey(order))
                     continue;
                 orderRemaining.Add(order, order.TimeLimit);
@@ -739,10 +570,10 @@ namespace LiquidSort.Levels
 
         private void TickOrderDeadlines(float delta)
         {
-            if (Board == null || !Board.TimedOrdersEnabled || delta <= 0f) return;
-            for (int slot = 0; slot < Board.Slots.Length; slot++)
+            if (board == null || !board.TimedOrdersEnabled) return;
+            for (int slot = 0; slot < board.Slots.Length; slot++)
             {
-                OrderDef order = Board.Slots[slot];
+                OrderDef order = board.Slots[slot];
                 if (order == null || !orderRemaining.TryGetValue(order, out float remaining))
                     continue;
                 remaining -= delta;
@@ -755,10 +586,10 @@ namespace LiquidSort.Levels
 
         private bool ExpireOrderIfNeeded()
         {
-            if (Board == null || !Board.TimedOrdersEnabled) return false;
-            for (int slot = 0; slot < Board.Slots.Length; slot++)
+            if (board == null || !board.TimedOrdersEnabled) return false;
+            for (int slot = 0; slot < board.Slots.Length; slot++)
             {
-                OrderDef order = Board.Slots[slot];
+                OrderDef order = board.Slots[slot];
                 if (order != null && orderRemaining.TryGetValue(order, out float remaining)
                                   && remaining <= 0f)
                 {
@@ -771,16 +602,15 @@ namespace LiquidSort.Levels
 
         private void EvaluateTerminalState()
         {
-            if (State != BartenderLevelState.Playing || Board == null) return;
-            if (Board.IsWin())
+            if (State != BartenderLevelState.Playing || board == null) return;
+            if (board.IsWin())
             {
                 int unlocked = Mathf.Max(NextUnlockedCampaignSlot, CurrentCampaignSlot + 1);
                 PlayerPrefs.SetInt(progressKey, Mathf.Min(unlocked, Campaign.Count));
                 PlayerPrefs.Save();
-                SetSelected(null);
                 SetState(BartenderLevelState.Won);
             }
-            else if (Board.IsFail())
+            else if (board.IsFail())
             {
                 Fail(BartenderFailureReason.NoLegalMoves, -1);
             }
@@ -789,16 +619,8 @@ namespace LiquidSort.Levels
         private void Fail(BartenderFailureReason reason, int timedOutSlot)
         {
             if (State != BartenderLevelState.Playing) return;
-
-            // A deadline may expire while the presentation is still animating a move.
-            // Invalidate the transaction before cancelling: CancelActivePour notifies its
-            // listeners synchronously, and a stale completion must never mutate a failed board.
-            pendingPour = default;
-            if (pourAnimator != null) pourAnimator.CancelActivePour();
-
             FailureReason = reason;
             TimedOutOrderSlot = timedOutSlot;
-            SetSelected(null);
             SetState(BartenderLevelState.Failed);
         }
 
@@ -806,41 +628,41 @@ namespace LiquidSort.Levels
         {
             if (State == next) return;
             State = next;
-            StateChanged?.Invoke(next);
+            if (commandInProgress)
+            {
+                pendingStateNotification = next;
+                hasPendingStateNotification = true;
+                return;
+            }
+            InvokeSafely(StateChanged, next);
+        }
+
+        private void FlushPendingStateChanged()
+        {
+            if (!hasPendingStateNotification) return;
+            BartenderLevelState pending = pendingStateNotification;
+            hasPendingStateNotification = false;
+            InvokeSafely(StateChanged, pending);
         }
 
         private void UnloadInternal(BartenderLevelState finalState)
         {
-            unchecked { generation++; }
-            pendingPour = default;
-            if (pourAnimator != null) pourAnimator.CancelActivePour();
-            SetSelected(null);
-            DestroyRuntimeViews();
-            Board = null;
+            board = null;
             CurrentLevel = null;
             CurrentCampaignSlot = -1;
+            BoardRevision = 0;
             orderRemaining.Clear();
             FailureReason = BartenderFailureReason.None;
             TimedOutOrderSlot = -1;
             SetState(finalState);
         }
 
-        private void DestroyRuntimeViews()
+        private OrderDef LiveOrderAtSlot(int slotIndex)
         {
-            bottleViews.Clear();
-            idByBottle.Clear();
-            bottleById.Clear();
-            homeYByBottle.Clear();
-            if (runtimeRoot == null) return;
-            if (Application.isPlaying)
-            {
-                // Destroy is deferred until end-of-frame; hide the old hierarchy now so a
-                // same-frame reload cannot briefly overlap it with the newly spawned level.
-                runtimeRoot.gameObject.SetActive(false);
-                Destroy(runtimeRoot.gameObject);
-            }
-            else DestroyImmediate(runtimeRoot.gameObject);
-            runtimeRoot = null;
+            return board != null && board.Slots != null
+                && slotIndex >= 0 && slotIndex < board.Slots.Length
+                ? board.Slots[slotIndex]
+                : null;
         }
 
         private int FindCampaignSlot(int oneBasedLevelNumber)
@@ -858,22 +680,52 @@ namespace LiquidSort.Levels
             return false;
         }
 
-        private struct PendingPour
+        private void InvokeSafely(Action handlers)
         {
-            public bool Active;
-            public int Generation;
-            public int OperationId;
-            public int SourceId;
-            public int TargetId;
-            public int ExpectedAmount;
-            public int ExpectedColor;
+            if (handlers == null) return;
+            Delegate[] invocationList = handlers.GetInvocationList();
+            bool previousNotificationState = notificationInProgress;
+            notificationInProgress = true;
+            try
+            {
+                for (int i = 0; i < invocationList.Length; i++)
+                {
+                    try { ((Action)invocationList[i])(); }
+                    catch (Exception exception) { Debug.LogException(exception, this); }
+                }
+            }
+            finally
+            {
+                notificationInProgress = previousNotificationState;
+            }
+        }
+
+        private void InvokeSafely<T>(Action<T> handlers, T value)
+        {
+            if (handlers == null) return;
+            Delegate[] invocationList = handlers.GetInvocationList();
+            bool previousNotificationState = notificationInProgress;
+            notificationInProgress = true;
+            try
+            {
+                for (int i = 0; i < invocationList.Length; i++)
+                {
+                    try { ((Action<T>)invocationList[i])(value); }
+                    catch (Exception exception) { Debug.LogException(exception, this); }
+                }
+            }
+            finally
+            {
+                notificationInProgress = previousNotificationState;
+            }
         }
 
         private sealed class ReferenceComparer<T> : IEqualityComparer<T> where T : class
         {
             public static readonly ReferenceComparer<T> Instance = new ReferenceComparer<T>();
             public bool Equals(T x, T y) => ReferenceEquals(x, y);
-            public int GetHashCode(T obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+            public int GetHashCode(T obj) =>
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
         }
     }
 }
