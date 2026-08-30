@@ -1,0 +1,365 @@
+using UnityEngine;
+
+namespace LiquidSort.Levels
+{
+    /// <summary>
+    /// Keeps one hand-authored, world-space portrait composition inside the device safe
+    /// area without changing the camera. The camera can therefore continue to render a
+    /// full-screen background while the complete gameplay hierarchy is uniformly scaled
+    /// and centred as one indivisible 720x1280 design.
+    ///
+    /// This component deliberately never searches for or creates scene objects. Both the
+    /// camera and the composition root must be assigned explicitly in the Inspector.
+    /// </summary>
+    [ExecuteAlways]
+    [DisallowMultipleComponent]
+    [DefaultExecutionOrder(10000)]
+    public sealed class WorldSpaceSafeAreaFitter : MonoBehaviour
+    {
+        [Header("Required scene references")]
+        [Tooltip("The orthographic camera that renders the portrait game. Its viewport, "
+               + "orthographic size and transform are never modified by this component.")]
+        [SerializeField] private Camera targetCamera;
+
+        [Tooltip("The single world-space parent containing every foreground gameplay "
+               + "element that must keep the authored composition.")]
+        [SerializeField] private Transform compositionRoot;
+
+        [Header("Reference composition")]
+        [Tooltip("Resolution at which the composition was authored. 720x1280 is the "
+               + "project's canonical portrait framing.")]
+        [SerializeField] private Vector2Int referenceResolution = new Vector2Int(720, 1280);
+
+        [Tooltip("Orthographic size used while the reference pose was authored. Capture "
+               + "Reference Pose stores the assigned camera's current value here.")]
+        [SerializeField, Min(0.01f)] private float referenceOrthographicSize = 6f;
+
+        [Tooltip("Use Screen.safeArea. Disable only for controlled screenshots that need "
+               + "the entire camera viewport.")]
+        [SerializeField] private bool respectSafeArea = true;
+
+        [Tooltip("Apply while Unity is not in Play Mode, so Game View device/aspect changes "
+               + "can be inspected without entering the game.")]
+        [SerializeField] private bool previewInEditMode = true;
+
+        [Tooltip("Draw the resolved safe-area rectangle at the composition depth while "
+               + "this object is selected.")]
+        [SerializeField] private bool drawSafeAreaGizmo = true;
+
+        [Header("Validation")]
+        [Tooltip("Emit a single error when required references or camera settings are invalid.")]
+        [SerializeField] private bool logConfigurationErrors = true;
+
+        // The reference is camera-relative so the screen composition remains stable even
+        // if the camera rig itself is repositioned. Scale remains local so any deliberate
+        // hierarchy scale above the composition root is preserved.
+        [SerializeField, HideInInspector] private bool referencePoseCaptured;
+        [SerializeField, HideInInspector] private Vector3 referenceCameraLocalPosition;
+        [SerializeField, HideInInspector] private Quaternion referenceCameraRelativeRotation =
+            Quaternion.identity;
+        [SerializeField, HideInInspector] private Vector3 referenceLocalScale = Vector3.one;
+
+        private string lastLoggedError;
+        private Rect appliedSafeAreaPixels;
+        private Rect appliedSafeAreaViewport;
+        private float appliedUniformScale = 1f;
+        private Vector3 appliedWorldPosition;
+        private string status = "Not applied";
+
+        public Camera TargetCamera => targetCamera;
+        public Transform CompositionRoot => compositionRoot;
+        public Vector2Int ReferenceResolution => referenceResolution;
+        public float ReferenceOrthographicSize => referenceOrthographicSize;
+        public bool RespectSafeArea => respectSafeArea;
+        public bool ReferencePoseCaptured => referencePoseCaptured;
+
+        /// <summary>Safe area actually used, in physical screen pixels.</summary>
+        public Rect AppliedSafeAreaPixels => appliedSafeAreaPixels;
+
+        /// <summary>Safe area normalized inside the assigned camera's pixel rect.</summary>
+        public Rect AppliedSafeAreaViewport => appliedSafeAreaViewport;
+
+        /// <summary>Multiplier currently applied on top of the authored root scale.</summary>
+        public float AppliedUniformScale => appliedUniformScale;
+
+        public Vector3 AppliedWorldPosition => appliedWorldPosition;
+        public string Status => status;
+        public bool IsConfigured => ValidateConfiguration(out _);
+
+        private void OnEnable()
+        {
+            ApplyNow();
+        }
+
+        private void LateUpdate()
+        {
+            if (Application.isPlaying || previewInEditMode)
+                ApplyNow();
+        }
+
+        private void OnValidate()
+        {
+            referenceResolution.x = Mathf.Max(1, referenceResolution.x);
+            referenceResolution.y = Mathf.Max(1, referenceResolution.y);
+            referenceOrthographicSize = Mathf.Max(0.01f, referenceOrthographicSize);
+
+            if (!isActiveAndEnabled)
+                return;
+
+            ApplyNow();
+        }
+
+        /// <summary>
+        /// Captures the current root pose as the canonical pose. Invoke this once while the
+        /// Game View is 720x1280 and the composition visually matches the approved design.
+        /// </summary>
+        [ContextMenu("Capture Current Pose As Reference")]
+        public void CaptureCurrentPoseAsReference()
+        {
+            if (targetCamera == null || compositionRoot == null)
+            {
+                ReportError("Assign Target Camera and Composition Root before capturing the reference pose.");
+                return;
+            }
+
+            if (!targetCamera.orthographic)
+            {
+                ReportError("WorldSpaceSafeAreaFitter requires an orthographic camera.");
+                return;
+            }
+
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+                UnityEditor.Undo.RecordObject(this, "Capture Safe Area Reference Pose");
+#endif
+
+            referenceCameraLocalPosition =
+                targetCamera.transform.InverseTransformPoint(compositionRoot.position);
+            referenceCameraRelativeRotation =
+                Quaternion.Inverse(targetCamera.transform.rotation) * compositionRoot.rotation;
+            referenceLocalScale = compositionRoot.localScale;
+            referenceOrthographicSize = Mathf.Max(0.01f, targetCamera.orthographicSize);
+            referencePoseCaptured = true;
+            lastLoggedError = null;
+
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+                UnityEditor.EditorUtility.SetDirty(this);
+#endif
+
+            ApplyNow();
+        }
+
+        /// <summary>
+        /// Clears the stored baseline. The next valid Apply captures the root's then-current
+        /// pose. This is useful when the hand-authored composition itself is revised.
+        /// </summary>
+        [ContextMenu("Recapture Reference On Next Apply")]
+        public void RecaptureReferenceOnNextApply()
+        {
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+                UnityEditor.Undo.RecordObject(this, "Reset Safe Area Reference Pose");
+#endif
+
+            referencePoseCaptured = false;
+            ApplyNow();
+
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+                UnityEditor.EditorUtility.SetDirty(this);
+#endif
+        }
+
+        /// <summary>
+        /// Resolves and applies the layout immediately. Safe to call from edit tooling,
+        /// tests, resolution-change handlers or regular gameplay code.
+        /// </summary>
+        [ContextMenu("Apply Safe Area Layout Now")]
+        public bool ApplyNow()
+        {
+            if (!ValidateConfiguration(out string error))
+            {
+                ReportError(error);
+                return false;
+            }
+
+            CaptureReferencePoseIfRequired();
+
+            Rect cameraPixels = targetCamera.pixelRect;
+            if (cameraPixels.width <= 0f || cameraPixels.height <= 0f)
+            {
+                // Game View / Device Simulator changes report a transient 0x0 pixel rect
+                // while the new render target is being created. This is not a broken
+                // binding; simply keep the last valid pose and retry on the next frame.
+                status = "Waiting for a valid camera pixel rect";
+                return false;
+            }
+
+            Rect screenPixels = new Rect(0f, 0f, Screen.width, Screen.height);
+            Rect requestedSafeArea = respectSafeArea ? Screen.safeArea : screenPixels;
+            Rect usablePixels = Intersect(cameraPixels, requestedSafeArea);
+
+            // Device Simulator and the first editor frame can briefly report an empty safe
+            // area. Falling back to the camera rect keeps the composition deterministic.
+            if (usablePixels.width <= 0f || usablePixels.height <= 0f)
+                usablePixels = cameraPixels;
+
+            float cameraWorldHeight = 2f * targetCamera.orthographicSize;
+            float cameraWorldWidth = cameraWorldHeight * targetCamera.aspect;
+            float safeWorldWidth = cameraWorldWidth * (usablePixels.width / cameraPixels.width);
+            float safeWorldHeight = cameraWorldHeight * (usablePixels.height / cameraPixels.height);
+
+            float referenceWorldHeight = 2f * referenceOrthographicSize;
+            float referenceAspect = (float)referenceResolution.x / referenceResolution.y;
+            float referenceWorldWidth = referenceWorldHeight * referenceAspect;
+
+            float widthScale = safeWorldWidth / referenceWorldWidth;
+            float heightScale = safeWorldHeight / referenceWorldHeight;
+            float uniformScale = Mathf.Max(0.0001f, Mathf.Min(widthScale, heightScale));
+
+            float safeCentreViewportX =
+                (usablePixels.center.x - cameraPixels.xMin) / cameraPixels.width;
+            float safeCentreViewportY =
+                (usablePixels.center.y - cameraPixels.yMin) / cameraPixels.height;
+
+            Vector3 cameraLocalPosition = referenceCameraLocalPosition;
+            cameraLocalPosition.x += (safeCentreViewportX - 0.5f) * cameraWorldWidth;
+            cameraLocalPosition.y += (safeCentreViewportY - 0.5f) * cameraWorldHeight;
+
+            Vector3 targetWorldPosition =
+                targetCamera.transform.TransformPoint(cameraLocalPosition);
+            Quaternion targetWorldRotation =
+                targetCamera.transform.rotation * referenceCameraRelativeRotation;
+            Vector3 targetLocalScale = referenceLocalScale * uniformScale;
+
+            // Assigning the absolute reference-derived values prevents rounding drift and
+            // avoids multiplying the previous frame's scale again.
+            compositionRoot.SetPositionAndRotation(targetWorldPosition, targetWorldRotation);
+            compositionRoot.localScale = targetLocalScale;
+
+            appliedSafeAreaPixels = usablePixels;
+            appliedSafeAreaViewport = new Rect(
+                (usablePixels.xMin - cameraPixels.xMin) / cameraPixels.width,
+                (usablePixels.yMin - cameraPixels.yMin) / cameraPixels.height,
+                usablePixels.width / cameraPixels.width,
+                usablePixels.height / cameraPixels.height);
+            appliedUniformScale = uniformScale;
+            appliedWorldPosition = targetWorldPosition;
+            status = $"Applied {uniformScale:0.###}x inside "
+                   + $"{usablePixels.width:0}x{usablePixels.height:0} safe area";
+            lastLoggedError = null;
+            return true;
+        }
+
+        private bool ValidateConfiguration(out string error)
+        {
+            if (targetCamera == null)
+            {
+                error = "Target Camera is not assigned.";
+                return false;
+            }
+
+            if (compositionRoot == null)
+            {
+                error = "Composition Root is not assigned.";
+                return false;
+            }
+
+            if (!targetCamera.orthographic)
+            {
+                error = "Target Camera must be orthographic.";
+                return false;
+            }
+
+            if (compositionRoot == targetCamera.transform
+                || targetCamera.transform.IsChildOf(compositionRoot))
+            {
+                error = "Composition Root cannot contain the Target Camera; the camera "
+                      + "must remain a separate full-screen background camera.";
+                return false;
+            }
+
+            if (referenceResolution.x <= 0 || referenceResolution.y <= 0)
+            {
+                error = "Reference Resolution must contain positive dimensions.";
+                return false;
+            }
+
+            if (referenceOrthographicSize <= 0f)
+            {
+                error = "Reference Orthographic Size must be positive.";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        private void CaptureReferencePoseIfRequired()
+        {
+            if (referencePoseCaptured)
+                return;
+
+            referenceCameraLocalPosition =
+                targetCamera.transform.InverseTransformPoint(compositionRoot.position);
+            referenceCameraRelativeRotation =
+                Quaternion.Inverse(targetCamera.transform.rotation) * compositionRoot.rotation;
+            referenceLocalScale = compositionRoot.localScale;
+            referenceOrthographicSize = Mathf.Max(0.01f, targetCamera.orthographicSize);
+            referencePoseCaptured = true;
+
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+                UnityEditor.EditorUtility.SetDirty(this);
+#endif
+        }
+
+        private void ReportError(string error)
+        {
+            status = error;
+            if (!logConfigurationErrors || string.IsNullOrEmpty(error)
+                || error == lastLoggedError)
+                return;
+
+            lastLoggedError = error;
+            Debug.LogError($"[{nameof(WorldSpaceSafeAreaFitter)}] {error}", this);
+        }
+
+        private static Rect Intersect(Rect a, Rect b)
+        {
+            float xMin = Mathf.Max(a.xMin, b.xMin);
+            float yMin = Mathf.Max(a.yMin, b.yMin);
+            float xMax = Mathf.Min(a.xMax, b.xMax);
+            float yMax = Mathf.Min(a.yMax, b.yMax);
+            return Rect.MinMaxRect(xMin, yMin, Mathf.Max(xMin, xMax), Mathf.Max(yMin, yMax));
+        }
+
+        private void OnDrawGizmosSelected()
+        {
+            if (!drawSafeAreaGizmo || targetCamera == null || compositionRoot == null
+                || appliedSafeAreaViewport.width <= 0f
+                || appliedSafeAreaViewport.height <= 0f)
+                return;
+
+            float depth = referencePoseCaptured
+                ? referenceCameraLocalPosition.z
+                : targetCamera.transform.InverseTransformPoint(compositionRoot.position).z;
+
+            Vector3 bottomLeft = targetCamera.ViewportToWorldPoint(new Vector3(
+                appliedSafeAreaViewport.xMin, appliedSafeAreaViewport.yMin, depth));
+            Vector3 topLeft = targetCamera.ViewportToWorldPoint(new Vector3(
+                appliedSafeAreaViewport.xMin, appliedSafeAreaViewport.yMax, depth));
+            Vector3 topRight = targetCamera.ViewportToWorldPoint(new Vector3(
+                appliedSafeAreaViewport.xMax, appliedSafeAreaViewport.yMax, depth));
+            Vector3 bottomRight = targetCamera.ViewportToWorldPoint(new Vector3(
+                appliedSafeAreaViewport.xMax, appliedSafeAreaViewport.yMin, depth));
+
+            Gizmos.color = new Color(0.15f, 1f, 0.55f, 0.9f);
+            Gizmos.DrawLine(bottomLeft, topLeft);
+            Gizmos.DrawLine(topLeft, topRight);
+            Gizmos.DrawLine(topRight, bottomRight);
+            Gizmos.DrawLine(bottomRight, bottomLeft);
+        }
+    }
+}

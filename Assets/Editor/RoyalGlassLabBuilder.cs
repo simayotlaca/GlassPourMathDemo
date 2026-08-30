@@ -8,7 +8,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Builds the independent four-vessel Royal art lab. The authored sprites own the glass
+/// Builds the independent five-vessel Royal art lab. The authored sprites own the glass
 /// contours. Shot and mug also carry their painted centre reflections; cocktail and
 /// tumbler receive the same two-column cue from a cavity-clipped overlay. The
 /// RoyalBottleLiquid material still owns the moving liquid, curved caps, band junctions
@@ -39,15 +39,19 @@ public static class RoyalGlassLabBuilder
     private const string MugTraceSprite = ArtRoot + "MugRoyalFrameGeometry.png";
     private const string TallSprite = ArtRoot + "TallRoyalFrameEmpty.png";
     private const string TallTraceSprite = ArtRoot + "TallRoyalFrameGeometry.png";
+    private const string BeerSprite = ArtRoot + "BeerRoyalFrameEmpty.png";
+    private const string BeerTraceSprite = ArtRoot + "BeerRoyalFrameGeometry.png";
 
     private const string ShotProfile = ProfileRoot + "ShotRoyal.asset";
     private const string CocktailProfile = ProfileRoot + "CocktailRoyal.asset";
     private const string MugProfile = ProfileRoot + "MugRoyal.asset";
     private const string TallProfile = ProfileRoot + "TumblerRoyal.asset";
+    private const string BeerProfile = ProfileRoot + "BeerRoyal.asset";
     private const int ShotCapacity = 1;
     private const int CocktailCapacity = 2;
     private const int MugCapacity = 3;
     private const int TallCapacity = 4;
+    private const int BeerCapacity = 5;
 
     private const string RoyalLiquidMaterial =
         MaterialRoot + "RoyalBottleLiquid.mat";
@@ -81,7 +85,7 @@ public static class RoyalGlassLabBuilder
             File.WriteAllText(DonePath,
                 "ok\nscene=" + ScenePath +
                 "\npreview=" + PreviewPath +
-                "\nvessels=4\ninteractive=true\n" +
+                "\nvessels=5\ninteractive=true\n" +
                 "liquidMaterial=" + RoyalLiquidMaterial + "\n");
         }
         catch (Exception exception)
@@ -109,6 +113,8 @@ public static class RoyalGlassLabBuilder
         ConfigureSpriteImporter(MugTraceSprite);
         ConfigureSpriteImporter(TallSprite);
         ConfigureSpriteImporter(TallTraceSprite);
+        ConfigureSpriteImporter(BeerSprite);
+        ConfigureSpriteImporter(BeerTraceSprite);
 
         Material liquid = EnsureRoyalLiquidMaterial();
         Material glassLight = EnsureGlassLightMaterial();
@@ -120,6 +126,10 @@ public static class RoyalGlassLabBuilder
             MugProfile, MugSprite, liquid, MugTraceSprite);
         VesselProfile tall = EnsureProfile("Tumbler Royal", TallCapacity,
             TallProfile, TallSprite, liquid, TallTraceSprite);
+        VesselProfile beer = EnsureProfile("Beer Royal", BeerCapacity,
+            BeerProfile, BeerSprite, liquid, BeerTraceSprite,
+            clipRightInterior: true, rightInteriorXAtY0: 0.74f,
+            rightInteriorSlope: -0.10f);
         GlassVisualTheme theme = EnsureTheme();
 
         Scene previous = SceneManager.GetActiveScene();
@@ -181,15 +191,25 @@ public static class RoyalGlassLabBuilder
             board.bottles.Add(BuildVessel(root.transform, "04 Tumbler Royal", tall,
                 new Vector2(1.20f, -2.202f), 0.783f, theme, glassLight, 0.26f,
                 new[] { Hex(0x09A9E6), Hex(0x792DC4) }));
+            // The five unit barrel glass is the tallest and widest of the set, so it sits
+            // on its own centred row below the approved 2x2 composition rather than
+            // squeezing a fifth silhouette into it.
+            board.bottles.Add(BuildVessel(root.transform, "05 Beer Royal", beer,
+                new Vector2(0f, -5.10f), 0.60f, theme, glassLight, 0.26f,
+                new[] { Hex(0xF39A12), Hex(0x008E57), Hex(0x09A9E6),
+                    Hex(0x792DC4), Hex(0xF44F8D) }));
 
             var note = new GameObject("HELP - Click source, then click target");
             note.transform.SetParent(root.transform, false);
             SetLayerRecursively(root.transform, LabLayer);
 
-            Validate(board, liquid, cocktail, tall, glassLight);
+            Validate(board, liquid, cocktail, tall, beer, glassLight);
             if (!EditorSceneManager.SaveScene(scene, ScenePath))
                 throw new IOException("Could not save " + ScenePath);
-            RenderPreview(camera);
+            if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
+                RenderPreview(camera);
+            else
+                Debug.Log("LiquidSort: Royal preview skipped because no graphics device is available.");
             AssetDatabase.SaveAssets();
             Debug.Log("LiquidSort: Royal Glass Lab imported, baked and rendered.");
         }
@@ -240,7 +260,8 @@ public static class RoyalGlassLabBuilder
 
     private static VesselProfile EnsureProfile(string displayName, int expectedCapacity,
         string profilePath, string spritePath, Material liquid,
-        string traceSpritePath = null)
+        string traceSpritePath = null, bool clipRightInterior = false,
+        float rightInteriorXAtY0 = 0f, float rightInteriorSlope = 0f)
     {
         VesselProfile profile = AssetDatabase.LoadAssetAtPath<VesselProfile>(profilePath);
         if (profile == null)
@@ -272,7 +293,9 @@ public static class RoyalGlassLabBuilder
         profile.stemFootToonStrength = 0f;
         profile.bottomRimGlassLight = 0f;
         profile.liquidBounceScale = 0f;
-        profile.clipRightInterior = false;
+        profile.clipRightInterior = clipRightInterior;
+        profile.rightInteriorXAtY0 = rightInteriorXAtY0;
+        profile.rightInteriorSlope = rightInteriorSlope;
         profile.capacity = expectedCapacity;
         EditorUtility.SetDirty(profile);
 
@@ -376,10 +399,12 @@ public static class RoyalGlassLabBuilder
     {
         var cameraObject = new GameObject("Main Camera");
         cameraObject.tag = "MainCamera";
-        cameraObject.transform.position = new Vector3(0f, 0f, -10f);
+        // The fifth vessel adds a centred third row. Re-centre the review camera on the
+        // complete set instead of leaving that row just below the old four-glass frame.
+        cameraObject.transform.position = new Vector3(0f, -1.50f, -10f);
         var camera = cameraObject.AddComponent<Camera>();
         camera.orthographic = true;
-        camera.orthographicSize = 5.05f;
+        camera.orthographicSize = 5.25f;
         camera.clearFlags = CameraClearFlags.SolidColor;
         camera.backgroundColor = Hex(0x090D20);
         camera.nearClipPlane = 0.3f;
@@ -433,10 +458,11 @@ public static class RoyalGlassLabBuilder
     }
 
     private static void Validate(WaterSortBoard board, Material liquid,
-        VesselProfile cocktail, VesselProfile tall, Material glassLight)
+        VesselProfile cocktail, VesselProfile tall, VesselProfile beer,
+        Material glassLight)
     {
-        if (board.bottles.Count != 4)
-            throw new InvalidOperationException("Expected four Royal vessels.");
+        if (board.bottles.Count != 5)
+            throw new InvalidOperationException("Expected five Royal vessels.");
         foreach (LiquidBottle bottle in board.bottles)
         {
             if (bottle == null || bottle.profile == null || !bottle.profile.IsBaked)
@@ -449,7 +475,9 @@ public static class RoyalGlassLabBuilder
                 || bottle.profile.interiorBounds.height <= 0.35f)
                 throw new InvalidOperationException(bottle.name + " traced an implausible interior.");
 
-            bool needsCentreReflection = bottle.profile == cocktail || bottle.profile == tall;
+            bool needsCentreReflection = bottle.profile == cocktail
+                                      || bottle.profile == tall
+                                      || bottle.profile == beer;
             BottleShell shell = bottle.GetComponent<BottleShell>();
             if (shell == null || shell.drawGlassLight != needsCentreReflection)
                 throw new InvalidOperationException(bottle.name

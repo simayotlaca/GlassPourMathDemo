@@ -19,6 +19,7 @@ Shader "LiquidSort/BottleLiquid"
         // Every colour run remains a rounded liquid slice after another colour lands on it.
         // One shared curve avoids a gap, dark seam or two overlapping ellipses.
         _InnerCurve ("Inner Junction Curve", Range(0,1)) = 1.0
+        _SurfaceScale ("Exposed Surface Depth Scale", Range(0,1)) = 1.0
         // Measured separately from the cap, because they are not the same quantity.
         // Reference junction sags 14px on a 143px chord: 0.098 of the chord. On a narrow
         // bottle that happens to equal the cap depth, which is why one constant looked
@@ -159,6 +160,7 @@ Shader "LiquidSort/BottleLiquid"
 
             float _Bulge;
             float _InnerCurve;
+            float _SurfaceScale;
             float _InnerBulge;
             float _InnerMax;
             float _BulgeMax;
@@ -308,7 +310,8 @@ Shader "LiquidSort/BottleLiquid"
                 float topChord = topHalfChord * 2.0;
                 float topAcross = saturate(abs(lx - topInfo.y) / topHalfChord);
                 float topEllipse = sqrt(saturate(1.0 - topAcross * topAcross));
-                float topHalfDepth = min(topChord * max(_Bulge, 0.001), _BulgeMax);
+                float topHalfDepth = min(topChord * max(_Bulge, 0.001), _BulgeMax)
+                                   * saturate(_SurfaceScale);
                 float wave = _Wave * sin(lx * _WaveFreq + _Time.y * _WaveSpeed);
 
                 float splash = 0.0;

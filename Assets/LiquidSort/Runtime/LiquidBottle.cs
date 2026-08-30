@@ -27,6 +27,7 @@ namespace LiquidSort
         private static readonly int AngleId = Shader.PropertyToID("_Angle");
         private static readonly int BulgeId = Shader.PropertyToID("_Bulge");
         private static readonly int InnerCurveId = Shader.PropertyToID("_InnerCurve");
+        private static readonly int SurfaceScaleId = Shader.PropertyToID("_SurfaceScale");
         private static readonly int SplashAmpId = Shader.PropertyToID("_SplashAmp");
         private static readonly int SplashXId = Shader.PropertyToID("_SplashX");
         private static readonly int SplashLifeId = Shader.PropertyToID("_SplashLife");
@@ -716,6 +717,7 @@ namespace LiquidSort
             block.SetFloat(AngleId, angle * Mathf.Deg2Rad);
             block.SetFloat(BulgeId, Bulge);
             block.SetFloat(InnerCurveId, JunctionCurve);
+            block.SetFloat(SurfaceScaleId, SurfaceScale(volume));
             block.SetFloat(BulgeMaxId, Mathf.Max(0.005f, InteriorHeight * CapDepth));
             block.SetFloat(WaveId, waveAmplitude);
             // Measured on the reference: the lump stands about 15% of the *chord* proud of
@@ -798,7 +800,17 @@ namespace LiquidSort
         /// while covered, without flattening either curve.
         /// </summary>
         private float SurfaceLevelUpright(float volume) =>
-            WaterlineForFrontEdge(UnitFrontEdgeLevelUpright(volume), 1f);
+            WaterlineForFrontEdge(UnitFrontEdgeLevelUpright(volume), SurfaceScale(volume));
+
+        /// <summary>
+        /// A partially filled vessel owns only the matching share of the exposed top-face
+        /// depth. Keeping a full ellipse on a half-filled wide coupe makes its raised back
+        /// edge consume most of the empty half even though the front edge is correct.
+        /// Covered junctions deliberately stay full-depth, so a band's visible front edge
+        /// remains fixed when another colour lands on it.
+        /// </summary>
+        private float SurfaceScale(float volume) =>
+            Mathf.Clamp01(volume / Mathf.Max(1f, capacity));
 
         /// <summary>
         /// Volume fraction under the free surface. Expressed as a fraction rather than a
@@ -823,8 +835,8 @@ namespace LiquidSort
         /// Front-edge level of the nth cumulative unit. This is the lower, viewer-facing
         /// edge of the exposed top ellipse and the identically directed visible edge of a
         /// covered colour boundary. The raised back half of the exposed ellipse is surface
-        /// perspective, not extra colour height; charging it to the top unit makes that
-        /// unit's front wall much shorter than every colour below it.
+        /// perspective, not extra colour height; its partial-fill depth is applied by
+        /// <see cref="SurfaceScale"/> without moving this stable front edge.
         ///
         /// Positions depend only on the unit index, so a colour never moves when another
         /// lands on top of it. Profiled vessels divide their baked optical-height domain,

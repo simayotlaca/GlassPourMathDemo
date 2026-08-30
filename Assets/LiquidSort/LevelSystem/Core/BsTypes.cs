@@ -10,11 +10,11 @@ namespace BartenderSort.Core
     /// </summary>
     public enum GlassType
     {
-        Shot = 0,      // 1 birim
-        Kadeh = 1,     // 2 birim  (kokteyl kadehi)
-        Latte = 2,     // 3 birim  (latte kupası)
-        Tumbler = 3,   // 4 birim
-        Bira = 4,      // 5 birim
+        Shot = 0,      // 1 birim — shot bardağı
+        Kadeh = 1,     // 2 birim — kokteyl kadehi
+        Latte = 2,     // 3 birim — kulplu bardak
+        Tumbler = 3,   // 4 birim — uzun bardak
+        Bira = 4,      // 5 birim — fıçı bardak
     }
 
     /// <summary>Sipariş kartı tipi — one-pager §4.</summary>
@@ -80,14 +80,21 @@ namespace BartenderSort.Core
         /// (level asset'leri, dosya adları) anahtarı, bu ise kopya. İkincisi
         /// sanat değiştikçe değişir, birincisi değişemez.
         ///
-        /// `Tumbler` artık bir tumbler değil: yeni teslimatta o yuva saplı bir
-        /// tulip/hurricane bardağı. `Bira` da kulplu bir kupa oldu. Enum adları
-        /// olduğu gibi duruyor (30 level asset'i onlara bağlı), yalnızca
-        /// oyuncunun gördüğü metin güncellendi.
+        /// Adlar sahnedeki havuz bağlantılarından okunur, çizim tarihçesinden
+        /// değil. Bugünkü eşleme (bkz. SortingShelfShowcaseBuilder havuzları):
+        ///
+        ///   Shot    -> ShotRoyal      : shot bardağı
+        ///   Kadeh   -> CocktailRoyal  : kokteyl kadehi
+        ///   Latte   -> MugRoyal       : KULPLU bardak  (enum adı "Latte" kaldı)
+        ///   Tumbler -> TallRoyal      : UZUN bardak    (tulip değil, hiç olmadı)
+        ///   Bira    -> BeerRoyal      : FIÇI bardak    (5 birimlik yeni bardak)
+        ///
+        /// Enum adları olduğu gibi duruyor (30 level asset'i onlara bağlı),
+        /// yalnızca oyuncunun gördüğü metin sanata göre güncellendi.
         /// </summary>
         public static readonly string[] GlassDisplayName =
         {
-            "Shot", "Kadeh", "Latte Kupası", "Tulip Bardak", "Bira Kupası"
+            "Shot", "Kadeh", "Kulplu Bardak", "Uzun Bardak", "Fıçı Bardak"
         };
 
         public static string DisplayName(GlassType t)

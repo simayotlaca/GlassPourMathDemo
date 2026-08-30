@@ -94,15 +94,28 @@ namespace LiquidSort.Levels
         [Header("Campaign data")]
         [SerializeField] private BsPalette palette;
 
+        [Header("Booster kapasitesi")]
+        [Tooltip("Sahnedeki statik bardak slotu sınırı. +bardak bu sayıyı aşamaz; "
+               + "aştığı an sunum havuzu tükenir ve bütün level reddedilirdi.")]
+        [SerializeField, Min(1)] private int maxActiveGlasses = 12;
+        [Tooltip("Geri al yığınının derinliği. Level başına ayrılan bellek bu kadar "
+               + "board klonu; 0 geri almayı tamamen kapatır.")]
+        [SerializeField, Min(0)] private int undoHistoryDepth = 32;
+
         private static List<BsLevel> cachedCampaign;
 
         private readonly Dictionary<OrderDef, float> orderRemaining =
             new Dictionary<OrderDef, float>(ReferenceComparer<OrderDef>.Instance);
         private readonly List<OrderDef> timerRemovalScratch = new List<OrderDef>();
+        /// <summary>Committed board snapshots, oldest first. Undo pops the last one.</summary>
+        private readonly List<BsBoard> undoHistory = new List<BsBoard>();
+        private readonly List<Layer> shuffleScratch = new List<Layer>(48);
 
         private BsBoard board;
         private bool commandInProgress;
         private bool notificationInProgress;
+        private object presentationLockOwner;
+        private int presentationLockRevision = -1;
         private bool hasPendingStateNotification;
         private BartenderLevelState pendingStateNotification;
 
@@ -114,6 +127,17 @@ namespace LiquidSort.Levels
         public int TimedOutOrderSlot { get; private set; } = -1;
         public int CampaignCount => Campaign.Count;
         public BsPalette Palette => palette;
+
+        /// <summary>Kalan booster stokları. Level yüklenirken asset'ten kopyalanır.</summary>
+        public int UndoRemaining { get; private set; }
+        public int ExtraGlassRemaining { get; private set; }
+        public int ShuffleRemaining { get; private set; }
+        /// <summary>Geri alınacak bir hamle var mı — stok ayrıca sayılır.</summary>
+        public bool HasUndoableMove => undoHistory.Count > 0;
+        /// <summary>Bu levelda sahnede aynı anda kaç bardak bulunabilir.</summary>
+        public int MaxActiveGlasses => maxActiveGlasses;
+        /// <summary>Board'da şu an duran bardak sayısı; +bardak kapısı bunu okur.</summary>
+        public int ActiveGlassCount => board != null ? board.Glasses.Count : 0;
 
         /// <summary>
         /// A detached board clone. UI, tests and future presentation adapters cannot mutate
@@ -128,12 +152,21 @@ namespace LiquidSort.Levels
         public int NextUnlockedCampaignSlot => Mathf.Clamp(
             PlayerPrefs.GetInt(progressKey, 0), 0, Campaign.Count);
 
+        /// <summary>
+        /// True while a view is animating an already committed board revision. The domain
+        /// remains authoritative, but timers and additional commands wait until that visual
+        /// transaction has reconciled.
+        /// </summary>
+        public bool PresentationLocked => presentationLockOwner != null;
+
         public event Action<BsLevel> LevelLoaded;
         public event Action BoardChanged;
         public event Action OrdersChanged;
         public event Action<BartenderLevelState> StateChanged;
         public event Action<BartenderPourReceipt> Poured;
         public event Action<BartenderDeliveryReceipt> Delivered;
+        /// <summary>Stok veya geri-al yığını değişti; alt şerit sayaçlarını tazeler.</summary>
+        public event Action BoostersChanged;
 
         private static List<BsLevel> Campaign
         {
@@ -223,12 +256,14 @@ namespace LiquidSort.Levels
                 FailureReason = BartenderFailureReason.None;
                 TimedOutOrderSlot = -1;
                 ResetOrderDeadlines();
+                ResetBoosters(level);
 
                 SetState(BartenderLevelState.Playing);
                 EvaluateTerminalState();
                 InvokeSafely(LevelLoaded, level);
                 InvokeSafely(BoardChanged);
                 InvokeSafely(OrdersChanged);
+                InvokeSafely(BoostersChanged);
                 return true;
             }
             finally
@@ -276,6 +311,35 @@ namespace LiquidSort.Levels
             return true;
         }
 
+        /// <summary>
+        /// Holds the exact committed revision while its presentation animation runs. The
+        /// caller is an ownership token and must release the same revision. Acquiring this
+        /// lock never mutates board data.
+        /// </summary>
+        public bool TryAcquirePresentationLock(object owner, int committedRevision)
+        {
+            if (owner == null || presentationLockOwner != null
+                || commandInProgress || notificationInProgress
+                || committedRevision != BoardRevision)
+                return false;
+
+            presentationLockOwner = owner;
+            presentationLockRevision = committedRevision;
+            return true;
+        }
+
+        /// <summary>Releases a presentation lock owned by <paramref name="owner"/>.</summary>
+        public bool ReleasePresentationLock(object owner, int committedRevision)
+        {
+            if (owner == null || !ReferenceEquals(presentationLockOwner, owner)
+                || presentationLockRevision != committedRevision)
+                return false;
+
+            presentationLockOwner = null;
+            presentationLockRevision = -1;
+            return true;
+        }
+
         public PourResult CanPour(int sourceGlassId, int targetGlassId)
         {
             if (board == null)
@@ -309,6 +373,9 @@ namespace LiquidSort.Levels
             {
                 RtGlass sourceBefore = source.Clone();
                 RtGlass targetBefore = target.Clone();
+                // Captured before the mutation but only filed once the rules accepted it,
+                // so a refused command cannot leave a phantom step on the undo stack.
+                BsBoard undoSnapshot = CaptureUndoSnapshot();
                 PourResult committed = board.Pour(source, target);
                 if (!committed.Success)
                 {
@@ -317,6 +384,7 @@ namespace LiquidSort.Levels
                 }
 
                 BoardRevision++;
+                CommitUndoSnapshot(undoSnapshot);
                 receipt = new BartenderPourReceipt(
                     BoardRevision, committed, sourceBefore, source.Clone(),
                     targetBefore, target.Clone());
@@ -325,6 +393,7 @@ namespace LiquidSort.Levels
                 EvaluateTerminalState();
                 InvokeSafely(Poured, receipt);
                 InvokeSafely(BoardChanged);
+                InvokeSafely(BoostersChanged);
                 return true;
             }
             finally
@@ -365,6 +434,7 @@ namespace LiquidSort.Levels
             {
                 RtGlass deliveredGlass = glass.Clone();
                 OrderDef deliveredOrder = LiveOrderAtSlot(matchedSlot)?.Clone();
+                BsBoard undoSnapshot = CaptureUndoSnapshot();
                 if (!board.Deliver(glass, out int committedSlot) || committedSlot != matchedSlot)
                 {
                     rejectionReason = "Teslim kuralı işlemi reddetti";
@@ -372,6 +442,7 @@ namespace LiquidSort.Levels
                 }
 
                 BoardRevision++;
+                CommitUndoSnapshot(undoSnapshot);
                 RefreshOrderDeadlinesAfterDelivery();
                 receipt = new BartenderDeliveryReceipt(
                     BoardRevision, committedSlot, deliveredGlass, deliveredOrder,
@@ -381,6 +452,7 @@ namespace LiquidSort.Levels
                 InvokeSafely(Delivered, receipt);
                 InvokeSafely(BoardChanged);
                 InvokeSafely(OrdersChanged);
+                InvokeSafely(BoostersChanged);
                 return true;
             }
             finally
@@ -388,6 +460,228 @@ namespace LiquidSort.Levels
                 commandInProgress = false;
                 FlushPendingStateChanged();
             }
+        }
+
+        // ---------------------------------------------------------------
+        //  BOOSTER KOMUTLARI
+        //
+        //  Üçü de aynı kapıdan geçer: yalnız Playing durumunda, yalnız komut/sunum
+        //  kilidi yokken. Failed'dan kurtarma bilerek YOK — BsRoundStateMachine terminal
+        //  sonucu atomik olarak kilitliyor ve epoch'u artırıyor; oradan Playing'e dönmek
+        //  akış FSM'ini controller ile ayrıştırırdı. Kurtarma istenirse doğru yer level
+        //  yeniden yükleme, bir booster değil.
+        // ---------------------------------------------------------------
+
+        /// <summary>
+        /// Son kabul edilen hamleyi geri alır. Board'un tamamı geri yüklenir: dökme de,
+        /// teslim de, teslimle birlikte gelen slot/deste hareketi de.
+        /// </summary>
+        public bool TryUndo(out string rejectionReason)
+        {
+            rejectionReason = null;
+            if (!CanAcceptCommand(out rejectionReason)) return false;
+            if (undoHistory.Count == 0)
+            {
+                rejectionReason = "Geri alınacak hamle yok";
+                return false;
+            }
+            if (UndoRemaining <= 0)
+            {
+                rejectionReason = "Geri al hakkı kalmadı";
+                return false;
+            }
+
+            commandInProgress = true;
+            try
+            {
+                int last = undoHistory.Count - 1;
+                board = undoHistory[last];
+                undoHistory.RemoveAt(last);
+                UndoRemaining--;
+                BoardRevision++;
+
+                // Slot'lardaki OrderDef referansları klonla birlikte değişti; süre sözlüğü
+                // referansla anahtarlandığı için baştan kurulmak zorunda.
+                ResetOrderDeadlines();
+
+                EvaluateTerminalState();
+                InvokeSafely(BoardChanged);
+                InvokeSafely(OrdersChanged);
+                InvokeSafely(BoostersChanged);
+                return true;
+            }
+            finally
+            {
+                commandInProgress = false;
+                FlushPendingStateChanged();
+            }
+        }
+
+        /// <summary>
+        /// Boş bir çalışma bardağı ekler. Tipi ÇAĞIRAN seçer: hangi tiplerin sahnede
+        /// boş havuz slotu kaldığını yalnız sunum katmanı bilir, kural motoru bilmez.
+        /// </summary>
+        public bool TryAddExtraGlass(GlassType type, out int newGlassId,
+                                     out string rejectionReason)
+        {
+            newGlassId = -1;
+            rejectionReason = null;
+            if (!CanAcceptCommand(out rejectionReason)) return false;
+            if (ExtraGlassRemaining <= 0)
+            {
+                rejectionReason = "Ekstra bardak hakkı kalmadı";
+                return false;
+            }
+            if (!IsKnownGlassType(type))
+            {
+                rejectionReason = "Geçersiz bardak tipi";
+                return false;
+            }
+            if (board.Glasses.Count >= maxActiveGlasses)
+            {
+                rejectionReason = $"Sahnede en fazla {maxActiveGlasses} bardak durabilir";
+                return false;
+            }
+
+            commandInProgress = true;
+            try
+            {
+                BsBoard undoSnapshot = CaptureUndoSnapshot();
+                RtGlass added = board.AddEmptyGlass(type);
+                if (added == null)
+                {
+                    rejectionReason = "Bardak eklenemedi";
+                    return false;
+                }
+
+                newGlassId = added.Id;
+                ExtraGlassRemaining--;
+                BoardRevision++;
+                CommitUndoSnapshot(undoSnapshot);
+
+                EvaluateTerminalState();
+                InvokeSafely(BoardChanged);
+                InvokeSafely(BoostersChanged);
+                return true;
+            }
+            finally
+            {
+                commandInProgress = false;
+                FlushPendingStateChanged();
+            }
+        }
+
+        /// <summary>
+        /// Sıvıyı bardaklar arasında yeniden dağıtır.
+        ///
+        /// KORUNAN: her bardağın birim sayısı, her rengin toplamı, her bardağın
+        /// kapasitesi. Yani hamle sayısı ve renk bütçesi değişmez — karıştırma bir
+        /// "yeniden deneme", bir hile değil.
+        ///
+        /// DOKUNULMAYAN: zincirli bardaklar, kilitli veya gizli katman taşıyan
+        /// bardaklar. Onların içeriği yerinde kalır; aksi hâlde karıştırma bir kilidi
+        /// sessizce açardı.
+        ///
+        /// DIKKAT: sonucun çözülebilir kalacağı GARANTİ EDİLMEZ. Renk toplamı korunduğu
+        /// için sipariş destesi hâlâ karşılanabilir durumdadır, ama dizilim kilitlenmiş
+        /// bir board üretebilir. Bu bilinçli: doğrulama tam bir solver koşturmak demek
+        /// ve bir buton dokunuşunun bütçesi değil. Kilitlenen board'u kural motoru
+        /// zaten IsFail ile yakalar.
+        /// </summary>
+        public bool TryShuffle(out string rejectionReason)
+        {
+            rejectionReason = null;
+            if (!CanAcceptCommand(out rejectionReason)) return false;
+            if (ShuffleRemaining <= 0)
+            {
+                rejectionReason = "Karıştırma hakkı kalmadı";
+                return false;
+            }
+
+            commandInProgress = true;
+            try
+            {
+                BsBoard undoSnapshot = CaptureUndoSnapshot();
+                if (!ShuffleMovableLayers())
+                {
+                    rejectionReason = "Karıştırılacak serbest sıvı yok";
+                    return false;
+                }
+
+                ShuffleRemaining--;
+                BoardRevision++;
+                CommitUndoSnapshot(undoSnapshot);
+
+                EvaluateTerminalState();
+                InvokeSafely(BoardChanged);
+                InvokeSafely(BoostersChanged);
+                return true;
+            }
+            finally
+            {
+                commandInProgress = false;
+                FlushPendingStateChanged();
+            }
+        }
+
+        /// <summary>
+        /// Serbest bardakların bütün katmanlarını tek havuzda toplar, karıştırır ve aynı
+        /// bardaklara aynı adetlerle geri koyar. Dizilim gerçekten değiştiyse true döner.
+        /// </summary>
+        private bool ShuffleMovableLayers()
+        {
+            shuffleScratch.Clear();
+            var participants = new List<RtGlass>(board.Glasses.Count);
+            for (int i = 0; i < board.Glasses.Count; i++)
+            {
+                RtGlass glass = board.Glasses[i];
+                if (glass.Layers.Count == 0) continue;
+                if (glass.IsChained(board.Delivered)) continue;
+                if (glass.HasLocked(board.Delivered) || glass.HasHidden()) continue;
+                participants.Add(glass);
+                shuffleScratch.AddRange(glass.Layers);
+            }
+            if (participants.Count < 2 || shuffleScratch.Count < 2) return false;
+
+            var before = new List<Layer>(shuffleScratch);
+            for (int i = shuffleScratch.Count - 1; i > 0; i--)
+            {
+                int j = UnityEngine.Random.Range(0, i + 1);
+                (shuffleScratch[i], shuffleScratch[j]) = (shuffleScratch[j], shuffleScratch[i]);
+            }
+
+            bool changed = false;
+            for (int i = 0; i < before.Count; i++)
+                if (!before[i].Equals(shuffleScratch[i])) { changed = true; break; }
+            if (!changed) return false;
+
+            int read = 0;
+            for (int i = 0; i < participants.Count; i++)
+            {
+                RtGlass glass = participants[i];
+                for (int layer = 0; layer < glass.Layers.Count; layer++)
+                    glass.Layers[layer] = shuffleScratch[read++];
+            }
+            return true;
+        }
+
+        private void ResetBoosters(BsLevel level)
+        {
+            undoHistory.Clear();
+            UndoRemaining = Mathf.Max(0, level != null ? level.UndoCount : 0);
+            ExtraGlassRemaining = Mathf.Max(0, level != null ? level.ExtraGlassCount : 0);
+            ShuffleRemaining = Mathf.Max(0, level != null ? level.ShuffleCount : 0);
+        }
+
+        private BsBoard CaptureUndoSnapshot() =>
+            undoHistoryDepth > 0 && board != null ? board.Clone() : null;
+
+        private void CommitUndoSnapshot(BsBoard snapshot)
+        {
+            if (snapshot == null) return;
+            undoHistory.Add(snapshot);
+            // Oldest first: dropping index 0 keeps the most recent moves reachable.
+            while (undoHistory.Count > undoHistoryDepth) undoHistory.RemoveAt(0);
         }
 
         public RtGlass GlassById(int glassId)
@@ -512,7 +806,8 @@ namespace LiquidSort.Levels
             return index >= 0 && index < BsRules.CapacityTable.Length;
         }
 
-        private bool MutationBlocked => commandInProgress || notificationInProgress;
+        private bool MutationBlocked => commandInProgress || notificationInProgress
+                                     || presentationLockOwner != null;
 
         private bool CanAcceptCommand(out string reason)
         {
@@ -647,14 +942,18 @@ namespace LiquidSort.Levels
 
         private void UnloadInternal(BartenderLevelState finalState)
         {
+            presentationLockOwner = null;
+            presentationLockRevision = -1;
             board = null;
             CurrentLevel = null;
             CurrentCampaignSlot = -1;
             BoardRevision = 0;
             orderRemaining.Clear();
+            ResetBoosters(null);
             FailureReason = BartenderFailureReason.None;
             TimedOutOrderSlot = -1;
             SetState(finalState);
+            InvokeSafely(BoostersChanged);
         }
 
         private OrderDef LiveOrderAtSlot(int slotIndex)

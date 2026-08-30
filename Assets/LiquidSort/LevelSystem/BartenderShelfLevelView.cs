@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using BartenderSort.Core;
 using UnityEngine;
@@ -17,6 +18,11 @@ namespace LiquidSort.Levels
         public const int FullCampaignCocktailPoolSize = 5;
         public const int FullCampaignLattePoolSize = 6;
         public const int FullCampaignTumblerPoolSize = 8;
+        /// <summary>
+        /// Beş birimlik kulplu bardak için kampanyadaki eşzamanlı tepe kullanım.
+        /// Level 30, on bir örneğin tamamını aynı anda sahnede tutuyor.
+        /// </summary>
+        public const int FullCampaignBiraPoolSize = 11;
         public const int MaximumActiveGlasses = 12;
         public const int MaximumColumnsPerRow = 4;
 
@@ -62,6 +68,31 @@ namespace LiquidSort.Levels
             public Quaternion AuthoredLocalRotation;
             public int GlassId = -1;
             public bool Assigned;
+
+            /// <summary>
+            /// World pose the layout pass decided on. The entrance and reseat animations
+            /// only ever interpolate towards this value; they never invent a pose of their
+            /// own, so cancelling one mid-flight lands on the same static layout.
+            /// </summary>
+            public Vector3 SeatPosition;
+            public Vector3 SeatScale = Vector3.one;
+            public bool Seated;
+            public Vector3 PreviousSeatPosition;
+            public Vector3 PreviousSeatScale = Vector3.one;
+            public bool HasPreviousSeat;
+            public int Row;
+            public int Column;
+            public float EntranceDelay;
+            public float EntranceFallDistance;
+            public float EntranceFallDuration;
+            public bool SortingLifted;
+
+            /// <summary>
+            /// True while the delivery portal owns this vessel. The pool slot stays
+            /// reserved and the release is deferred until the glass is actually hidden
+            /// behind the arch, so nothing can switch it off mid-flight.
+            /// </summary>
+            public bool Delivering;
         }
 
         [Header("Level source")]
@@ -80,6 +111,8 @@ namespace LiquidSort.Levels
         [SerializeField] private List<GlassBinding> lattePool = new List<GlassBinding>();
         [Tooltip("Full campaign maximum: 8. Each reference must use TumblerRoyal.")]
         [SerializeField] private List<GlassBinding> tumblerPool = new List<GlassBinding>();
+        [Tooltip("Full campaign maximum: 11. Each reference must use BeerRoyal.")]
+        [SerializeField] private List<GlassBinding> biraPool = new List<GlassBinding>();
 
         [Header("Hand-authored shelf references")]
         [Tooltip("Exactly three possible plank rows, ordered top to bottom.")]
@@ -98,12 +131,18 @@ namespace LiquidSort.Levels
         [SerializeField, Min(0.1f)] private float threeAcrossColumnSpacing = 2.18f;
         [Tooltip("Centre-to-centre spacing while a row contains four glasses.")]
         [SerializeField, Min(0.1f)] private float compactColumnSpacing = 1.60f;
+        // Ölçek iki eksenli bir tablodur: KAÇ SATIR (yükseklik bütçesi) x KAÇ SÜTUN
+        // (genişlik bütçesi). Tek bir "dört sütunlu" değeri iki satırlık bir levelı da
+        // üç satırlık bir levelın dar yüksekliğine mahkûm ediyordu; 30 levelin 7'si tam
+        // olarak o durumda (iki satır, dörderli diziliş) ve bardakları gereksiz küçüktü.
         [Tooltip("Royal scale multiplier for rows of up to three glasses in the two-row layout.")]
         [SerializeField, Min(0.1f)] private float twoRowSpaciousGlassScale = 1.27f;
         [Tooltip("Royal scale multiplier for rows of up to three glasses in the three-row layout.")]
         [SerializeField, Min(0.1f)] private float threeRowSpaciousGlassScale = 1.00f;
-        [Tooltip("Royal scale multiplier for every row containing four glasses.")]
+        [Tooltip("Royal scale multiplier for a four-across row inside the two-row layout.")]
         [SerializeField, Min(0.1f)] private float fourAcrossGlassScale = 0.90f;
+        [Tooltip("Royal scale multiplier for a four-across row inside the three-row layout.")]
+        [SerializeField, Min(0.1f)] private float fourAcrossThreeRowGlassScale = 0.80f;
         [Tooltip("Small optical overlap that seats the vessel artwork into the plank.")]
         [SerializeField, Min(0f)] private float opticalSeatInset = 0.02f;
         [SerializeField] private float glassPlaneZ;
@@ -114,13 +153,47 @@ namespace LiquidSort.Levels
         [Tooltip("Small overlap above the lower shelf surface.")]
         [SerializeField, Min(0f)] private float postLowerShelfInset = 0.02f;
 
+        [Header("Level entrance animation")]
+        [Tooltip("Level yüklendiğinde raf ve bardaklar animasyonla yerine otursun. "
+               + "Kapalıyken sunum bugünkü gibi tek karede yerleşir.")]
+        [SerializeField] private bool animateEntrance = true;
+        [Tooltip("Bardakların bırakıldığı çizgi: en üst raf yüzeyinin kaç layout birimi "
+               + "üstü. Kameranın üst kenarını aşacak kadar büyük olmalı, yoksa bardaklar "
+               + "ekranın ortasında yoktan var olur.")]
+        [SerializeField, Min(0.1f)] private float entranceDropHeight = 6.00f;
+        [Tooltip("Tam bir düşüş yüksekliği kadar düşen bardağın süresi. Alt raftaki "
+               + "bardaklar daha uzun yol gittiği için aynı ivmeyle biraz daha uzun düşer.")]
+        [SerializeField, Min(0.01f)] private float entranceDropDuration = 0.32f;
+        [Tooltip("Aynı sırada yan yana iki bardak arasındaki gecikme.")]
+        [SerializeField, Min(0f)] private float entranceGlassStagger = 0.055f;
+        [Tooltip("İki raf sırası arasındaki ek gecikme. Alt sıra önce dolar.")]
+        [SerializeField, Min(0f)] private float entranceRowStagger = 0.12f;
+        [Tooltip("Düşerken bardağın raf tahtalarının önüne alınma miktarı. Plank "
+               + "sorting order'ının üstüne çıkacak kadar büyük olmalı; iniş anında "
+               + "bardağın kendi sıralaması geri verilir. 0 = kapalı.")]
+        [SerializeField, Min(0)] private int entranceSortingBoost = 60;
+        [Tooltip("Rafa çarpma anındaki ezilme oranı. 0 = kapalı.")]
+        [SerializeField, Range(0f, 0.4f)] private float entranceLandingSquash = 0.13f;
+        [Tooltip("Ezilmeden normal ölçüye dönüş süresi.")]
+        [SerializeField, Min(0f)] private float entranceSettleDuration = 0.20f;
+        [Tooltip("Raf tahtalarının ve direklerin açılma süresi. 0 = anında görünür.")]
+        [SerializeField, Min(0f)] private float shelfFadeDuration = 0.22f;
+        [Tooltip("Level ortasında bardaklar yeniden dizilirken kayma süresi. 0 = anında.")]
+        [SerializeField, Min(0f)] private float reseatDuration = 0.22f;
+
+        [Header("Teslim geçidi")]
+        [Tooltip("Karşılanan siparişin bardağını kemerin arkasına sokan servis geçidi. "
+               + "Boşken teslim edilen bardak bugünkü gibi tek karede havuza döner.")]
+        [SerializeField] private PortalDeliveryAnimator deliveryPortal;
+
         [Header("Layer presentation")]
         [SerializeField] private Color hiddenLayerColor =
             new Color(0.29f, 0.31f, 0.36f, 1f);
 
         private readonly List<Actor> actors = new List<Actor>(
             FullCampaignShotPoolSize + FullCampaignCocktailPoolSize
-            + FullCampaignLattePoolSize + FullCampaignTumblerPoolSize);
+            + FullCampaignLattePoolSize + FullCampaignTumblerPoolSize
+            + FullCampaignBiraPoolSize);
         private readonly List<Actor> activeActors = new List<Actor>(MaximumActiveGlasses);
         private readonly Dictionary<int, Actor> actorByGlassId =
             new Dictionary<int, Actor>(MaximumActiveGlasses);
@@ -129,6 +202,22 @@ namespace LiquidSort.Levels
         private readonly List<Color> colorScratch = new List<Color>(LiquidBottle.MaxBands);
         private readonly HashSet<LiquidBottle> uniqueBottleScratch =
             new HashSet<LiquidBottle>();
+        private readonly List<Actor> entranceOrder = new List<Actor>(MaximumActiveGlasses);
+        private readonly List<SpriteRenderer> shelfFadeRenderers =
+            new List<SpriteRenderer>(10);
+        private readonly List<Color> shelfFadeColors = new List<Color>(10);
+        private readonly List<Actor> deliveringActors = new List<Actor>(2);
+        private readonly List<Actor> deliveryScratch = new List<Actor>(2);
+        private Coroutine seatAnimation;
+        private object synchronizationDeferralOwner;
+        private bool deferredSynchronizationPending;
+
+        /// <summary>
+        /// Glass the controller reported as delivered on the notification that immediately
+        /// precedes the board change. It is the only way to tell a vessel that was served
+        /// from one that left the board for any other reason.
+        /// </summary>
+        private int pendingDeliveryGlassId = -1;
 
         private BartenderLevelController subscribedController;
         private BsLevel presentedLevel;
@@ -142,9 +231,23 @@ namespace LiquidSort.Levels
         public string LastError { get; private set; }
         public int ActiveGlassCount => activeActors.Count;
         public int VisibleShelfRows => configuredRowCount;
+        /// <summary>True while glasses are still walking towards their seats.</summary>
+        public bool SeatAnimationPlaying => seatAnimation != null;
+        /// <summary>
+        /// True through the complete delivery beat, including the portal bounce after the
+        /// glass has already gone back to its pool.
+        /// </summary>
+        public bool DeliveryPlaying => deliveringActors.Count > 0
+                                    || (deliveryPortal != null && deliveryPortal.IsPlaying);
+        /// <summary>The directly serialized portal used by this view.</summary>
+        public PortalDeliveryAnimator DeliveryPortal => deliveryPortal;
+        /// <summary>True while an already committed board change is animating.</summary>
+        public bool SynchronizationDeferred => synchronizationDeferralOwner != null;
 
         public event Action PresentationChanged;
         public event Action<string> PresentationRejected;
+        /// <summary>Raised after the glass is hidden and the portal's final bounce settles.</summary>
+        public event Action DeliveryPresentationFinished;
 
         private Transform LayoutSpace => layoutSpace != null ? layoutSpace : transform;
 
@@ -166,6 +269,8 @@ namespace LiquidSort.Levels
         private void OnDisable()
         {
             Unsubscribe();
+            synchronizationDeferralOwner = null;
+            deferredSynchronizationPending = false;
             if (Application.isPlaying) ClearPresentation();
         }
 
@@ -177,8 +282,16 @@ namespace LiquidSort.Levels
             twoRowSpaciousGlassScale = Mathf.Max(0.1f, twoRowSpaciousGlassScale);
             threeRowSpaciousGlassScale = Mathf.Max(0.1f, threeRowSpaciousGlassScale);
             fourAcrossGlassScale = Mathf.Max(0.1f, fourAcrossGlassScale);
+            fourAcrossThreeRowGlassScale = Mathf.Max(0.1f, fourAcrossThreeRowGlassScale);
             opticalSeatInset = Mathf.Max(0f, opticalSeatInset);
             postLowerShelfInset = Mathf.Max(0f, postLowerShelfInset);
+            entranceDropHeight = Mathf.Max(0.1f, entranceDropHeight);
+            entranceDropDuration = Mathf.Max(0.01f, entranceDropDuration);
+            entranceGlassStagger = Mathf.Max(0f, entranceGlassStagger);
+            entranceRowStagger = Mathf.Max(0f, entranceRowStagger);
+            entranceSettleDuration = Mathf.Max(0f, entranceSettleDuration);
+            shelfFadeDuration = Mathf.Max(0f, shelfFadeDuration);
+            reseatDuration = Mathf.Max(0f, reseatDuration);
         }
 
         /// <summary>
@@ -215,6 +328,7 @@ namespace LiquidSort.Levels
             IReadOnlyList<GlassBinding> cocktails,
             IReadOnlyList<GlassBinding> lattes,
             IReadOnlyList<GlassBinding> tumblers,
+            IReadOnlyList<GlassBinding> biras,
             SpriteRenderer topPlank,
             SpriteRenderer middlePlank,
             SpriteRenderer bottomPlank,
@@ -235,6 +349,7 @@ namespace LiquidSort.Levels
             CopyPool(cocktails, cocktailPool);
             CopyPool(lattes, lattePool);
             CopyPool(tumblers, tumblerPool);
+            CopyPool(biras, biraPool);
             shelfRows = new[]
             {
                 new ShelfRowBinding { plank = topPlank, seatAnchor = topSeatAnchor },
@@ -267,6 +382,16 @@ namespace LiquidSort.Levels
         }
 
         /// <summary>
+        /// Authoring API for the delivery portal, mirroring ConfigureSceneBindings. Passing
+        /// null restores today's behaviour: a served glass returns to its pool at once.
+        /// </summary>
+        public void ConfigureDeliveryPortal(PortalDeliveryAnimator portal)
+        {
+            if (Application.isPlaying) CancelPortalDeliveries();
+            deliveryPortal = portal;
+        }
+
+        /// <summary>
         /// Authoring API for the pixel-audited layout values. Like the binding API, these
         /// values are serialized into the scene after an editor builder calls this method.
         /// </summary>
@@ -278,7 +403,8 @@ namespace LiquidSort.Levels
             float spacingAtFour,
             float twoRowScaleUpToThree,
             float threeRowScaleUpToThree,
-            float scaleAtFour,
+            float scaleAtFourInTwoRows,
+            float scaleAtFourInThreeRows,
             float seatInset,
             float planeZ = 0f)
         {
@@ -289,9 +415,38 @@ namespace LiquidSort.Levels
             compactColumnSpacing = Mathf.Max(0.1f, spacingAtFour);
             twoRowSpaciousGlassScale = Mathf.Max(0.1f, twoRowScaleUpToThree);
             threeRowSpaciousGlassScale = Mathf.Max(0.1f, threeRowScaleUpToThree);
-            fourAcrossGlassScale = Mathf.Max(0.1f, scaleAtFour);
+            fourAcrossGlassScale = Mathf.Max(0.1f, scaleAtFourInTwoRows);
+            fourAcrossThreeRowGlassScale = Mathf.Max(0.1f, scaleAtFourInThreeRows);
             opticalSeatInset = Mathf.Max(0f, seatInset);
             glassPlaneZ = planeZ;
+        }
+
+        /// <summary>
+        /// Authoring API for the level-entrance timing, mirroring ConfigureLayout. An editor
+        /// builder bakes these into the scene; nothing here changes where a glass ends up.
+        /// </summary>
+        public void ConfigureEntrance(
+            bool animate,
+            float dropHeight,
+            float dropDuration,
+            float glassStagger,
+            float rowStagger,
+            int sortingBoost,
+            float landingSquash,
+            float settleDuration,
+            float shelfFade,
+            float reseat)
+        {
+            animateEntrance = animate;
+            entranceDropHeight = Mathf.Max(0.1f, dropHeight);
+            entranceDropDuration = Mathf.Max(0.01f, dropDuration);
+            entranceGlassStagger = Mathf.Max(0f, glassStagger);
+            entranceRowStagger = Mathf.Max(0f, rowStagger);
+            entranceSortingBoost = Mathf.Max(0, sortingBoost);
+            entranceLandingSquash = Mathf.Clamp(landingSquash, 0f, 0.4f);
+            entranceSettleDuration = Mathf.Max(0f, settleDuration);
+            shelfFadeDuration = Mathf.Max(0f, shelfFade);
+            reseatDuration = Mathf.Max(0f, reseat);
         }
 
         /// <summary>
@@ -303,6 +458,7 @@ namespace LiquidSort.Levels
             if (!ValidateSnapshot(level, snapshot, palette, out int rows, out string reason))
                 return Reject(reason);
 
+            StopSeatAnimation();
             ClearAssignments();
             presentedLevel = level;
             configuredColumns = Mathf.Max(1, level.ColumnsPerRow);
@@ -326,6 +482,7 @@ namespace LiquidSort.Levels
             ApplyShelfLayout(configuredRowCount);
             LayoutActiveActors();
             ActivateAndRefreshActors();
+            PlayEntrance();
 
             Ready = true;
             LastError = null;
@@ -357,9 +514,102 @@ namespace LiquidSort.Levels
         }
 
         /// <summary>
-        /// Strict check for the largest non-Bira allocations in the 30-level campaign and
-        /// all three possible shelf rows. Bira intentionally remains an explicit rejection
-        /// until a capacity-five Royal scene pool exists.
+        /// Is there still an unassigned scene vessel of this type? The +glass booster asks
+        /// before it commits: the pool is a hand-authored, finite set of scene objects, and
+        /// a domain glass with no vessel behind it rejects the whole presentation.
+        /// </summary>
+        public bool HasFreePoolSlot(GlassType type)
+        {
+            if (!EnsureActorCache(out _)) return false;
+            return Acquire(type) != null;
+        }
+
+        /// <summary>
+        /// Keeps the currently rendered bottle contents at their pre-command state while an
+        /// already committed board revision is animated. Board notifications received during
+        /// the deferral are coalesced into one authoritative refresh at the end.
+        /// </summary>
+        public bool TryBeginSynchronizationDeferral(object owner)
+        {
+            if (owner == null || synchronizationDeferralOwner != null) return false;
+            synchronizationDeferralOwner = owner;
+            deferredSynchronizationPending = false;
+            return true;
+        }
+
+        public bool IsSynchronizationDeferredBy(object owner) =>
+            owner != null && ReferenceEquals(synchronizationDeferralOwner, owner);
+
+        /// <summary>
+        /// Ends a deferral owned by <paramref name="owner"/> and reconciles the scene from
+        /// the controller snapshot. Safe to call after either a completed or cancelled pour.
+        /// </summary>
+        public bool EndSynchronizationDeferralAndRefresh(object owner,
+                                                          bool forceRefresh = false)
+        {
+            if (owner == null || !ReferenceEquals(synchronizationDeferralOwner, owner))
+                return false;
+
+            bool refresh = forceRefresh || deferredSynchronizationPending;
+            synchronizationDeferralOwner = null;
+            deferredSynchronizationPending = false;
+            if (!refresh) return true;
+            if (!isActiveAndEnabled) return false;
+            return RefreshFromController();
+        }
+
+        /// <summary>
+        /// Hit-tests only the active, domain-bound Royal vessels. The target scene therefore
+        /// needs no colliders or generated input objects; its camera may be injected by the
+        /// host or resolved from <see cref="Camera.main"/>.
+        /// </summary>
+        public bool TryPickBottle(Camera camera, Vector2 screenPoint, float padding,
+                                  out LiquidBottle bottle, out int glassId)
+        {
+            bottle = null;
+            glassId = -1;
+            if (!Ready || camera == null) return false;
+
+            float safePadding = Mathf.Max(0f, padding);
+            float bestDistance = float.MaxValue;
+            for (int i = 0; i < activeActors.Count; i++)
+            {
+                Actor actor = activeActors[i];
+                LiquidBottle candidate = actor != null ? actor.Bottle : null;
+                if (candidate == null || actor.Delivering
+                    || !candidate.gameObject.activeInHierarchy)
+                    continue;
+
+                float depth = Vector3.Dot(candidate.transform.position
+                                          - camera.transform.position,
+                                          camera.transform.forward);
+                Vector3 world = camera.ScreenToWorldPoint(
+                    new Vector3(screenPoint.x, screenPoint.y, depth));
+                SpriteRenderer placement = actor.PlacementRenderer;
+                if (placement == null) continue;
+                Bounds bounds = placement.bounds;
+                Vector3 scale = candidate.transform.lossyScale;
+                float worldPadding = safePadding * Mathf.Max(
+                    Mathf.Abs(scale.x), Mathf.Abs(scale.y));
+                if (world.x < bounds.min.x - worldPadding
+                    || world.x > bounds.max.x + worldPadding
+                    || world.y < bounds.min.y - worldPadding
+                    || world.y > bounds.max.y + worldPadding)
+                    continue;
+
+                float distance = Mathf.Abs(world.x - bounds.center.x);
+                if (distance >= bestDistance) continue;
+                bestDistance = distance;
+                bottle = candidate;
+                glassId = actor.GlassId;
+            }
+            return bottle != null && glassId >= 0;
+        }
+
+        /// <summary>
+        /// Strict check for the largest allocation of every glass type in the 30-level
+        /// campaign and all three possible shelf rows. Bira joined the supported set once
+        /// its capacity-five Royal scene pool existed; nothing is fail-closed any more.
         /// </summary>
         public bool ValidateFullCampaignBindings(out string reason)
         {
@@ -380,7 +630,9 @@ namespace LiquidSort.Levels
                 || !ValidatePoolCount(lattePool, FullCampaignLattePoolSize,
                     GlassType.Latte, out reason)
                 || !ValidatePoolCount(tumblerPool, FullCampaignTumblerPoolSize,
-                    GlassType.Tumbler, out reason))
+                    GlassType.Tumbler, out reason)
+                || !ValidatePoolCount(biraPool, FullCampaignBiraPoolSize,
+                    GlassType.Bira, out reason))
                 return false;
 
             if (!EnsureActorCache(out reason)) return false;
@@ -393,8 +645,8 @@ namespace LiquidSort.Levels
         private void ValidateFullCampaignBindingsFromContextMenu()
         {
             if (ValidateFullCampaignBindings(out string reason))
-                Debug.Log("Bartender shelf: supported campaign bindings are valid; "
-                        + "Bira remains fail-closed.", this);
+                Debug.Log("Bartender shelf: full campaign bindings are valid for all five "
+                        + "glass types.", this);
             else
                 Debug.LogError("Bartender shelf binding error: " + reason, this);
         }
@@ -408,6 +660,7 @@ namespace LiquidSort.Levels
             subscribedController.LevelLoaded += HandleLevelLoaded;
             subscribedController.BoardChanged += HandleBoardChanged;
             subscribedController.StateChanged += HandleStateChanged;
+            subscribedController.Delivered += HandleDelivered;
         }
 
         private void Unsubscribe()
@@ -417,18 +670,40 @@ namespace LiquidSort.Levels
                 subscribedController.LevelLoaded -= HandleLevelLoaded;
                 subscribedController.BoardChanged -= HandleBoardChanged;
                 subscribedController.StateChanged -= HandleStateChanged;
+                subscribedController.Delivered -= HandleDelivered;
             }
             subscribedController = null;
         }
 
         private void HandleLevelLoaded(BsLevel level)
         {
+            if (synchronizationDeferralOwner != null)
+            {
+                deferredSynchronizationPending = true;
+                return;
+            }
             BsBoard snapshot = controller != null ? controller.Board : null;
             TryPresent(level, snapshot, controller != null ? controller.Palette : null);
         }
 
+        /// <summary>
+        /// Delivered always fires just before BoardChanged, so the id noted here is still
+        /// valid when the synchronise pass below decides which vessels leave the shelf.
+        /// </summary>
+        private void HandleDelivered(BartenderDeliveryReceipt receipt)
+        {
+            pendingDeliveryGlassId = receipt != null && receipt.DeliveredGlass != null
+                ? receipt.DeliveredGlass.Id
+                : -1;
+        }
+
         private void HandleBoardChanged()
         {
+            if (synchronizationDeferralOwner != null)
+            {
+                deferredSynchronizationPending = true;
+                return;
+            }
             if (!Ready || controller == null || controller.CurrentLevel == null) return;
             TrySynchronize(controller.Board, controller.Palette);
         }
@@ -446,13 +721,15 @@ namespace LiquidSort.Levels
             if (palette == null || palette.Count == 0)
                 return Reject("BsPalette Inspector/Resources bağlantısı eksik veya boş.");
 
+            // Consumed here rather than left standing: a rejected or repeated synchronise
+            // must not be able to fly a second glass through the arch.
+            int deliveredGlassId = pendingDeliveryGlassId;
+            pendingDeliveryGlassId = -1;
+
             activeActors.Clear();
             for (int i = 0; i < snapshot.Glasses.Count; i++)
             {
                 RtGlass glass = snapshot.Glasses[i];
-                if (glass.Type == GlassType.Bira)
-                    return Reject(UnsupportedBeerReason());
-
                 if (!actorByGlassId.TryGetValue(glass.Id, out Actor actor))
                 {
                     actor = Acquire(glass.Type);
@@ -477,8 +754,9 @@ namespace LiquidSort.Levels
             for (int i = 0; i < actors.Count; i++)
             {
                 Actor actor = actors[i];
-                if (!actor.Assigned || ContainsActor(activeActors, actor)) continue;
-                Release(actor);
+                if (!actor.Assigned || actor.Delivering
+                    || ContainsActor(activeActors, actor)) continue;
+                if (!TryBeginPortalDelivery(actor, deliveredGlassId)) Release(actor);
             }
 
             int neededRows = RowCountFor(activeActors.Count, configuredColumns);
@@ -496,6 +774,7 @@ namespace LiquidSort.Levels
 
             LayoutActiveActors();
             ActivateAndRefreshActors();
+            PlayReseat();
             PresentationChanged?.Invoke();
             return true;
         }
@@ -524,11 +803,6 @@ namespace LiquidSort.Levels
                 reason = $"ColumnsPerRow 1-{MaximumColumnsPerRow} aralığında olmalı.";
                 return false;
             }
-            if (ContainsBeer(level))
-            {
-                reason = UnsupportedBeerReason();
-                return false;
-            }
             if (snapshot.Glasses.Count > MaximumActiveGlasses)
             {
                 reason = $"Level {snapshot.Glasses.Count} bardak istiyor; statik aktif slot sınırı "
@@ -540,6 +814,7 @@ namespace LiquidSort.Levels
             int cocktails = 0;
             int lattes = 0;
             int tumblers = 0;
+            int biras = 0;
             for (int i = 0; i < snapshot.Glasses.Count; i++)
             {
                 RtGlass glass = snapshot.Glasses[i];
@@ -554,9 +829,7 @@ namespace LiquidSort.Levels
                     case GlassType.Kadeh: cocktails++; break;
                     case GlassType.Latte: lattes++; break;
                     case GlassType.Tumbler: tumblers++; break;
-                    case GlassType.Bira:
-                        reason = UnsupportedBeerReason();
-                        return false;
+                    case GlassType.Bira: biras++; break;
                     default:
                         reason = $"Desteklenmeyen bardak tipi: {(int)glass.Type}.";
                         return false;
@@ -566,7 +839,8 @@ namespace LiquidSort.Levels
             if (!ValidatePoolCount(shotPool, shots, GlassType.Shot, out reason)
                 || !ValidatePoolCount(cocktailPool, cocktails, GlassType.Kadeh, out reason)
                 || !ValidatePoolCount(lattePool, lattes, GlassType.Latte, out reason)
-                || !ValidatePoolCount(tumblerPool, tumblers, GlassType.Tumbler, out reason))
+                || !ValidatePoolCount(tumblerPool, tumblers, GlassType.Tumbler, out reason)
+                || !ValidatePoolCount(biraPool, biras, GlassType.Bira, out reason))
                 return false;
             if (!EnsureActorCache(out reason)) return false;
 
@@ -594,7 +868,8 @@ namespace LiquidSort.Levels
             if (!AddPoolToCache(shotPool, GlassType.Shot, out reason)
                 || !AddPoolToCache(cocktailPool, GlassType.Kadeh, out reason)
                 || !AddPoolToCache(lattePool, GlassType.Latte, out reason)
-                || !AddPoolToCache(tumblerPool, GlassType.Tumbler, out reason))
+                || !AddPoolToCache(tumblerPool, GlassType.Tumbler, out reason)
+                || !AddPoolToCache(biraPool, GlassType.Bira, out reason))
                 return false;
 
             actorCacheBuilt = true;
@@ -805,8 +1080,14 @@ namespace LiquidSort.Levels
 
         private void LayoutActiveActors()
         {
+            // The layout pass is the single authority on where a glass belongs, so any
+            // running tween is dropped before it can write to a transform behind its back.
+            StopSeatAnimation();
+
             int count = activeActors.Count;
             if (count == 0 || configuredRowCount <= 0) return;
+
+            RememberCurrentSeats();
 
             int basePerRow = count / configuredRowCount;
             int remainder = count % configuredRowCount;
@@ -822,11 +1103,10 @@ namespace LiquidSort.Levels
                         : rowCount == 3
                             ? threeAcrossColumnSpacing
                             : compactColumnSpacing;
+                bool tallLayout = configuredRowCount >= 3;
                 float scale = rowCount >= 4
-                    ? fourAcrossGlassScale
-                    : configuredRowCount >= 3
-                        ? threeRowSpaciousGlassScale
-                        : twoRowSpaciousGlassScale;
+                    ? (tallLayout ? fourAcrossThreeRowGlassScale : fourAcrossGlassScale)
+                    : (tallLayout ? threeRowSpaciousGlassScale : twoRowSpaciousGlassScale);
                 Vector2 shelfSeat = ShelfSeatInLayout(row);
                 float firstX = shelfSeat.x - 0.5f * spacing * (rowCount - 1);
                 int rowActorStart = actorIndex;
@@ -834,10 +1114,46 @@ namespace LiquidSort.Levels
                 for (int column = 0; column < rowCount; column++, actorIndex++)
                 {
                     Actor actor = activeActors[actorIndex];
+                    actor.Row = row;
+                    actor.Column = column;
                     SeatActor(actor, firstX + column * spacing,
                         shelfSeat.y - opticalSeatInset, scale);
                 }
                 CenterRowSilhouette(rowActorStart, rowCount, shelfSeat.x);
+            }
+
+            RecordSeatPoses();
+        }
+
+        /// <summary>
+        /// Snapshots the pose each glass is leaving, so a mid-level rebalance can glide out
+        /// of it instead of teleporting. Newly acquired glasses report no previous seat.
+        /// </summary>
+        private void RememberCurrentSeats()
+        {
+            for (int i = 0; i < activeActors.Count; i++)
+            {
+                Actor actor = activeActors[i];
+                Transform actorTransform = actor.Bottle.transform;
+                actor.HasPreviousSeat = actor.Seated;
+                actor.PreviousSeatPosition = actorTransform.position;
+                actor.PreviousSeatScale = actorTransform.localScale;
+            }
+        }
+
+        /// <summary>
+        /// Reads back the finished layout, including the row-centring shift, as the one pose
+        /// every animation is allowed to move towards.
+        /// </summary>
+        private void RecordSeatPoses()
+        {
+            for (int i = 0; i < activeActors.Count; i++)
+            {
+                Actor actor = activeActors[i];
+                Transform actorTransform = actor.Bottle.transform;
+                actor.SeatPosition = actorTransform.position;
+                actor.SeatScale = actorTransform.localScale;
+                actor.Seated = true;
             }
         }
 
@@ -901,6 +1217,306 @@ namespace LiquidSort.Levels
                 if (!bottle.gameObject.activeSelf) bottle.gameObject.SetActive(true);
                 bottle.Refresh();
             }
+        }
+
+        // ---- Level entrance ------------------------------------------------------
+        //
+        // Every method below only walks an already-seated transform. The static layout has
+        // already been applied by the time any of them runs, which is what keeps edit-mode
+        // builds (Application.isPlaying == false) and a disabled animation identical to the
+        // behaviour this view had before.
+
+        private bool CanAnimate =>
+            Application.isPlaying && isActiveAndEnabled && gameObject.activeInHierarchy;
+
+        /// <summary>Drops the freshly presented glasses onto the shelf, bottom row first.</summary>
+        private void PlayEntrance()
+        {
+            if (!CanAnimate || !animateEntrance || activeActors.Count == 0) return;
+
+            OrderActorsForEntrance();
+            BeginShelfFade();
+            // Held off-stage rather than hovering above the plank while waiting their turn.
+            for (int i = 0; i < activeActors.Count; i++)
+                activeActors[i].Bottle.gameObject.SetActive(false);
+            seatAnimation = StartCoroutine(EntranceRoutine());
+        }
+
+        /// <summary>
+        /// Glides the remaining glasses to their new seats after a delivery rebalances the
+        /// rows. Skipped when nothing actually moved.
+        /// </summary>
+        private void PlayReseat()
+        {
+            if (!CanAnimate || !animateEntrance || reseatDuration <= 0f) return;
+
+            bool moved = false;
+            for (int i = 0; i < activeActors.Count && !moved; i++)
+            {
+                Actor actor = activeActors[i];
+                moved = actor.HasPreviousSeat
+                    && ((actor.PreviousSeatPosition - actor.SeatPosition).sqrMagnitude > 1e-6f
+                        || (actor.PreviousSeatScale - actor.SeatScale).sqrMagnitude > 1e-6f);
+            }
+            if (!moved) return;
+
+            seatAnimation = StartCoroutine(ReseatRoutine());
+        }
+
+        private IEnumerator EntranceRoutine()
+        {
+            Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
+            float total = MeasureEntranceFalls();
+
+            float elapsed = 0f;
+            while (elapsed < total)
+            {
+                StepShelfFade(elapsed);
+                for (int i = 0; i < entranceOrder.Count; i++)
+                {
+                    Actor actor = entranceOrder[i];
+                    StepEntranceActor(actor, elapsed - actor.EntranceDelay, layoutUp);
+                }
+                yield return null;
+                // Unscaled so a paused board or a timeScale tweak cannot strand a glass
+                // halfway to its seat.
+                elapsed += Time.unscaledDeltaTime;
+            }
+
+            seatAnimation = null;
+            FinishShelfFade();
+            SnapActorsToSeat();
+        }
+
+        /// <summary>
+        /// Every glass is released from one line above the top plank rather than from a
+        /// fixed height over its own seat, so nothing appears out of thin air inside the
+        /// frame. Same release line plus the same acceleration means a bottom-row glass
+        /// simply falls for longer. Returns the length of the whole entrance.
+        /// </summary>
+        private float MeasureEntranceFalls()
+        {
+            float releaseY = SurfaceY(configuredRowCount, 0) + entranceDropHeight;
+            float total = 0f;
+            for (int i = 0; i < entranceOrder.Count; i++)
+            {
+                Actor actor = entranceOrder[i];
+                // Measured at the foot, not at the transform root: the root can sit anywhere
+                // inside the artwork, and it is the bottom of the glass that has to clear the
+                // top of the frame before the drop starts.
+                float footY = LayoutSpace.InverseTransformPoint(actor.FootAnchor.position).y;
+                actor.EntranceFallDistance = Mathf.Max(0.01f, releaseY - footY);
+                actor.EntranceFallDuration = entranceDropDuration
+                    * Mathf.Sqrt(actor.EntranceFallDistance / entranceDropHeight);
+                total = Mathf.Max(total, actor.EntranceDelay + actor.EntranceFallDuration
+                                       + entranceSettleDuration);
+            }
+            return total;
+        }
+
+        private void StepEntranceActor(Actor actor, float time, Vector3 layoutUp)
+        {
+            Transform actorTransform = actor.Bottle.transform;
+            GameObject actorObject = actor.Bottle.gameObject;
+
+            if (time < 0f)
+            {
+                // Held off-stage while it waits its turn, so an idle glass is never left
+                // hanging over the shelf.
+                if (actorObject.activeSelf) actorObject.SetActive(false);
+                actorTransform.localScale = actor.SeatScale;
+                return;
+            }
+            if (!actorObject.activeSelf)
+            {
+                // Coming back from off-stage the vessel has dropped its generated art, so it
+                // is refreshed on the spot rather than left to the next LateUpdate.
+                actorObject.SetActive(true);
+                actor.Bottle.Refresh();
+            }
+
+            if (time < actor.EntranceFallDuration)
+            {
+                LiftEntranceSorting(actor);
+                // Quadratic: the glass reads as dropped under gravity, not slid in.
+                float fall = time / actor.EntranceFallDuration;
+                actorTransform.position = actor.SeatPosition
+                    + layoutUp * (actor.EntranceFallDistance * (1f - fall * fall));
+                actorTransform.localScale = actor.SeatScale;
+                return;
+            }
+
+            DropEntranceSorting(actor);
+            actorTransform.position = actor.SeatPosition;
+            actorTransform.localScale =
+                LandingScale(actor.SeatScale, time - actor.EntranceFallDuration);
+        }
+
+        /// <summary>
+        /// Keeps a falling glass in front of every plank it passes, the same lift a pour
+        /// uses. Re-applied each frame on purpose: BottleShell re-publishes its authored
+        /// draw orders on the first LateUpdate after the vessel is switched back on, which
+        /// would otherwise swallow the lift and leave the drop half-eaten by a shelf.
+        /// </summary>
+        private void LiftEntranceSorting(Actor actor)
+        {
+            if (entranceSortingBoost <= 0) return;
+            actor.SortingLifted = true;
+            actor.Bottle.SetSortingOffset(entranceSortingBoost);
+        }
+
+        private static void DropEntranceSorting(Actor actor)
+        {
+            if (!actor.SortingLifted) return;
+            actor.SortingLifted = false;
+            if (actor.Bottle != null) actor.Bottle.SetSortingOffset(0);
+        }
+
+        /// <summary>
+        /// One damped squash-and-stretch beat on contact. Returns the exact seat scale once
+        /// the beat is over, so repeated levels cannot accumulate drift.
+        /// </summary>
+        private Vector3 LandingScale(Vector3 seatScale, float sinceLanding)
+        {
+            if (entranceLandingSquash <= 0f || entranceSettleDuration <= 0f) return seatScale;
+            float life = sinceLanding / entranceSettleDuration;
+            if (life >= 1f) return seatScale;
+
+            float amount = entranceLandingSquash * (1f - life)
+                         * Mathf.Cos(life * Mathf.PI * 1.5f);
+            return new Vector3(seatScale.x * (1f + amount),
+                               seatScale.y * (1f - amount),
+                               seatScale.z);
+        }
+
+        private IEnumerator ReseatRoutine()
+        {
+            float elapsed = 0f;
+            while (elapsed < reseatDuration)
+            {
+                float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / reseatDuration));
+                for (int i = 0; i < activeActors.Count; i++)
+                {
+                    Actor actor = activeActors[i];
+                    if (!actor.HasPreviousSeat) continue;
+                    Transform actorTransform = actor.Bottle.transform;
+                    actorTransform.position = Vector3.Lerp(
+                        actor.PreviousSeatPosition, actor.SeatPosition, k);
+                    actorTransform.localScale = Vector3.Lerp(
+                        actor.PreviousSeatScale, actor.SeatScale, k);
+                }
+                yield return null;
+                elapsed += Time.unscaledDeltaTime;
+            }
+
+            seatAnimation = null;
+            SnapActorsToSeat();
+        }
+
+        /// <summary>
+        /// Ends any animation on the exact layout pose. Also used as the failure path: a
+        /// stopped coroutine can never leave a glass in the air.
+        /// </summary>
+        private void SnapActorsToSeat()
+        {
+            for (int i = 0; i < activeActors.Count; i++)
+            {
+                Actor actor = activeActors[i];
+                DropEntranceSorting(actor);
+                if (actor.Bottle == null || !actor.Seated) continue;
+                GameObject actorObject = actor.Bottle.gameObject;
+                if (!actorObject.activeSelf) actorObject.SetActive(true);
+                actor.Bottle.transform.position = actor.SeatPosition;
+                actor.Bottle.transform.localScale = actor.SeatScale;
+            }
+        }
+
+        private void StopSeatAnimation()
+        {
+            if (seatAnimation != null)
+            {
+                StopCoroutine(seatAnimation);
+                seatAnimation = null;
+            }
+            for (int i = 0; i < activeActors.Count; i++)
+                DropEntranceSorting(activeActors[i]);
+            FinishShelfFade();
+        }
+
+        private void OrderActorsForEntrance()
+        {
+            entranceOrder.Clear();
+            // Bottom row first: the shelf visibly fills from the plank the player reads last.
+            for (int row = configuredRowCount - 1; row >= 0; row--)
+            {
+                for (int i = 0; i < activeActors.Count; i++)
+                    if (activeActors[i].Row == row) entranceOrder.Add(activeActors[i]);
+            }
+
+            float delay = 0f;
+            int previousRow = -1;
+            for (int i = 0; i < entranceOrder.Count; i++)
+            {
+                Actor actor = entranceOrder[i];
+                if (previousRow >= 0)
+                    delay += actor.Row == previousRow
+                        ? entranceGlassStagger
+                        : entranceRowStagger;
+                actor.EntranceDelay = delay;
+                previousRow = actor.Row;
+            }
+        }
+
+        private void BeginShelfFade()
+        {
+            shelfFadeRenderers.Clear();
+            shelfFadeColors.Clear();
+            if (shelfFadeDuration <= 0f) return;
+
+            for (int row = 0; row < configuredRowCount; row++)
+                AddShelfFadeRenderer(shelfRows[row] != null ? shelfRows[row].plank : null);
+            for (int span = 0; span < configuredRowCount - 1; span++)
+            {
+                ShelfSpanBinding binding = shelfSpans[span];
+                if (binding == null) continue;
+                AddShelfFadeRenderer(binding.leftPost);
+                AddShelfFadeRenderer(binding.rightPost);
+            }
+            StepShelfFade(0f);
+        }
+
+        private void AddShelfFadeRenderer(SpriteRenderer renderer)
+        {
+            if (renderer == null || !renderer.enabled) return;
+            shelfFadeRenderers.Add(renderer);
+            shelfFadeColors.Add(renderer.color);
+        }
+
+        private void StepShelfFade(float elapsed)
+        {
+            if (shelfFadeRenderers.Count == 0) return;
+            float k = shelfFadeDuration <= 0f
+                ? 1f
+                : Mathf.Clamp01(elapsed / shelfFadeDuration);
+            for (int i = 0; i < shelfFadeRenderers.Count; i++)
+            {
+                SpriteRenderer renderer = shelfFadeRenderers[i];
+                if (renderer == null) continue;
+                Color color = shelfFadeColors[i];
+                color.a *= k;
+                renderer.color = color;
+            }
+            if (k >= 1f) FinishShelfFade();
+        }
+
+        /// <summary>Restores the authored plank/post colours the fade borrowed.</summary>
+        private void FinishShelfFade()
+        {
+            for (int i = 0; i < shelfFadeRenderers.Count; i++)
+                if (shelfFadeRenderers[i] != null)
+                    shelfFadeRenderers[i].color = shelfFadeColors[i];
+            shelfFadeRenderers.Clear();
+            shelfFadeColors.Clear();
         }
 
         private void ApplyShelfLayout(int rowCount)
@@ -991,25 +1607,6 @@ namespace LiquidSort.Levels
             return Mathf.Max(2, needed);
         }
 
-        private static bool ContainsBeer(BsLevel level)
-        {
-            if (level == null) return false;
-            if (level.Glasses != null)
-            {
-                for (int i = 0; i < level.Glasses.Count; i++)
-                    if (level.Glasses[i] != null
-                        && level.Glasses[i].Type == GlassType.Bira)
-                        return true;
-            }
-            if (level.Orders != null)
-            {
-                for (int i = 0; i < level.Orders.Count; i++)
-                    if (level.Orders[i] != null
-                        && level.Orders[i].Glass == GlassType.Bira)
-                        return true;
-            }
-            return false;
-        }
 
         private static bool ContainsActor(List<Actor> list, Actor wanted)
         {
@@ -1020,6 +1617,7 @@ namespace LiquidSort.Levels
 
         private void Release(Actor actor)
         {
+            DropEntranceSorting(actor);
             actorByGlassId.Remove(actor.GlassId);
             if (actor.Bottle != null)
             {
@@ -1031,10 +1629,87 @@ namespace LiquidSort.Levels
             }
             actor.GlassId = -1;
             actor.Assigned = false;
+            actor.Seated = false;
+            actor.HasPreviousSeat = false;
+        }
+
+        // ---- Delivery portal ------------------------------------------------------
+        //
+        // A served glass is the one case where the board is ahead of the shelf: the rules
+        // dropped it a frame ago, but the player still has to see it handed over. The actor
+        // is unbound from the board here and only returned to its pool once the portal
+        // reports the vessel as hidden, so a delivery in flight can never be switched off,
+        // reseated or handed to a new level.
+
+        private bool TryBeginPortalDelivery(Actor actor, int deliveredGlassId)
+        {
+            if (deliveryPortal == null || deliveredGlassId < 0
+                || actor.GlassId != deliveredGlassId || actor.Bottle == null)
+                return false;
+
+            DropEntranceSorting(actor);
+            if (!deliveryPortal.Play(
+                    actor.Bottle,
+                    actor.FootAnchor,
+                    null,
+                    () => FinishPortalDelivery(actor),
+                    NotifyDeliveryPresentationFinished))
+                return false;
+
+            actorByGlassId.Remove(actor.GlassId);
+            glassIdByBottle.Remove(actor.Bottle);
+            actor.GlassId = -1;
+            actor.Seated = false;
+            actor.HasPreviousSeat = false;
+            // Still Assigned on purpose: the pool slot belongs to this flight until it lands.
+            actor.Delivering = true;
+            deliveringActors.Add(actor);
+            return true;
+        }
+
+        private void FinishPortalDelivery(Actor actor)
+        {
+            if (!actor.Delivering) return;
+            actor.Delivering = false;
+            deliveringActors.Remove(actor);
+            Release(actor);
+        }
+
+        private void NotifyDeliveryPresentationFinished()
+        {
+            DeliveryPresentationFinished?.Invoke();
+        }
+
+        /// <summary>
+        /// Ends every flight on the exact pose the pool expects. The portal fires the same
+        /// completion callbacks it would have fired on its own, so this is a shortcut, not
+        /// a second release path.
+        /// </summary>
+        private void CancelPortalDeliveries()
+        {
+            if (deliveryPortal != null) deliveryPortal.CancelAll();
+            if (deliveringActors.Count == 0) return;
+
+            // Only reachable if the portal reference was lost mid-flight.
+            deliveryScratch.Clear();
+            deliveryScratch.AddRange(deliveringActors);
+            deliveringActors.Clear();
+            for (int i = 0; i < deliveryScratch.Count; i++)
+            {
+                Actor actor = deliveryScratch[i];
+                actor.Delivering = false;
+                Release(actor);
+            }
+            deliveryScratch.Clear();
+            // A lost/replaced portal cannot invoke its onFinished callback. The fallback
+            // release above is still a terminal presentation beat, so lock owners need the
+            // same completion signal exactly once.
+            NotifyDeliveryPresentationFinished();
         }
 
         private void ClearAssignments()
         {
+            CancelPortalDeliveries();
             activeActors.Clear();
             actorByGlassId.Clear();
             glassIdByBottle.Clear();
@@ -1043,11 +1718,15 @@ namespace LiquidSort.Levels
             ClearPool(cocktailPool);
             ClearPool(lattePool);
             ClearPool(tumblerPool);
+            ClearPool(biraPool);
             for (int i = 0; i < actors.Count; i++)
             {
                 Actor actor = actors[i];
                 actor.GlassId = -1;
                 actor.Assigned = false;
+                actor.Seated = false;
+                actor.HasPreviousSeat = false;
+                actor.Delivering = false;
             }
         }
 
@@ -1068,6 +1747,7 @@ namespace LiquidSort.Levels
 
         private void ClearPresentation()
         {
+            StopSeatAnimation();
             ClearAssignments();
             DisableAllShelves();
             configuredRowCount = 0;
@@ -1107,9 +1787,5 @@ namespace LiquidSort.Levels
             PresentationRejected?.Invoke(LastError);
             return false;
         }
-
-        private static string UnsupportedBeerReason() =>
-            "Bira tipi için scene-native Royal havuzu henüz yok. Profil uydurulmadı; "
-          + "level sunumu güvenli olarak temizlendi ve domain board değiştirilmedi.";
     }
 }
