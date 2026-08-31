@@ -90,7 +90,7 @@ namespace LiquidSort.Tests.EditMode
                 float expectedSeconds = levelIndex <= 14
                     ? 0f
                     : levelIndex <= 20
-                        ? 30f
+                        ? 35f
                         : levelIndex <= 25 ? 40f : 45f;
 
                 for (int orderIndex = 0; orderIndex < level.Orders.Count; orderIndex++)

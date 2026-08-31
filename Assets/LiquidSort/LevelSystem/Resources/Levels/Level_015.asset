@@ -101,27 +101,27 @@ MonoBehaviour:
   - Kind: 0
     Glass: 2
     Contents: 000000000100000001000000
-    TimeLimit: 30
+    TimeLimit: 35
   - Kind: 0
     Glass: 2
     Contents: 020000000200000002000000
-    TimeLimit: 30
+    TimeLimit: 35
   - Kind: 0
     Glass: 2
     Contents: 050000000500000005000000
-    TimeLimit: 30
+    TimeLimit: 35
   - Kind: 1
     Glass: 3
     Contents: 00000000020000000500000003000000
-    TimeLimit: 30
+    TimeLimit: 35
   - Kind: 0
     Glass: 2
     Contents: 010000000100000001000000
-    TimeLimit: 30
+    TimeLimit: 35
   - Kind: 0
     Glass: 2
     Contents: 020000000400000004000000
-    TimeLimit: 30
+    TimeLimit: 35
   OrderSlots: 3
   AllowHiddenColors: 1
   AllowTimedOrders: 1
