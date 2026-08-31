@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using BartenderSort.Core;
+using LiquidSort.Levels;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -68,6 +69,33 @@ namespace LiquidSort.Tests.EditMode
                         $"Level {levelIndex} order [{orderIndex}] must be untimed.");
                 }
             }
+        }
+
+        [Test]
+        public void Visible_order_cards_are_centered_without_changing_authored_spacing()
+        {
+            var authored = new[]
+            {
+                new Vector2(-220f, 156f),
+                new Vector2(0f, 156f),
+                new Vector2(220f, 156f)
+            };
+
+            float twoLeft = OrderStripPresenter.CenteredSlotX(authored, 2, 0);
+            float twoRight = OrderStripPresenter.CenteredSlotX(authored, 2, 1);
+            Assert.That(twoLeft, Is.EqualTo(-110f).Within(0.001f));
+            Assert.That(twoRight, Is.EqualTo(110f).Within(0.001f));
+            Assert.That((twoLeft + twoRight) * 0.5f,
+                Is.EqualTo(0f).Within(0.001f));
+
+            Assert.That(OrderStripPresenter.CenteredSlotX(authored, 1, 0),
+                Is.EqualTo(0f).Within(0.001f));
+            Assert.That(OrderStripPresenter.CenteredSlotX(authored, 3, 0),
+                Is.EqualTo(-220f).Within(0.001f));
+            Assert.That(OrderStripPresenter.CenteredSlotX(authored, 3, 1),
+                Is.EqualTo(0f).Within(0.001f));
+            Assert.That(OrderStripPresenter.CenteredSlotX(authored, 3, 2),
+                Is.EqualTo(220f).Within(0.001f));
         }
 
         [Test]

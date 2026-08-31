@@ -16,42 +16,80 @@ namespace LiquidSort.Levels
     [AddComponentMenu("")]
     public sealed class GlassLockPresenter : MonoBehaviour
     {
+        private sealed class UnitLockVisual
+        {
+            public SpriteRenderer Seal;
+            public SpriteRenderer Rim;
+            public SpriteRenderer Shadow;
+            public SpriteRenderer Icon;
+        }
+
         private sealed class BottleVisuals
         {
             public LiquidBottle Bottle;
-            public readonly List<SpriteRenderer> UnitLocks =
-                new List<SpriteRenderer>(LiquidBottle.MaxBands);
+            public readonly List<UnitLockVisual> UnitLocks =
+                new List<UnitLockVisual>(LiquidBottle.MaxBands);
+            public SpriteRenderer ChainHalo;
+            public SpriteRenderer ChainRim;
+            public SpriteRenderer ChainShadow;
             public SpriteRenderer ChainIcon;
             public SpriteRenderer ChainBadge;
+            public SpriteRenderer ChainBadgeRim;
             public TextMesh ChainCount;
             public Renderer ChainCountRenderer;
         }
 
         private const string MarkerPrefix = "GameplayLock_";
         private const string UnitMarkerPrefix = MarkerPrefix + "Unit_";
+        private const string ChainHaloName = MarkerPrefix + "ChainHalo";
+        private const string ChainRimName = MarkerPrefix + "ChainRim";
+        private const string ChainShadowName = MarkerPrefix + "ChainShadow";
         private const string ChainMarkerName = MarkerPrefix + "Chain";
         private const string ChainBadgeName = MarkerPrefix + "ChainBadge";
+        private const string ChainBadgeRimName = MarkerPrefix + "ChainBadgeRim";
         private const string ChainCountName = MarkerPrefix + "ChainCount";
 
         // BottleShell ends at order 7 and the authored delivery check sits at 12.
-        private const int UnitLockOrder = 10;
-        private const int ChainIconOrder = 10;
-        private const int ChainBadgeOrder = 11;
+        private const int LockSealOrder = 8;
+        private const int LockShadowOrder = 9;
+        private const int LockRimOrder = 10;
+        private const int UnitLockOrder = 11;
+        private const int ChainHaloOrder = 8;
+        private const int ChainShadowOrder = 9;
+        private const int ChainRimOrder = 10;
+        private const int ChainIconOrder = 11;
+        private const int ChainBadgeOrder = 10;
+        private const int ChainBadgeRimOrder = 11;
         private const int ChainCountOrder = 12;
 
         // Ratios are the source GlassView dimensions: Size.y=238, lock max=44.03,
         // chain=54, chain icon y=+10, counter diameter=38 and counter y=-34.
         private const float UnitScaleWithinBand = 0.70f;
         private const float UnitMaxHeightShare = 0.185f;
+        private const float UnitSealWidthShare = 0.78f;
+        private const float UnitSealHeightShare = 0.78f;
+        private const float UnitSealIconPadding = 1.30f;
         private const float ChainHeightShare = 54f / 238f;
         private const float ChainIconOffsetShare = 10f / 238f;
         private const float ChainBadgeSizeShare = 38f / 238f;
         private const float ChainBadgeOffsetShare = 34f / 238f;
+        private const float ChainSealWidthShare = 0.84f;
+        private const float ChainSealHeightScale = 1.24f;
 
         private static readonly Color UnitLockTint =
-            new Color(1f, 0.95f, 0.80f, 0.95f);
+            new Color(1f, 0.91f, 0.58f, 1f);
+        private static readonly Color UnitSealTint =
+            new Color(0.20f, 0.055f, 0.29f, 0.72f);
+        private static readonly Color UnitRimTint =
+            new Color(1f, 0.62f, 0.08f, 0.82f);
+        private static readonly Color LockShadowTint =
+            new Color(0.18f, 0.045f, 0.015f, 0.76f);
         private static readonly Color ChainTint =
-            new Color(0.98f, 0.82f, 0.35f, 0.95f);
+            new Color(1f, 0.77f, 0.16f, 1f);
+        private static readonly Color ChainHaloTint =
+            new Color(0.15f, 0.035f, 0.25f, 0.86f);
+        private static readonly Color ChainRimTint =
+            new Color(1f, 0.67f, 0.08f, 0.92f);
         private static readonly Color ChainBadgeTint =
             new Color32(0x2A, 0x22, 0x10, 0xFF);
         private static readonly Color ChainCountTint =
@@ -172,16 +210,23 @@ namespace LiquidSort.Levels
                                                      out float bandHeight))
                     continue;
 
-                SpriteRenderer marker = GetOrCreateUnitLock(set, shown++);
+                UnitLockVisual marker = GetOrCreateUnitLock(set, shown++);
                 float artHeight = ArtHeight(set.Bottle);
                 float wantedHeight = Mathf.Min(
                     bandHeight * UnitScaleWithinBand,
                     artHeight * UnitMaxHeightShare);
-                PlaceSprite(marker, center, wantedHeight, UnitLockTint);
+                // A lock is presentation metadata, not part of the liquid surface. Keep
+                // the marker as one transparent icon in the bottle's canonical local
+                // space; opaque discs/rims read as a second liquid ellipse and make the
+                // Royal glass appear to change shape when a lock mechanic is introduced.
+                if (marker.Seal != null) marker.Seal.enabled = false;
+                if (marker.Rim != null) marker.Rim.enabled = false;
+                if (marker.Shadow != null) marker.Shadow.enabled = false;
+                PlaceSprite(marker.Icon, center, wantedHeight, UnitLockTint);
             }
 
             for (int i = shown; i < set.UnitLocks.Count; i++)
-                set.UnitLocks[i].enabled = false;
+                Hide(set.UnitLocks[i]);
         }
 
         private void RefreshChain(BottleVisuals set, RtGlass glass, int delivered)
@@ -191,9 +236,7 @@ namespace LiquidSort.Levels
                 || !set.Bottle.TryGetLiquidColumnVisualCenter(out Vector2 center,
                                                               out _))
             {
-                set.ChainIcon.enabled = false;
-                set.ChainBadge.enabled = false;
-                set.ChainCountRenderer.enabled = false;
+                HideChain(set);
                 return;
             }
 
@@ -202,9 +245,15 @@ namespace LiquidSort.Levels
             Vector2 badgeCenter = center - Vector2.up * (artHeight * ChainBadgeOffsetShare);
             float iconHeight = artHeight * ChainHeightShare;
             float badgeDiameter = artHeight * ChainBadgeSizeShare;
-
+            // As with per-unit locks, chain decoration must not add an opaque surface
+            // inside the vessel. The icon and count are enough and inherit the exact
+            // bottle/profile scale through their local transform.
+            if (set.ChainHalo != null) set.ChainHalo.enabled = false;
+            if (set.ChainRim != null) set.ChainRim.enabled = false;
+            if (set.ChainShadow != null) set.ChainShadow.enabled = false;
             PlaceSprite(set.ChainIcon, iconCenter, iconHeight, ChainTint);
             PlaceSprite(set.ChainBadge, badgeCenter, badgeDiameter, ChainBadgeTint);
+            if (set.ChainBadgeRim != null) set.ChainBadgeRim.enabled = false;
 
             TextMesh count = set.ChainCount;
             count.text = glass.ChainRemaining(delivered).ToString();
@@ -244,7 +293,7 @@ namespace LiquidSort.Levels
             return set;
         }
 
-        private SpriteRenderer GetOrCreateUnitLock(BottleVisuals set, int index)
+        private UnitLockVisual GetOrCreateUnitLock(BottleVisuals set, int index)
         {
             while (set.UnitLocks.Count <= index)
             {
@@ -253,9 +302,13 @@ namespace LiquidSort.Levels
                 int sortingLayerId = source != null
                     ? source.sortingLayerID
                     : SortingLayer.NameToID(set.Bottle.sortingLayer);
-                SpriteRenderer marker = GetOrCreateSpriteRenderer(
-                    set.Bottle, UnitMarkerPrefix + slot, BartenderLockIcons.Lock,
-                    sortingLayerId, UnitLockOrder);
+                string markerName = UnitMarkerPrefix + slot;
+                var marker = new UnitLockVisual
+                {
+                    Icon = GetOrCreateSpriteRenderer(
+                        set.Bottle, markerName, BartenderLockIcons.Lock,
+                        sortingLayerId, UnitLockOrder)
+                };
                 set.UnitLocks.Add(marker);
                 set.Bottle.InvalidateRenderers();
             }
@@ -349,6 +402,106 @@ namespace LiquidSort.Levels
             renderer.enabled = true;
         }
 
+        private static void PlaceRect(SpriteRenderer renderer, Vector2 center,
+                                      Vector2 wantedSize, Color tint)
+        {
+            Sprite sprite = renderer.sprite;
+            if (sprite == null || wantedSize.x <= 0.0001f || wantedSize.y <= 0.0001f
+                || sprite.bounds.size.x <= 0.0001f
+                || sprite.bounds.size.y <= 0.0001f)
+            {
+                renderer.enabled = false;
+                return;
+            }
+
+            Transform marker = renderer.transform;
+            marker.localPosition = new Vector3(center.x, center.y, 0f);
+            marker.localRotation = Quaternion.identity;
+            marker.localScale = new Vector3(
+                wantedSize.x / sprite.bounds.size.x,
+                wantedSize.y / sprite.bounds.size.y,
+                1f);
+            renderer.color = tint;
+            renderer.enabled = true;
+        }
+
+        /// <summary>
+        /// A tapered unit is only as wide as its narrowest sampled chord. Using the centre
+        /// chord alone lets a wide oval seal escape through the wall near the top or bottom
+        /// of a cocktail bowl; three samples keep the decoration inside the actual liquid.
+        /// </summary>
+        private static float SafeBandHalfWidth(LiquidBottle bottle, float centerY,
+                                               float bandHeight)
+        {
+            Vector2[] polygon = bottle.InteriorPolygon;
+            float center = VesselFillMath.HalfWidthAt(polygon, centerY, out _);
+            if (center <= 0.0001f) return 0f;
+
+            float inset = Mathf.Max(0f, bandHeight) * 0.36f;
+            float lower = VesselFillMath.HalfWidthAt(polygon, centerY - inset, out _);
+            float upper = VesselFillMath.HalfWidthAt(polygon, centerY + inset, out _);
+            if (lower <= 0.0001f) lower = center;
+            if (upper <= 0.0001f) upper = center;
+            return Mathf.Min(center, Mathf.Min(lower, upper));
+        }
+
+        /// <summary>
+        /// A restrained idle glint keeps the lock readable over every drink colour without
+        /// moving the bottle or competing with pour/seat animation. Only child icons move;
+        /// unlock feedback remains owned by MechanicRevealPresenter.
+        /// </summary>
+        private void AnimateIdleLocks()
+        {
+            if (!Application.isPlaying || visuals.Count == 0) return;
+
+            float time = Time.unscaledTime;
+            foreach (BottleVisuals set in visuals.Values)
+            {
+                if (set == null || set.Bottle == null) continue;
+                float phase = Mathf.Abs(set.Bottle.GetInstanceID() % 97) * 0.071f;
+
+                for (int i = 0; i < set.UnitLocks.Count; i++)
+                {
+                    UnitLockVisual marker = set.UnitLocks[i];
+                    if (marker == null || marker.Icon == null || !marker.Icon.enabled)
+                        continue;
+
+                    float wave = 0.5f + 0.5f * Mathf.Sin(
+                        time * 2.15f + phase + i * 0.83f);
+                    if (marker.Shadow != null)
+                        marker.Icon.transform.localScale =
+                            marker.Shadow.transform.localScale
+                            * Mathf.Lerp(1f, 1.022f, wave);
+                    marker.Icon.color = WithAlpha(
+                        UnitLockTint, Mathf.Lerp(0.90f, 1f, wave));
+                    if (marker.Rim != null)
+                        marker.Rim.color = WithAlpha(
+                            UnitRimTint, Mathf.Lerp(0.68f, 0.90f, wave));
+                }
+
+                if (set.ChainIcon == null || !set.ChainIcon.enabled) continue;
+                float chainWave = Mathf.Sin(time * 1.45f + phase);
+                set.ChainIcon.transform.localRotation =
+                    Quaternion.Euler(0f, 0f, chainWave * 1.8f);
+                if (set.ChainShadow != null)
+                    set.ChainIcon.transform.localScale =
+                        set.ChainShadow.transform.localScale
+                        * (1f + Mathf.Abs(chainWave) * 0.014f);
+                if (set.ChainHalo != null)
+                    set.ChainHalo.color = WithAlpha(
+                        ChainHaloTint, 0.74f + Mathf.Abs(chainWave) * 0.12f);
+                if (set.ChainRim != null)
+                    set.ChainRim.color = WithAlpha(
+                        ChainRimTint, 0.82f + Mathf.Abs(chainWave) * 0.10f);
+            }
+        }
+
+        private static Color WithAlpha(Color color, float alpha)
+        {
+            color.a = Mathf.Clamp01(alpha);
+            return color;
+        }
+
         private static float ArtHeight(LiquidBottle bottle)
         {
             VesselProfile profile = bottle.profile;
@@ -386,9 +539,28 @@ namespace LiquidSort.Levels
         {
             if (set == null) return;
             for (int i = 0; i < set.UnitLocks.Count; i++)
-                if (set.UnitLocks[i] != null) set.UnitLocks[i].enabled = false;
+                Hide(set.UnitLocks[i]);
+            HideChain(set);
+        }
+
+        private static void Hide(UnitLockVisual visual)
+        {
+            if (visual == null) return;
+            if (visual.Seal != null) visual.Seal.enabled = false;
+            if (visual.Rim != null) visual.Rim.enabled = false;
+            if (visual.Shadow != null) visual.Shadow.enabled = false;
+            if (visual.Icon != null) visual.Icon.enabled = false;
+        }
+
+        private static void HideChain(BottleVisuals set)
+        {
+            if (set == null) return;
+            if (set.ChainHalo != null) set.ChainHalo.enabled = false;
+            if (set.ChainRim != null) set.ChainRim.enabled = false;
+            if (set.ChainShadow != null) set.ChainShadow.enabled = false;
             if (set.ChainIcon != null) set.ChainIcon.enabled = false;
             if (set.ChainBadge != null) set.ChainBadge.enabled = false;
+            if (set.ChainBadgeRim != null) set.ChainBadgeRim.enabled = false;
             if (set.ChainCountRenderer != null) set.ChainCountRenderer.enabled = false;
         }
 
@@ -509,6 +681,8 @@ namespace LiquidSort.Levels
         public static Sprite Lock => Get("lock", DrawLock);
         public static Sprite Chain => Get("chain", DrawChain);
         public static Sprite Circle => Get("circle", DrawCircle);
+        public static Sprite SoftDisc => Get("soft-disc", DrawSoftDisc);
+        public static Sprite Ring => Get("ring", DrawRing);
 
         private static Sprite Get(string key, Action<float[]> draw)
         {
@@ -621,6 +795,28 @@ namespace LiquidSort.Levels
                         radius - 1f, radius + 0.6f, distance);
                 }
             }
+        }
+
+        private static void DrawSoftDisc(float[] mask)
+        {
+            Vector2 center = Vector2.one * (Size * 0.5f);
+            float radius = Size * 0.48f;
+            for (int y = 0; y < Size; y++)
+            {
+                for (int x = 0; x < Size; x++)
+                {
+                    float distance = Vector2.Distance(
+                        new Vector2(x + 0.5f, y + 0.5f), center);
+                    mask[y * Size + x] = 0.82f * (1f - Smooth(
+                        radius * 0.74f, radius + 0.6f, distance));
+                }
+            }
+        }
+
+        private static void DrawRing(float[] mask)
+        {
+            DrawCircle(mask);
+            Punch(mask, 0.5f, 0.5f, 0.35f);
         }
 
         private static void Box(float[] mask, float x0, float y0, float x1, float y1)

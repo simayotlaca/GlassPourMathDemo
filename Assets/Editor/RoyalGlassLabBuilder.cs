@@ -60,25 +60,34 @@ public static class RoyalGlassLabBuilder
     private const string PourStreamMaterial =
         "Assets/LiquidSort/Materials/PourStream.mat";
 
-    private static bool refreshed;
+    // Static fields reset during a domain reload; SessionState deliberately does not.
+    private const string RefreshPendingSessionKey =
+        "GlassPourMathDemo.RoyalGlassLabBuilder.RefreshPending";
 
     static RoyalGlassLabBuilder() => EditorApplication.update += PollRequest;
 
     private static void PollRequest()
     {
-        if (!File.Exists(RequestPath)) { refreshed = false; return; }
+        if (!File.Exists(RequestPath))
+        {
+            if (SessionState.GetBool(RefreshPendingSessionKey, false))
+                SessionState.EraseBool(RefreshPendingSessionKey);
+            return;
+        }
         if (EditorApplication.isCompiling || EditorApplication.isUpdating
             || EditorApplication.isPlayingOrWillChangePlaymode) return;
 
-        if (!refreshed)
+        if (!SessionState.GetBool(RefreshPendingSessionKey, false))
         {
-            refreshed = true;
+            SessionState.SetBool(RefreshPendingSessionKey, true);
             AssetDatabase.Refresh();
             return;
         }
 
-        refreshed = false;
-        File.Delete(RequestPath);
+        try { File.Delete(RequestPath); }
+        catch (IOException) { return; }
+        catch (UnauthorizedAccessException) { return; }
+        SessionState.EraseBool(RefreshPendingSessionKey);
         try
         {
             Build();

@@ -24,7 +24,7 @@ bağlamak gerekmez.
 `SFX_ButtonClick`, `SFX_ButtonBack`, `SFX_TabSwitch`, `SFX_SliderTick`,
 `SFX_ToggleOn`, `SFX_ToggleOff`, `SFX_LevelNodePop`, `SFX_MapAdvance`.
 
-Arka plan müziği `BGM_Bar_Loop` adıyla eklenir. Unity desteklediği sürece `.wav`,
+Arka plan müziği `BGM_Bar_Loop` adıyla yüklenir. Unity desteklediği sürece `.wav`,
 `.ogg` veya başka bir AudioClip uzantısı kullanılabilir; önemli olan dosya adıdır.
 
 ## Kurulu klipler
@@ -37,3 +37,7 @@ Arka plan müziği `BGM_Bar_Loop` adıyla eklenir. Unity desteklediği sürece `
 - `SFX_Win.wav`: hızlı ödül kancalı, sıcak saksafon başarı cümlesi.
 - `SFX_Fail.wav`: aynı ses ailesinde, hafif Mi minör gölgeli ve tonik çözülmesi
   olmayan nazik başarısızlık cümlesi.
+- `BGM_Bar_Loop.wav`: D majör, 96 BPM ve 40 saniyelik; pizzicato bas, tenor
+  ukulele, felt piyano, marimba, ocarina ve küçük şişe baloncuklarından oluşan
+  kusursuz döngülü sevimli kertenkele barı müziği. Sonuç seslerinde otomatik
+  duck olur ve sonraki tur/menü geçişinde yumuşakça geri gelir.

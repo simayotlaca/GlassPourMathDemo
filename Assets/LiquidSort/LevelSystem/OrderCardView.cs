@@ -632,9 +632,15 @@ namespace LiquidSort.Levels
         public void SetRestingPosition(Vector2 anchoredPosition, bool snap)
         {
             if (rt == null) rt = transform as RectTransform;
+            bool restingPositionUnchanged = restPositionInitialized
+                && (restingAnchoredPosition - anchoredPosition).sqrMagnitude
+                <= 0.000001f;
             restingAnchoredPosition = anchoredPosition;
             restPositionInitialized = true;
             if (!snap || rt == null) return;
+            if (restingPositionUnchanged
+                && (rt.anchoredPosition - anchoredPosition).sqrMagnitude
+                <= 0.000001f) return;
 
             // Kuyruktan çıkan gizli view aynı değerde bir siparişle yeniden kullanılabilir.
             // Değer eşitliği SetOrder'da assignment değişimini sakladığı için, eski teslim

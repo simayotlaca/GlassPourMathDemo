@@ -371,6 +371,122 @@ namespace LiquidSort.Levels
             return slot >= 0 && LoadCampaignSlot(slot);
         }
 
+#if UNITY_EDITOR
+        internal bool EditorLevelJumpReady => startHasRun;
+
+        /// <summary>
+        /// Level Jumper'ın Editor-only kapısı. Hedefi ve canı mevcut turu değiştirmeden
+        /// doğrular; etkin makbuzu hedef slota taşır, eski sunumu normal Unloaded olayıyla
+        /// temizler ve üretimde kullanılan level yükleme/event zincirini aynen çalıştırır.
+        /// </summary>
+        internal bool EditorTryJumpToLevelNumber(
+            int oneBasedLevelNumber, out bool ownershipTouched,
+            out string ownedAttemptId, out int ownedAttemptSlot,
+            out string rejectionReason)
+        {
+            ownershipTouched = false;
+            ownedAttemptId = null;
+            ownedAttemptSlot = -1;
+            rejectionReason = null;
+            if (!startHasRun)
+            {
+                rejectionReason = "Level sunumu henüz hazırlanıyor";
+                return false;
+            }
+            if (MutationBlocked)
+            {
+                rejectionReason = "Sunum veya başka bir level işlemi sürüyor";
+                return false;
+            }
+
+            int targetSlot = FindCampaignSlot(oneBasedLevelNumber);
+            if (targetSlot < 0 || targetSlot >= Campaign.Count)
+            {
+                rejectionReason = $"Level {oneBasedLevelNumber} kampanyada yok";
+                return false;
+            }
+            if (BartenderProgressService.Lives <= 0)
+            {
+                rejectionReason = "Can 0; Level Jumper'dan canı doldur";
+                return false;
+            }
+
+            BsLevel targetLevel = Campaign[targetSlot];
+            if (!TryValidateLevel(targetLevel, out string validationError))
+            {
+                rejectionReason = $"Level {oneBasedLevelNumber} geçersiz: {validationError}";
+                return false;
+            }
+            try { BsBoard.FromLevel(targetLevel); }
+            catch (Exception exception)
+            {
+                rejectionReason = "Level kuralları oluşturulamadı: " + exception.Message;
+                return false;
+            }
+
+            bool hasActiveAttempt = !string.IsNullOrEmpty(activeAttemptId)
+                                 && CurrentCampaignSlot >= 0;
+            if ((State == BartenderLevelState.Playing
+                 || State == BartenderLevelState.Paused)
+                && !hasActiveAttempt)
+            {
+                rejectionReason = "Etkin turun Editor makbuzu bulunamadı";
+                return false;
+            }
+            if (hasActiveAttempt
+                && !BartenderProgressService.EditorTryRetargetActiveAttempt(
+                    activeAttemptId, CurrentCampaignSlot, targetSlot,
+                    out rejectionReason))
+                return false;
+            if (hasActiveAttempt)
+            {
+                ownershipTouched = true;
+                ownedAttemptId = activeAttemptId;
+                ownedAttemptSlot = targetSlot;
+            }
+
+            if (State != BartenderLevelState.Unloaded || board != null
+                || CurrentLevel != null || CurrentCampaignSlot >= 0)
+                UnloadInternal(BartenderLevelState.Unloaded);
+
+            bool loaded = TryLoadCampaignSlot(targetSlot, out rejectionReason);
+            if (loaded)
+            {
+                ownershipTouched = true;
+                ownedAttemptId = activeAttemptId;
+                ownedAttemptSlot = CurrentCampaignSlot;
+                return true;
+            }
+
+            // Retarget commit'inden veya yeni attempt açılışından sonra presentation/save
+            // adımı başarısız olursa durable makbuzu sızdırma. Aksi halde sonraki domain
+            // load bunu gerçek abandon sanıp bir can tüketir.
+            if (string.IsNullOrEmpty(ownedAttemptId)
+                && BartenderProgressService.EditorTryGetActiveAttempt(
+                    out string openedAttemptId, out int openedAttemptSlot)
+                && openedAttemptSlot == targetSlot)
+            {
+                ownershipTouched = true;
+                ownedAttemptId = openedAttemptId;
+                ownedAttemptSlot = openedAttemptSlot;
+            }
+            if (string.IsNullOrEmpty(ownedAttemptId)) return false;
+
+            string loadReason = rejectionReason;
+            if (BartenderProgressService.EditorTryDiscardActiveAttempt(
+                    ownedAttemptId, ownedAttemptSlot, out string cleanupReason))
+            {
+                ownedAttemptId = null;
+                ownedAttemptSlot = -1;
+                return false;
+            }
+
+            rejectionReason = loadReason + ". Editor turu da kapatılamadı: "
+                            + cleanupReason;
+            return false;
+        }
+#endif
+
         /// <summary>
         /// Ana menü aynı sahne/rig üzerinde yaşıyorsa geri dönüşün açık yükleme kapısı.
         /// Rozet ve diğer sunumlar LevelLoaded event'inden kendiliğinden yenilenir.

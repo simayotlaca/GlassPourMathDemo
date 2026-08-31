@@ -391,9 +391,31 @@ namespace LiquidSort.Levels
         private void Update()
         {
             if (!tapDelivers || !CanAcceptTap()) return;
-            if (!TryReadPointerDown(out Vector2 screenPoint)) return;
-            if (!TryPickBadge(screenPoint, out int glassId)) return;
-            TryDeliver(glassId, out _);
+
+            if (Input.touchCount > 0)
+            {
+                for (int i = 0; i < Input.touchCount; i++)
+                {
+                    Touch touch = Input.GetTouch(i);
+                    if (touch.phase != TouchPhase.Began
+                        || BartenderUiPointerGuard.IsPointerOverUi(
+                            touch.position, touch.fingerId)
+                        || !TryPickBadge(touch.position, out int touchGlassId))
+                        continue;
+
+                    TryDeliver(touchGlassId, out _);
+                    return;
+                }
+                // Legacy input can synthesize a mouse click from a touch. Never consume
+                // the same physical contact through both paths.
+                return;
+            }
+
+            if (!Input.GetMouseButtonDown(0)) return;
+            Vector2 mousePosition = Input.mousePosition;
+            if (BartenderUiPointerGuard.IsPointerOverUi(mousePosition, -1)
+                || !TryPickBadge(mousePosition, out int mouseGlassId)) return;
+            TryDeliver(mouseGlassId, out _);
         }
 
         /// <summary>
@@ -469,26 +491,6 @@ namespace LiquidSort.Levels
                 glassId = candidateId;
             }
             return glassId >= 0;
-        }
-
-        private static bool TryReadPointerDown(out Vector2 screenPoint)
-        {
-            for (int i = 0; i < Input.touchCount; i++)
-            {
-                Touch touch = Input.GetTouch(i);
-                if (touch.phase == TouchPhase.Began)
-                {
-                    screenPoint = touch.position;
-                    return true;
-                }
-            }
-            if (Input.GetMouseButtonDown(0))
-            {
-                screenPoint = Input.mousePosition;
-                return true;
-            }
-            screenPoint = default;
-            return false;
         }
 
         private Camera ResolveCamera()

@@ -16,7 +16,8 @@ namespace LiquidSort.Levels
     /// OPTİMİSTİK UI YOK. Dişliye basmak kartı açmaz; yalnızca controller'a Pause
     /// komutunu yollar. Kart, komut kabul edilip durum değişikliği geri geldiğinde
     /// açılır. Reddedilen bir pause'da (örneğin sunum kilidi tutulurken) ekran hiç
-    /// kıpırdamaz — yarım açılmış bir kart kalmaz.
+    /// kıpırdamaz — yarım açılmış bir kart kalmaz. Focus/background veya editör aracı
+    /// kaynaklı Paused durumları dişli niyeti taşımadığından kartı açmaz.
     ///
     /// Bütün görsel referanslar opsiyoneldir: art gelmeden de bileşen ayakta durur ve
     /// bağlı olan neyse onu yönetir.
@@ -68,6 +69,7 @@ namespace LiquidSort.Levels
         private BartenderSession subscribedSession;
         private Image overlayBlocker;
         private bool buttonsHooked;
+        private bool pauseMenuRequestPending;
 
         public BsPauseOverlayState OverlayState => overlayFlow.State;
         public bool MusicOn => BartenderSettingsStore.MusicOn;
@@ -106,6 +108,7 @@ namespace LiquidSort.Levels
 
         private void OnDisable()
         {
+            pauseMenuRequestPending = false;
             BartenderSettingsStore.SettingsChanged -= ApplySettingsMarks;
             Unsubscribe();
             UnhookButtons();
@@ -161,7 +164,13 @@ namespace LiquidSort.Levels
             if (session == null || controller == null) return;
             if (session.State != BsFlowState.Playing
                 || overlayFlow.State != BsPauseOverlayState.Closed) return;
-            controller.Pause();
+
+            // StateChanged -> FlowChanged -> Project is synchronous. Arm the intent before
+            // asking the controller to pause so only this accepted gear-button command can
+            // turn a generic Paused state into the visible settings card.
+            pauseMenuRequestPending = true;
+            try { controller.Pause(); }
+            finally { pauseMenuRequestPending = false; }
         }
 
         /// <summary>X ve Devam aynı Paused -> Playing komutuna gider.</summary>
@@ -183,14 +192,14 @@ namespace LiquidSort.Levels
 
         public void CancelExitToMainMenu()
         {
-            if (session == null || controller == null) return;
+            if (session == null) return;
             if (session.State != BsFlowState.Paused
                 || overlayFlow.State != BsPauseOverlayState.ExitConfirmation) return;
 
-            // Vazgeç doğrudan oyuna döner. Overlay'i iyimser biçimde kapatma;
-            // Resume reddedilirse onay kartı açık kalsın. Kabul edilen durum
-            // değişikliği Project(Playing) üzerinden PauseEnded'i yollar.
-            controller.Resume();
+            // Bu yalnız overlay içi bir geri geçiştir. Gameplay Paused kalır; kullanıcı
+            // ayarlar kartındaki ayrı Devam/X komutlarından biriyle açıkça resume eder.
+            if (!overlayFlow.Dispatch(BsPauseOverlayTrigger.ExitCancelled)) return;
+            ApplyProjection(BsFlowState.Paused);
         }
 
         /// <summary>
@@ -249,8 +258,8 @@ namespace LiquidSort.Levels
         public void ToggleVibration()
         {
             PlaySettingsClickFallback(vibrationButton);
-            BartenderProgressService.HardReset();
-            UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex);
+            BartenderSettingsStore.ToggleVibration();
+            ApplySettingsMarks();
         }
 
         private static void PlaySettingsClickFallback(Button source)
@@ -289,12 +298,16 @@ namespace LiquidSort.Levels
         {
             if (state == BsFlowState.Paused)
             {
-                if (overlayFlow.State == BsPauseOverlayState.Closed)
+                if (pauseMenuRequestPending
+                    && overlayFlow.State == BsPauseOverlayState.Closed)
                     overlayFlow.Dispatch(BsPauseOverlayTrigger.PauseAccepted);
+                pauseMenuRequestPending = false;
             }
-            else if (overlayFlow.State != BsPauseOverlayState.Closed)
+            else
             {
-                overlayFlow.Dispatch(BsPauseOverlayTrigger.PauseEnded);
+                pauseMenuRequestPending = false;
+                if (overlayFlow.State != BsPauseOverlayState.Closed)
+                    overlayFlow.Dispatch(BsPauseOverlayTrigger.PauseEnded);
             }
 
             ApplyProjection(state);
@@ -304,7 +317,10 @@ namespace LiquidSort.Levels
         {
             bool playing = state == BsFlowState.Playing;
             bool paused = state == BsFlowState.Paused;
-            bool settings = paused && overlayFlow.State == BsPauseOverlayState.Settings;
+            bool presentPauseUi = paused
+                               && overlayFlow.State != BsPauseOverlayState.Closed;
+            bool settings = paused
+                         && overlayFlow.State == BsPauseOverlayState.Settings;
             bool confirmation = paused
                                 && overlayFlow.State == BsPauseOverlayState.ExitConfirmation;
 
@@ -314,7 +330,7 @@ namespace LiquidSort.Levels
                 pauseButton.gameObject.SetActive(playing);
             }
 
-            if (settingsOverlay) settingsOverlay.SetActive(paused);
+            if (settingsOverlay) settingsOverlay.SetActive(presentPauseUi);
             if (overlayBlocker)
                 overlayBlocker.color = confirmation
                     ? new Color(0.035f, 0.012f, 0.08f, 0.72f)

@@ -4,8 +4,8 @@ using UnityEngine;
 namespace LiquidSort.Levels
 {
     /// <summary>
-    /// Presentation-only rejection beat for one shelf glass. The bottle root gets a short
-    /// local no-no wobble while a cloned silhouette supplies the coloured pulse. Keeping
+    /// Presentation-only rejection beat for one shelf glass. Its placement root gets a
+    /// short local no-no wobble while a cloned silhouette supplies the coloured pulse. Keeping
     /// the pulse on its own renderer avoids mutating BottleShell's authored materials or
     /// fighting the selection highlight that BottleShell writes every frame.
     /// </summary>
@@ -19,6 +19,7 @@ namespace LiquidSort.Levels
         private SpriteRenderer overlay;
         private MaterialPropertyBlock overlayBlock;
         private Sequence activeSequence;
+        private Transform drivenTransform;
         private Quaternion restLocalRotation = Quaternion.identity;
         private bool ownsRotation;
 
@@ -29,7 +30,7 @@ namespace LiquidSort.Levels
         /// never need to kill all tweens on the bottle transform.
         /// </summary>
         public void Play(Color tint, float highlightAlpha, float wobbleDegrees,
-                         float duration)
+                         float duration, Transform motionRoot = null)
         {
             if (!isActiveAndEnabled || !gameObject.activeInHierarchy) return;
 
@@ -42,7 +43,8 @@ namespace LiquidSort.Levels
             float thirdDuration = total * 0.22f;
             float finalDuration = total - firstDuration - secondDuration - thirdDuration;
 
-            restLocalRotation = transform.localRotation;
+            drivenTransform = motionRoot != null ? motionRoot : transform;
+            restLocalRotation = drivenTransform.localRotation;
             ownsRotation = true;
             Quaternion first = restLocalRotation
                 * Quaternion.AngleAxis(wobbleDegrees, Vector3.forward);
@@ -60,13 +62,13 @@ namespace LiquidSort.Levels
 
             Sequence sequence = DOTween.Sequence()
                 .SetTarget(this).SetUpdate(true).SetRecyclable(true);
-            sequence.Append(transform.DOLocalRotateQuaternion(first, firstDuration)
+            sequence.Append(drivenTransform.DOLocalRotateQuaternion(first, firstDuration)
                 .SetEase(Ease.OutQuad).SetRecyclable(true));
-            sequence.Append(transform.DOLocalRotateQuaternion(second, secondDuration)
+            sequence.Append(drivenTransform.DOLocalRotateQuaternion(second, secondDuration)
                 .SetEase(Ease.InOutSine).SetRecyclable(true));
-            sequence.Append(transform.DOLocalRotateQuaternion(third, thirdDuration)
+            sequence.Append(drivenTransform.DOLocalRotateQuaternion(third, thirdDuration)
                 .SetEase(Ease.InOutSine).SetRecyclable(true));
-            sequence.Append(transform.DOLocalRotateQuaternion(
+            sequence.Append(drivenTransform.DOLocalRotateQuaternion(
                     restLocalRotation, finalDuration)
                 .SetEase(Ease.OutSine).SetRecyclable(true));
 
@@ -90,9 +92,10 @@ namespace LiquidSort.Levels
             activeSequence = null;
             if (sequence != null && sequence.IsActive()) sequence.Kill(false);
 
-            if (restoreRotation && ownsRotation)
-                transform.localRotation = restLocalRotation;
+            if (restoreRotation && ownsRotation && drivenTransform != null)
+                drivenTransform.localRotation = restLocalRotation;
             ownsRotation = false;
+            drivenTransform = null;
             HideOverlay();
         }
 
@@ -108,8 +111,10 @@ namespace LiquidSort.Levels
         private void HandleCompleted()
         {
             activeSequence = null;
-            if (ownsRotation) transform.localRotation = restLocalRotation;
+            if (ownsRotation && drivenTransform != null)
+                drivenTransform.localRotation = restLocalRotation;
             ownsRotation = false;
+            drivenTransform = null;
             HideOverlay();
         }
 
@@ -119,8 +124,10 @@ namespace LiquidSort.Levels
             // Safe Mode/external kill and still leaves no tilted or glowing residue.
             if (activeSequence == null) return;
             activeSequence = null;
-            if (ownsRotation) transform.localRotation = restLocalRotation;
+            if (ownsRotation && drivenTransform != null)
+                drivenTransform.localRotation = restLocalRotation;
             ownsRotation = false;
+            drivenTransform = null;
             HideOverlay();
         }
 

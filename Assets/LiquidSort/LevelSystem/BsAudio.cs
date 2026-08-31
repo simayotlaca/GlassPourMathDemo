@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -83,7 +84,11 @@ namespace LiquidSort.Levels
 
         private AudioSource bgmSource;
         private AudioSource loopSource;
+        private AudioSource resultSource;
         private AudioClip bgmClip;
+        private Coroutine resultTransition;
+        private int resultGeneration = 1;
+        private float bgmMix = 1f;
         private int loopUsers;
         private int loopGeneration = 1;
         private bool loopsPaused;
@@ -108,6 +113,7 @@ namespace LiquidSort.Levels
 
             bgmSource = CreateSource("BGM", true);
             loopSource = CreateSource("Loop", true);
+            resultSource = CreateSource("Result", false);
         }
 
         private void OnDestroy()
@@ -180,18 +186,64 @@ namespace LiquidSort.Levels
 
         public void StartBgm()
         {
-            if (bgmSource == null || !CanPlayMusic || bgmClip == null
-                || bgmSource.isPlaying)
-                return;
+            if (bgmSource == null || !CanPlayMusic || bgmClip == null) return;
 
             bgmSource.clip = bgmClip;
-            bgmSource.volume = BgmVolume;
-            bgmSource.Play();
+            ApplyBgmMix();
+            if (!bgmSource.isPlaying) bgmSource.Play();
         }
 
         public void StopBgm()
         {
             if (bgmSource != null && bgmSource.isPlaying) bgmSource.Stop();
+        }
+
+        /// <summary>
+        /// Sonuç cümlesini ayrı kaynaktan çalarken müziği hızlıca geri çeker; cümle
+        /// bittiğinde loop kaldığı sample'dan yumuşakça normale döner.
+        /// </summary>
+        public void PlayResult(BsSfx sfx)
+        {
+            if (sfx != BsSfx.Win && sfx != BsSfx.Fail)
+            {
+                Play(sfx);
+                return;
+            }
+            if (!CanPlaySfx || !clips.TryGetValue(sfx, out AudioClip clip)) return;
+
+            int generation = BeginResultTransition();
+            if (resultSource == null)
+            {
+                Play(sfx);
+                return;
+            }
+
+            resultSource.clip = clip;
+            resultSource.volume = SfxVolume;
+            resultSource.pitch = 1f;
+            resultSource.Play();
+            resultTransition = StartCoroutine(
+                DuckBgmForResult(generation, clip.length));
+        }
+
+        /// <summary>
+        /// Retry, sonraki seviye veya ana menüye dönüşte eski sonuç cümlesini kısa
+        /// crossfade ile kapatıp BGM'i normal seviyesine getirir.
+        /// </summary>
+        public void RestoreBgmAfterResult()
+        {
+            bool resultActive = resultTransition != null
+                             || (resultSource != null && resultSource.isPlaying)
+                             || bgmMix < 0.999f;
+            if (!resultActive)
+            {
+                StartBgm();
+                return;
+            }
+
+            int generation = BeginResultTransition();
+            StartBgm();
+            resultTransition = StartCoroutine(RestoreBgm(generation));
         }
 
         public void SetSfxEnabled(bool enabled)
@@ -200,8 +252,13 @@ namespace LiquidSort.Levels
             SfxEnabled = enabled;
             if (!CanPlaySfx)
             {
-                // Devam eden kısa bir button click'i kesme; yalnız sahipli loop'u durdur.
+                // Havuzdaki çok kısa one-shot'ları doğal kuyruğunda bırak; sahipli loop ve
+                // uzun sonuç cümlesi ise ses tercihini hemen izlesin.
                 StopLoop();
+                if (resultSource != null && resultSource.isPlaying)
+                    resultSource.Stop();
+                CancelResultTransition();
+                SetBgmMix(1f);
                 return;
             }
 
@@ -231,6 +288,10 @@ namespace LiquidSort.Levels
             {
                 StopLoop();
                 StopBgm();
+                if (resultSource != null && resultSource.isPlaying)
+                    resultSource.Stop();
+                CancelResultTransition();
+                SetBgmMix(1f);
                 return;
             }
 
@@ -313,6 +374,111 @@ namespace LiquidSort.Levels
         private void StopLoop()
         {
             if (loopSource != null && loopSource.isPlaying) loopSource.Stop();
+        }
+
+        private int BeginResultTransition()
+        {
+            resultGeneration = resultGeneration == int.MaxValue
+                ? 1
+                : resultGeneration + 1;
+            if (resultTransition != null)
+            {
+                StopCoroutine(resultTransition);
+                resultTransition = null;
+            }
+            return resultGeneration;
+        }
+
+        private void CancelResultTransition()
+        {
+            resultGeneration = resultGeneration == int.MaxValue
+                ? 1
+                : resultGeneration + 1;
+            if (resultTransition == null) return;
+            StopCoroutine(resultTransition);
+            resultTransition = null;
+        }
+
+        private IEnumerator DuckBgmForResult(int generation, float cueLength)
+        {
+            const float DuckSeconds = 0.11f;
+            const float DuckMix = 0.12f;
+            const float TailClearance = 0.10f;
+            const float RestoreSeconds = 0.72f;
+
+            float elapsed = 0f;
+            float startMix = bgmMix;
+            while (elapsed < DuckSeconds && generation == resultGeneration)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                SetBgmMix(Mathf.Lerp(startMix, DuckMix,
+                    Mathf.Clamp01(elapsed / DuckSeconds)));
+                yield return null;
+            }
+            if (generation != resultGeneration) yield break;
+            SetBgmMix(DuckMix);
+
+            float hold = Mathf.Max(0f, cueLength + TailClearance - elapsed);
+            while (hold > 0f && generation == resultGeneration)
+            {
+                hold -= Time.unscaledDeltaTime;
+                yield return null;
+            }
+            if (generation != resultGeneration) yield break;
+
+            elapsed = 0f;
+            while (elapsed < RestoreSeconds && generation == resultGeneration)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                SetBgmMix(Mathf.Lerp(DuckMix, 1f,
+                    Mathf.SmoothStep(0f, 1f,
+                        Mathf.Clamp01(elapsed / RestoreSeconds))));
+                yield return null;
+            }
+            if (generation != resultGeneration) yield break;
+            SetBgmMix(1f);
+            resultTransition = null;
+        }
+
+        private IEnumerator RestoreBgm(int generation)
+        {
+            const float CrossfadeSeconds = 0.42f;
+            float elapsed = 0f;
+            float startMix = bgmMix;
+            float resultStartVolume = resultSource != null
+                ? resultSource.volume
+                : 0f;
+
+            while (elapsed < CrossfadeSeconds && generation == resultGeneration)
+            {
+                elapsed += Time.unscaledDeltaTime;
+                float progress = Mathf.SmoothStep(0f, 1f,
+                    Mathf.Clamp01(elapsed / CrossfadeSeconds));
+                SetBgmMix(Mathf.Lerp(startMix, 1f, progress));
+                if (resultSource != null && resultSource.isPlaying)
+                    resultSource.volume = Mathf.Lerp(resultStartVolume, 0f, progress);
+                yield return null;
+            }
+            if (generation != resultGeneration) yield break;
+
+            if (resultSource != null)
+            {
+                resultSource.Stop();
+                resultSource.volume = SfxVolume;
+            }
+            SetBgmMix(1f);
+            resultTransition = null;
+        }
+
+        private void SetBgmMix(float mix)
+        {
+            bgmMix = Mathf.Clamp01(mix);
+            ApplyBgmMix();
+        }
+
+        private void ApplyBgmMix()
+        {
+            if (bgmSource != null) bgmSource.volume = BgmVolume * bgmMix;
         }
 
         private void ReleaseLoop(int generation)

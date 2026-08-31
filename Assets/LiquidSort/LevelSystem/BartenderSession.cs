@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using BartenderSort.Core;
 using UnityEngine;
 
@@ -60,6 +61,9 @@ namespace LiquidSort.Levels
         private int terminalEnteredFrame = -1;
         private bool terminalReady;
         private bool terminalCommandInProgress;
+        private BartenderLoadingOverlayPresenter loadingOverlay;
+        private Coroutine terminalLoadingRoutine;
+        private BartenderLevelController terminalLoadingBarrierController;
 
         public BartenderLevelController Controller => controller;
 
@@ -111,6 +115,8 @@ namespace LiquidSort.Levels
             BsAudio.Ensure()?.StartBgm();
             if (GetComponent<BartenderAudioBridge>() == null)
                 gameObject.AddComponent<BartenderAudioBridge>();
+            loadingOverlay = BartenderLoadingOverlayPresenter.Attach(gameObject);
+            loadingOverlay?.Prewarm();
         }
 
         private void OnEnable()
@@ -124,6 +130,7 @@ namespace LiquidSort.Levels
 
         private void OnDisable()
         {
+            CancelTerminalLoadingTransition();
             Unsubscribe();
             ResetTerminalNavigation();
             mirroredState = BartenderLevelState.Unloaded;
@@ -405,6 +412,13 @@ namespace LiquidSort.Levels
             terminalReady = false;
             terminalCommandInProgress = true;
 
+            if (intent != TerminalIntent.ReturnToMainMenu)
+            {
+                terminalLoadingRoutine = StartCoroutine(RunTerminalLoadIntent(
+                    intent, outcome, requestedToken, requestedCoinCost));
+                return;
+            }
+
             BartenderTerminalCommandResult result;
             switch (intent)
             {
@@ -432,6 +446,94 @@ namespace LiquidSort.Levels
                 terminalReady = true;
 
             InvokeTerminalCommandCompletedSafely(result);
+        }
+
+        private IEnumerator RunTerminalLoadIntent(
+            TerminalIntent intent, BsRoundOutcome outcome,
+            BsRoundToken requestedToken, int requestedCoinCost)
+        {
+            if (loadingOverlay == null)
+                loadingOverlay = BartenderLoadingOverlayPresenter.Attach(gameObject);
+            bool overlayVisible = loadingOverlay != null && loadingOverlay.Begin();
+            if (overlayVisible)
+            {
+                loadingOverlay.AdvanceTo(0.32f, 0.24f);
+                yield return null;
+                yield return new WaitForSecondsRealtime(0.16f);
+                loadingOverlay.AdvanceTo(0.56f, 0.14f);
+                yield return new WaitForSecondsRealtime(0.10f);
+            }
+            else
+            {
+                yield return null;
+            }
+
+            BartenderTerminalCommandResult result =
+                BartenderTerminalCommandResult.Rejected;
+            if (CanExecuteQueuedIntent(outcome))
+            {
+                switch (intent)
+                {
+                    case TerminalIntent.ContinueAfterWin:
+                        result = controller.TryContinueAfterWin();
+                        break;
+                    case TerminalIntent.RetryAfterFailure:
+                        result = controller.TryRetryAfterFailure();
+                        break;
+                    case TerminalIntent.PaidRetryAfterFailure:
+                        result = controller.TryPaidRetryAfterFailure(requestedCoinCost);
+                        break;
+                }
+            }
+
+            bool levelLoaded = result == BartenderTerminalCommandResult.NextLevelLoaded
+                            || result == BartenderTerminalCommandResult.CurrentLevelReloaded;
+            if (levelLoaded && controller != null
+                && controller.AcquirePresentationBarrier(this))
+                terminalLoadingBarrierController = controller;
+
+            if (overlayVisible)
+            {
+                if (result == BartenderTerminalCommandResult.Rejected)
+                    yield return loadingOverlay.CancelAndHide();
+                else
+                {
+                    loadingOverlay.AdvanceTo(0.84f, 0.10f);
+                    yield return new WaitForSecondsRealtime(0.06f);
+                    yield return loadingOverlay.CompleteAndHide();
+                }
+            }
+
+            ReleaseTerminalLoadingBarrier();
+            terminalLoadingRoutine = null;
+            terminalCommandInProgress = false;
+            if (result == BartenderTerminalCommandResult.Rejected
+                && machine.IsTokenCurrent(requestedToken)
+                && TerminalStatesMatch(outcome))
+                terminalReady = true;
+
+            InvokeTerminalCommandCompletedSafely(result);
+        }
+
+        private void CancelTerminalLoadingTransition()
+        {
+            bool ownedTransition = terminalLoadingRoutine != null
+                                || terminalLoadingBarrierController != null;
+            if (terminalLoadingRoutine != null)
+            {
+                StopCoroutine(terminalLoadingRoutine);
+                terminalLoadingRoutine = null;
+            }
+            ReleaseTerminalLoadingBarrier();
+            if (ownedTransition && loadingOverlay != null)
+                loadingOverlay.HideImmediate();
+        }
+
+        private void ReleaseTerminalLoadingBarrier()
+        {
+            if (terminalLoadingBarrierController != null)
+                terminalLoadingBarrierController.ReleasePresentationBarrier(this);
+            terminalLoadingBarrierController = null;
         }
 
         private bool CanExecuteQueuedIntent(BsRoundOutcome outcome)

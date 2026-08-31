@@ -22,25 +22,34 @@ public static class VesselProfileBaker
     private const float MaxAngle = 120f;
     private const string RequestPath = "Temp/liquid-family-rebake.req";
     private const string DonePath = "Temp/liquid-family-rebake.done";
-    private static bool refreshed;
+    // Static fields reset during a domain reload; SessionState deliberately does not.
+    private const string RefreshPendingSessionKey =
+        "GlassPourMathDemo.VesselProfileBaker.RefreshPending";
 
     static VesselProfileBaker() => EditorApplication.update += PollRequest;
 
     private static void PollRequest()
     {
-        if (!File.Exists(RequestPath)) { refreshed = false; return; }
+        if (!File.Exists(RequestPath))
+        {
+            if (SessionState.GetBool(RefreshPendingSessionKey, false))
+                SessionState.EraseBool(RefreshPendingSessionKey);
+            return;
+        }
         if (EditorApplication.isCompiling || EditorApplication.isUpdating
             || EditorApplication.isPlayingOrWillChangePlaymode) return;
 
-        if (!refreshed)
+        if (!SessionState.GetBool(RefreshPendingSessionKey, false))
         {
-            refreshed = true;
+            SessionState.SetBool(RefreshPendingSessionKey, true);
             AssetDatabase.Refresh();
             return;
         }
 
-        refreshed = false;
-        File.Delete(RequestPath);
+        try { File.Delete(RequestPath); }
+        catch (IOException) { return; }
+        catch (System.UnauthorizedAccessException) { return; }
+        SessionState.EraseBool(RefreshPendingSessionKey);
         try
         {
             BakeAllProfiles();

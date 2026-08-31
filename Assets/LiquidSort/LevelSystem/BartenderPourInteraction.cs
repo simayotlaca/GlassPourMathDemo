@@ -1,7 +1,6 @@
 using System;
 using BartenderSort.Core;
 using UnityEngine;
-using UnityEngine.EventSystems;
 
 namespace LiquidSort.Levels
 {
@@ -50,6 +49,7 @@ namespace LiquidSort.Levels
         private IBartenderInputPolicy inputPolicy;
 
         private LiquidBottle selectedBottle;
+        private Transform selectedMotionRoot;
         private int selectedGlassId = -1;
         private Vector3 selectedHomePosition;
         private Quaternion selectedHomeRotation = Quaternion.identity;
@@ -169,8 +169,9 @@ namespace LiquidSort.Levels
         {
             AnimateSelection();
             if (TryHandleTerminalPointer()) return;
-            if (!CanReadPointer() || !TryReadPointerDown(out Vector2 screenPoint)) return;
-            if (IsPointerOverUi()) return;
+            if (!CanReadPointer()
+                || !TryReadPointerDown(out Vector2 screenPoint, out int pointerId)) return;
+            if (BartenderUiPointerGuard.IsPointerOverUi(screenPoint, pointerId)) return;
             HandlePointerDown(screenPoint);
         }
 
@@ -295,8 +296,8 @@ namespace LiquidSort.Levels
             try
             {
                 animationStarted = selectedAnimator.TryStartPour(
-                    source, target, receipt.Amount, home.Position, home.Rotation,
-                    home.LocalScale, false);
+                    source, target, receipt.Amount, home.MotionRoot,
+                    home.Position, home.Rotation, home.LocalScale, false);
             }
             catch (Exception exception)
             {
@@ -484,11 +485,12 @@ namespace LiquidSort.Levels
                 || shelfView.SeatAnimationPlaying || shelfView.DeliveryPlaying
                 || shelfView.SynchronizationDeferred)
                 return false;
-            if (!TryReadPointerDown(out _)) return false;
+            if (!TryReadPointerDown(out Vector2 screenPoint, out int pointerId))
+                return false;
 
             // Gerçek bir sonuç paneli eklendiğinde UI click'i kendi butonuna bırakılır;
             // world tap fallback aynı click'i tüketmez.
-            if (IsPointerOverUi()) return true;
+            if (BartenderUiPointerGuard.IsPointerOverUi(screenPoint, pointerId)) return true;
             if (!CheckInputPolicy(
                     BartenderInputRequest.Background(selectedGlassId), out _))
                 return true;
@@ -501,35 +503,37 @@ namespace LiquidSort.Levels
             return true;
         }
 
-        private static bool TryReadPointerDown(out Vector2 screenPoint)
+        private static bool TryReadPointerDown(out Vector2 screenPoint,
+                                               out int pointerId)
         {
-            if (Input.touchCount > 0)
+            for (int i = 0; i < Input.touchCount; i++)
             {
-                Touch touch = Input.GetTouch(0);
+                Touch touch = Input.GetTouch(i);
                 if (touch.phase == TouchPhase.Began)
                 {
                     screenPoint = touch.position;
+                    pointerId = touch.fingerId;
                     return true;
                 }
+            }
+
+            if (Input.touchCount > 0)
+            {
+                screenPoint = default;
+                pointerId = -1;
+                return false;
             }
 
             if (Input.GetMouseButtonDown(0))
             {
                 screenPoint = Input.mousePosition;
+                pointerId = -1;
                 return true;
             }
 
             screenPoint = default;
+            pointerId = -1;
             return false;
-        }
-
-        private static bool IsPointerOverUi()
-        {
-            EventSystem events = EventSystem.current;
-            if (events == null) return false;
-            if (Input.touchCount > 0)
-                return events.IsPointerOverGameObject(Input.GetTouch(0).fingerId);
-            return events.IsPointerOverGameObject();
         }
 
         private void HandlePointerDown(Vector2 screenPoint)
@@ -590,6 +594,9 @@ namespace LiquidSort.Levels
                     out BartenderGlassSeatPose home))
                 return;
             selectedBottle = bottle;
+            selectedMotionRoot = home.MotionRoot != null
+                ? home.MotionRoot
+                : bottle.transform;
             selectedGlassId = glassId;
             selectedHomePosition = home.Position;
             selectedHomeRotation = home.Rotation;
@@ -615,9 +622,16 @@ namespace LiquidSort.Levels
                 selectedHomePosition = liveHome.Position;
                 selectedHomeRotation = liveHome.Rotation;
                 selectedHomeScale = liveHome.LocalScale;
+                selectedMotionRoot = liveHome.MotionRoot != null
+                    ? liveHome.MotionRoot
+                    : selectedBottle.transform;
                 selectedRoyalRelativeScale = VesselPresentationMath.RelativeToRoyalReference(
                     selectedBottle.transform, selectedBottle.profile);
             }
+
+            Transform motionRoot = selectedMotionRoot != null
+                ? selectedMotionRoot
+                : selectedBottle.transform;
 
             float follow = 1f - Mathf.Exp(-selectionSpeed * Time.unscaledDeltaTime);
             float scaledLift = VesselPresentationMath.ReferenceDistance(
@@ -626,17 +640,17 @@ namespace LiquidSort.Levels
                 ? shelfView.LayoutUpWorld
                 : Vector3.up;
             Vector3 wanted = selectedHomePosition + liftDirection * scaledLift;
-            selectedBottle.transform.position = Vector3.Lerp(
-                selectedBottle.transform.position, wanted, follow);
+            motionRoot.position = Vector3.Lerp(
+                motionRoot.position, wanted, follow);
             BartenderInvalidMoveFeedback rejection =
                 selectedBottle.GetComponent<BartenderInvalidMoveFeedback>();
             if (rejection == null || !rejection.Playing)
             {
-                selectedBottle.transform.rotation = Quaternion.Slerp(
-                    selectedBottle.transform.rotation, selectedHomeRotation, follow);
+                motionRoot.rotation = Quaternion.Slerp(
+                    motionRoot.rotation, selectedHomeRotation, follow);
             }
-            selectedBottle.transform.localScale = Vector3.Lerp(
-                selectedBottle.transform.localScale, selectedHomeScale, follow);
+            motionRoot.localScale = Vector3.Lerp(
+                motionRoot.localScale, selectedHomeScale, follow);
 
             BottleShell shell = selectedBottle.GetComponent<BottleShell>();
             if (shell != null)
@@ -658,15 +672,22 @@ namespace LiquidSort.Levels
                         selectedHomePosition = liveHome.Position;
                         selectedHomeRotation = liveHome.Rotation;
                         selectedHomeScale = liveHome.LocalScale;
+                        selectedMotionRoot = liveHome.MotionRoot != null
+                            ? liveHome.MotionRoot
+                            : bottle.transform;
                     }
-                    bottle.transform.SetPositionAndRotation(
+                    Transform motionRoot = selectedMotionRoot != null
+                        ? selectedMotionRoot
+                        : bottle.transform;
+                    motionRoot.SetPositionAndRotation(
                         selectedHomePosition, selectedHomeRotation);
-                    bottle.transform.localScale = selectedHomeScale;
+                    motionRoot.localScale = selectedHomeScale;
                 }
                 BottleShell shell = bottle.GetComponent<BottleShell>();
                 if (shell != null) shell.highlight = 0f;
             }
             selectedBottle = null;
+            selectedMotionRoot = null;
             selectedGlassId = -1;
             selectedHomePosition = default;
             selectedHomeRotation = Quaternion.identity;
@@ -840,8 +861,12 @@ namespace LiquidSort.Levels
                 bottle.GetComponent<BartenderInvalidMoveFeedback>();
             if (feedback == null)
                 feedback = bottle.gameObject.AddComponent<BartenderInvalidMoveFeedback>();
+            Transform motionRoot = bottle.transform;
+            if (shelfView != null
+                && shelfView.TryGetMotionRoot(bottle, out Transform resolvedRoot))
+                motionRoot = resolvedRoot;
             feedback.Play(color, rejectionHighlightAlpha,
-                wobbleDegrees, rejectionDuration);
+                wobbleDegrees, rejectionDuration, motionRoot);
         }
 
         private static void CancelRejectionFeedback(LiquidBottle bottle,

@@ -16,13 +16,15 @@ namespace LiquidSort.Levels
         public Vector3 Position { get; }
         public Quaternion Rotation { get; }
         public Vector3 LocalScale { get; }
+        public Transform MotionRoot { get; }
 
         public BartenderGlassSeatPose(Vector3 position, Quaternion rotation,
-                                      Vector3 localScale)
+                                      Vector3 localScale, Transform motionRoot)
         {
             Position = position;
             Rotation = rotation;
             LocalScale = localScale;
+            MotionRoot = motionRoot;
         }
 
         public Vector3 Up => Rotation * Vector3.up;
@@ -30,8 +32,9 @@ namespace LiquidSort.Levels
 
     /// <summary>
     /// Binds the scene-independent Bartender level model to a hand-authored shelf scene.
-    /// Every glass, plank and post is an Inspector reference. This component never creates
-    /// a GameObject, instantiates a prefab or searches the scene at runtime.
+    /// Every glass, plank and post is an Inspector reference. At runtime each serialized
+    /// vessel receives one stable placement parent; no vessel/prefab is instantiated and
+    /// no scene search is used.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class BartenderShelfLevelView : MonoBehaviour
@@ -50,6 +53,7 @@ namespace LiquidSort.Levels
         // Current portrait framing needs this much clearance above the two-row top shelf
         // for the complete Royal glass art (including its shadow) to start off-camera.
         private const float MinimumEntranceDropHeight = 7.60f;
+        private const string SeatRootSuffix = " [SeatRoot]";
         // A presentation animation is cosmetic. If Unity drops its coroutine or a single
         // frame stalls, the canonical seated board must win and release the input lease.
         private const double SeatAnimationWatchdogGrace = 0.75d;
@@ -92,6 +96,7 @@ namespace LiquidSort.Levels
         private sealed class Actor
         {
             public LiquidBottle Bottle;
+            public Transform SeatRoot;
             public Transform FootAnchor;
             public SpriteRenderer PlacementRenderer;
             public GlassType Type;
@@ -693,12 +698,31 @@ namespace LiquidSort.Levels
             if (actorByGlassId.TryGetValue(glassId, out Actor actor)
                 && actor != null && actor.Bottle != null && actor.Seated)
             {
+                Transform motionRoot = MotionRoot(actor);
                 pose = new BartenderGlassSeatPose(
-                    SeatWorldPosition(actor), SeatWorldRotation(actor), actor.SeatScale);
+                    SeatWorldPosition(actor), SeatWorldRotation(actor), actor.SeatScale,
+                    motionRoot);
                 return true;
             }
 
             pose = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Returns the transform presentation code may move. The LiquidBottle transform is
+        /// deliberately not returned in gameplay: its profile-local Royal pose is immutable.
+        /// </summary>
+        public bool TryGetMotionRoot(LiquidBottle bottle, out Transform motionRoot)
+        {
+            if (bottle != null && glassIdByBottle.TryGetValue(bottle, out int glassId)
+                && actorByGlassId.TryGetValue(glassId, out Actor actor))
+            {
+                motionRoot = MotionRoot(actor);
+                return motionRoot != null;
+            }
+
+            motionRoot = null;
             return false;
         }
 
@@ -1099,6 +1123,21 @@ namespace LiquidSort.Levels
         {
             if (actorCacheBuilt)
             {
+                // Enter Play Mode may keep this component's managed cache alive when
+                // domain/scene reload is disabled. Upgrade an edit-preview cache here so
+                // gameplay can never silently keep driving the LiquidBottle root itself.
+                for (int i = 0; i < actors.Count; i++)
+                {
+                    Actor actor = actors[i];
+                    if (Application.isPlaying)
+                    {
+                        if (!HasSeparateSeatRoot(actor)) InitialiseSeatRoot(actor);
+                    }
+                    else if (actor != null && actor.Bottle != null)
+                    {
+                        actor.SeatRoot = actor.Bottle.transform;
+                    }
+                }
                 reason = null;
                 return true;
             }
@@ -1111,6 +1150,11 @@ namespace LiquidSort.Levels
                 || !AddPoolToCache(tumblerPool, GlassType.Tumbler, out reason)
                 || !AddPoolToCache(biraPool, GlassType.Bira, out reason))
                 return false;
+
+            // Validate every serialized binding before changing hierarchy. A bad pool must
+            // never leave the first few valid glasses half-migrated.
+            for (int i = 0; i < actors.Count; i++)
+                InitialiseSeatRoot(actors[i]);
 
             actorCacheBuilt = true;
             reason = null;
@@ -1184,6 +1228,89 @@ namespace LiquidSort.Levels
             reason = null;
             return true;
         }
+
+        /// <summary>
+        /// Factors the saved vessel transform into a placement transform and the immutable
+        /// Royal/profile-local pose. The factorisation preserves the current world artwork:
+        ///
+        ///     savedBottle = SeatRoot * profileReference
+        ///
+        /// Runtime layout can now move/scale SeatRoot without ever rewriting LiquidBottle's
+        /// local position, rotation or scale. Edit-mode previews retain the old direct pose
+        /// because runtime-only parents must never be serialized into the authored scene.
+        /// </summary>
+        private static void InitialiseSeatRoot(Actor actor)
+        {
+            if (actor == null || actor.Bottle == null) return;
+
+            Transform bottle = actor.Bottle.transform;
+            if (!Application.isPlaying)
+            {
+                actor.SeatRoot = bottle;
+                return;
+            }
+
+            string rootName = actor.Bottle.name + SeatRootSuffix;
+            Transform existing = bottle.parent;
+            if (existing != null
+                && existing.name.EndsWith(SeatRootSuffix, StringComparison.Ordinal))
+            {
+                actor.SeatRoot = existing;
+                CanonicaliseBottleLocalPose(actor);
+                return;
+            }
+
+            VesselProfile profile = actor.Bottle.profile;
+            Vector3 savedPosition = bottle.localPosition;
+            Quaternion savedRotation = bottle.localRotation;
+            Vector3 savedScale = bottle.localScale;
+            Transform savedParent = bottle.parent;
+            int savedSibling = bottle.GetSiblingIndex();
+
+            var rootObject = new GameObject(rootName);
+            rootObject.layer = actor.Bottle.gameObject.layer;
+            Transform root = rootObject.transform;
+            root.SetParent(savedParent, false);
+            root.SetSiblingIndex(savedSibling);
+            root.localPosition = savedPosition;
+            root.localRotation = savedRotation
+                               * Quaternion.Inverse(profile.ShelfReferenceLocalRotation);
+            root.localScale = ComponentDivide(
+                savedScale, profile.ShelfReferenceLocalScale);
+
+            bottle.SetParent(root, false);
+            actor.SeatRoot = root;
+            CanonicaliseBottleLocalPose(actor);
+        }
+
+        private static Transform MotionRoot(Actor actor) =>
+            actor != null && actor.SeatRoot != null
+                ? actor.SeatRoot
+                : actor != null && actor.Bottle != null
+                    ? actor.Bottle.transform
+                    : null;
+
+        private static bool HasSeparateSeatRoot(Actor actor) =>
+            actor != null && actor.Bottle != null && actor.SeatRoot != null
+            && actor.SeatRoot != actor.Bottle.transform;
+
+        private static void CanonicaliseBottleLocalPose(Actor actor)
+        {
+            if (!HasSeparateSeatRoot(actor)) return;
+            Transform bottle = actor.Bottle.transform;
+            VesselProfile profile = actor.Bottle.profile;
+            bottle.localPosition = Vector3.zero;
+            bottle.localRotation = profile.ShelfReferenceLocalRotation;
+            bottle.localScale = profile.ShelfReferenceLocalScale;
+        }
+
+        private static Vector3 ComponentDivide(Vector3 value, Vector3 divisor) =>
+            new Vector3(SafeRatio(value.x, divisor.x),
+                        SafeRatio(value.y, divisor.y),
+                        SafeRatio(value.z, divisor.z));
+
+        private static float SafeRatio(float value, float divisor) =>
+            Mathf.Abs(divisor) > 0.000001f ? value / divisor : 1f;
 
         private static bool ValidatePoolCount(List<GlassBinding> pool, int required,
                                               GlassType type, out string reason)
@@ -1338,9 +1465,9 @@ namespace LiquidSort.Levels
             // ONE board, ONE glass size. The scale is decided once from this board's
             // busiest row, never separately for each shelf. A seven-glass board splits
             // 4+3, so both shelves wear the four-across size while the lighter row keeps
-            // its extra room as spacing. The resolver also keeps the compact budget as a
-            // ceiling for a spacious board: the extra margin is the selection-lift gap
-            // between a wide Royal cocktail rim and the screen-space order cards.
+            // its extra room as spacing. A genuinely three-across board keeps the authored
+            // spacious scale saved in the showcase; Play must not silently replace the
+            // scene's 0.787918 presentation with the unrelated four-across budget.
             int busiestRow = basePerRow + (remainder > 0 ? 1 : 0);
             float compositionScale = CompositionScale(configuredRowCount);
             float scale = BoardGlassScale(configuredRowCount, busiestRow);
@@ -1386,10 +1513,10 @@ namespace LiquidSort.Levels
 
         /// <summary>
         /// The single size every vessel on this board wears. The row count provides the
-        /// vertical budget and the busiest row provides the horizontal budget. A spacious
-        /// layout is additionally capped by its same-row compact solution: that small
-        /// reserve is what keeps a selected wide-mouth cocktail visibly inside the world
-        /// stage instead of letting its rim read as if it were stuck to the HUD.
+        /// vertical budget and the busiest row provides the horizontal budget. These are
+        /// distinct solved layouts: a three-across board uses its spacious solution and a
+        /// four-across board uses its compact solution. Mixing the two makes Edit and Play
+        /// show different glass and liquid sizes before any gameplay begins.
         /// </summary>
         private float BoardGlassScale(int rowCount, int busiestRowColumns)
         {
@@ -1401,9 +1528,7 @@ namespace LiquidSort.Levels
             float spaciousScale = tallLayout
                 ? threeRowSpaciousGlassScale
                 : twoRowSpaciousGlassScale;
-            float solvedScale = compactRow
-                ? compactScale
-                : Mathf.Min(spaciousScale, compactScale);
+            float solvedScale = compactRow ? compactScale : spaciousScale;
             return solvedScale * CompositionScale(rowCount);
         }
 
@@ -1429,7 +1554,7 @@ namespace LiquidSort.Levels
             for (int i = 0; i < activeActors.Count; i++)
             {
                 Actor actor = activeActors[i];
-                Transform actorTransform = actor.Bottle.transform;
+                Transform actorTransform = MotionRoot(actor);
                 actor.HasPreviousSeat = actor.Seated;
                 actor.PreviousLayoutPosition = LayoutSpace.InverseTransformPoint(
                     actorTransform.position);
@@ -1448,7 +1573,7 @@ namespace LiquidSort.Levels
             for (int i = 0; i < activeActors.Count; i++)
             {
                 Actor actor = activeActors[i];
-                Transform actorTransform = actor.Bottle.transform;
+                Transform actorTransform = MotionRoot(actor);
                 actor.SeatLayoutPosition = LayoutSpace.InverseTransformPoint(
                     actorTransform.position);
                 actor.SeatLayoutRotation = Quaternion.Inverse(LayoutSpace.rotation)
@@ -1466,15 +1591,32 @@ namespace LiquidSort.Levels
 
         private void SeatActor(Actor actor, float slotCenterX, float surfaceY, float scale)
         {
-            Transform actorTransform = actor.Bottle.transform;
+            Transform actorTransform = MotionRoot(actor);
             VesselProfile profile = actor.Bottle.profile;
-            actorTransform.localScale = profile.ShelfReferenceLocalScale * scale;
-            actorTransform.localRotation = profile.ShelfReferenceLocalRotation;
+            if (HasSeparateSeatRoot(actor))
+            {
+                CanonicaliseBottleLocalPose(actor);
+                actorTransform.localScale = Vector3.one * scale;
+                actorTransform.rotation = LayoutSpace.rotation;
+            }
+            else
+            {
+                // Edit-mode scene previews keep the legacy direct hierarchy. Gameplay
+                // always takes the separate-parent branch above.
+                actorTransform.localScale = profile.ShelfReferenceLocalScale * scale;
+                actorTransform.localRotation = profile.ShelfReferenceLocalRotation;
+            }
 
             Vector3 desiredFoot = LayoutSpace.TransformPoint(
                 new Vector3(slotCenterX, surfaceY, glassPlaneZ));
-            Vector3 rootToFoot = AssetSupportWorld(actor) - actorTransform.position;
-            actorTransform.position = desiredFoot - rootToFoot;
+            Transform assetSpace = actor.PlacementRenderer != null
+                ? actor.PlacementRenderer.transform
+                : actor.Bottle.transform;
+            Vector2 support = profile.SupportLocal;
+            actorTransform.position = VesselPresentationMath.RootPositionForAnchoredPoint(
+                actorTransform, assetSpace, new Vector3(support.x, support.y, 0f),
+                desiredFoot);
+            AssetSupportWorld(actor);
         }
 
         /// <summary>
@@ -1519,7 +1661,7 @@ namespace LiquidSort.Levels
 
             for (int i = start; i < start + count; i++)
             {
-                Transform root = activeActors[i].Bottle.transform;
+                Transform root = MotionRoot(activeActors[i]);
                 Vector3 local = LayoutSpace.InverseTransformPoint(root.position);
                 local.x += shift;
                 root.position = LayoutSpace.TransformPoint(local);
@@ -1699,7 +1841,7 @@ namespace LiquidSort.Levels
                 }
 
                 DropEntranceSorting(actor);
-                Transform actorTransform = actor.Bottle.transform;
+                Transform actorTransform = MotionRoot(actor);
                 actorTransform.position = SeatWorldPosition(actor)
                     + layoutUp * actor.EntranceFallDistance;
                 actorTransform.rotation = SeatWorldRotation(actor);
@@ -1709,7 +1851,7 @@ namespace LiquidSort.Levels
 
         private void StepEntranceActor(Actor actor, float time, Vector3 layoutUp)
         {
-            Transform actorTransform = actor.Bottle.transform;
+            Transform actorTransform = MotionRoot(actor);
             GameObject actorObject = actor.Bottle.gameObject;
 
             if (time < 0f)
@@ -1798,7 +1940,7 @@ namespace LiquidSort.Levels
                     {
                         Actor actor = activeActors[i];
                         if (!actor.HasPreviousSeat) continue;
-                        Transform actorTransform = actor.Bottle.transform;
+                        Transform actorTransform = MotionRoot(actor);
                         Vector3 layoutPosition = Vector3.Lerp(
                             actor.PreviousLayoutPosition, actor.SeatLayoutPosition, k);
                         Quaternion layoutRotation = Quaternion.Slerp(
@@ -1833,7 +1975,7 @@ namespace LiquidSort.Levels
                 if (actor.Bottle == null || !actor.Seated) continue;
                 GameObject actorObject = actor.Bottle.gameObject;
                 if (!actorObject.activeSelf) actorObject.SetActive(true);
-                Transform actorTransform = actor.Bottle.transform;
+                Transform actorTransform = MotionRoot(actor);
                 actorTransform.SetPositionAndRotation(
                     SeatWorldPosition(actor), SeatWorldRotation(actor));
                 actorTransform.localScale = actor.SeatScale;
@@ -2215,8 +2357,17 @@ namespace LiquidSort.Levels
                 glassIdByBottle.Remove(actor.Bottle);
                 actor.Bottle.SetUnits(null);
                 VesselProfile profile = actor.Bottle.profile;
-                actor.Bottle.transform.localScale = profile.ShelfReferenceLocalScale;
-                actor.Bottle.transform.localRotation = profile.ShelfReferenceLocalRotation;
+                if (HasSeparateSeatRoot(actor))
+                {
+                    CanonicaliseBottleLocalPose(actor);
+                    actor.SeatRoot.localScale = Vector3.one;
+                    actor.SeatRoot.localRotation = Quaternion.identity;
+                }
+                else
+                {
+                    actor.Bottle.transform.localScale = profile.ShelfReferenceLocalScale;
+                    actor.Bottle.transform.localRotation = profile.ShelfReferenceLocalRotation;
+                }
                 actor.Bottle.gameObject.SetActive(false);
             }
             actor.GlassId = -1;
@@ -2243,6 +2394,7 @@ namespace LiquidSort.Levels
             DropEntranceSorting(actor);
             if (!deliveryPortal.Play(
                     actor.Bottle,
+                    MotionRoot(actor),
                     actor.FootAnchor,
                     null,
                     () => FinishPortalDelivery(actor),
@@ -2319,6 +2471,12 @@ namespace LiquidSort.Levels
             for (int i = 0; i < actors.Count; i++)
             {
                 Actor actor = actors[i];
+                if (HasSeparateSeatRoot(actor))
+                {
+                    CanonicaliseBottleLocalPose(actor);
+                    actor.SeatRoot.localScale = Vector3.one;
+                    actor.SeatRoot.localRotation = Quaternion.identity;
+                }
                 actor.GlassId = -1;
                 actor.Assigned = false;
                 actor.Seated = false;

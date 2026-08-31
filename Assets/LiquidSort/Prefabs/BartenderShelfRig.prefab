@@ -14083,7 +14083,7 @@ MonoBehaviour:
   threeRowCompositionScale: 1
   postUpperPlankOverlap: 0.92
   postLowerShelfInset: 0.02
-  animateEntrance: 1
+  animateEntrance: 0
   entranceDropHeight: 7.6
   entranceDropDuration: 0.32
   entranceGlassStagger: 0.055

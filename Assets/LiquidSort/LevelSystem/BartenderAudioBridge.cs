@@ -170,7 +170,7 @@ namespace LiquidSort.Levels
         {
             EndPourFlow(false);
             audio?.InvalidateLoops();
-            audio?.StartBgm();
+            audio?.RestoreBgmAfterResult();
         }
 
         private void HandlePoured(BartenderPourReceipt receipt)
@@ -195,7 +195,9 @@ namespace LiquidSort.Levels
             audio?.Play(BsSfx.DeliverSlide);
 
         private void HandleTerminalReady(BsRoundOutcome outcome) =>
-            audio?.Play(outcome == BsRoundOutcome.Won ? BsSfx.Win : BsSfx.Fail);
+            audio?.PlayResult(outcome == BsRoundOutcome.Won
+                ? BsSfx.Win
+                : BsSfx.Fail);
 
         private void HandleFlowChanged(BsTransitionResult transition)
         {
@@ -204,6 +206,9 @@ namespace LiquidSort.Levels
             else if (transition.From == BsFlowState.Paused
                      && transition.To == BsFlowState.Playing)
                 audio?.ResumeLoops();
+
+            if (transition.To == BsFlowState.Menu)
+                audio?.RestoreBgmAfterResult();
         }
 
         private void HandleSettingsChanged()

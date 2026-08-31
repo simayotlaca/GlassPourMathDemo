@@ -405,7 +405,10 @@ public static class SortingShelfShowcaseBuilder
 
     // ---- Animation timing -------------------------------------------------------
 
-    private const bool EntranceEnabled = true;
+    // RoyalGlassLab poses are the visual reference. Gameplay seats each vessel directly
+    // on its solved shelf pose; animating every root from an off-stage release line made
+    // the whole glass/liquid stack read as if it were sliding out of registration.
+    private const bool EntranceEnabled = false;
     private const float EntranceDropHeight = 7.60f;
     private const float EntranceDropDuration = 0.32f;
     private const float EntranceGlassStagger = 0.055f;
@@ -445,7 +448,9 @@ public static class SortingShelfShowcaseBuilder
         + BartenderShelfLevelView.FullCampaignTumblerPoolSize
         + BartenderShelfLevelView.FullCampaignBiraPoolSize;
 
-    private static bool refreshed;
+    // Static fields reset during a domain reload; SessionState deliberately does not.
+    private const string RefreshPendingSessionKey =
+        "GlassPourMathDemo.SortingShelfShowcaseBuilder.RefreshPending";
     private static readonly Dictionary<int, Rect> VisualBoundsCache =
         new Dictionary<int, Rect>();
     private static readonly Dictionary<int, Rect> ChromaBoundsCache =
@@ -455,22 +460,33 @@ public static class SortingShelfShowcaseBuilder
 
     private static void PollRequest()
     {
-        if (!File.Exists(RequestPath)) { refreshed = false; return; }
+        if (!File.Exists(RequestPath))
+        {
+            if (SessionState.GetBool(RefreshPendingSessionKey, false))
+                SessionState.EraseBool(RefreshPendingSessionKey);
+            return;
+        }
         if (EditorApplication.isCompiling || EditorApplication.isUpdating
             || EditorApplication.isPlayingOrWillChangePlaymode) return;
 
         // Give Unity one complete import/compile tick before resolving the new shader,
         // sprites and editor type.
-        if (!refreshed)
+        if (!SessionState.GetBool(RefreshPendingSessionKey, false))
         {
-            refreshed = true;
+            SessionState.SetBool(RefreshPendingSessionKey, true);
             AssetDatabase.Refresh();
             return;
         }
 
-        refreshed = false;
-        string request = File.ReadAllText(RequestPath).Trim();
-        File.Delete(RequestPath);
+        string request;
+        try
+        {
+            request = File.ReadAllText(RequestPath).Trim();
+            File.Delete(RequestPath);
+        }
+        catch (IOException) { return; }
+        catch (UnauthorizedAccessException) { return; }
+        SessionState.EraseBool(RefreshPendingSessionKey);
         try
         {
             // A visual-only bake should not rebuild the full playable level. It is used
@@ -554,13 +570,6 @@ public static class SortingShelfShowcaseBuilder
         public float ScaleThreeRow;
         public float ScaleFourInTwoRows;
         public float ScaleFourInThreeRows;
-
-        /// <summary>
-        /// Runtime keeps this small same-layout reserve even on a three-across board. It
-        /// leaves room for selection lift above a wide Royal cocktail without falling all
-        /// the way back to the much smaller three-row campaign budget.
-        /// </summary>
-        public float SafeTwoRowScale => Mathf.Min(ScaleTwoRow, ScaleFourInTwoRows);
 
         public string Describe() =>
             $"plankBand={PlankBand:0.###}\ntallestGlass={TallestGlass:0.###}\n"
@@ -1220,8 +1229,8 @@ public static class SortingShelfShowcaseBuilder
         stage.BackLayers = new[] { back, stage.Glow };
         stage.FrontLayers = new[] { occluder, front };
 
-        float servedWidth = solve.WidestGlass * solve.SafeTwoRowScale;
-        float servedHeight = solve.TallestGlass * solve.SafeTwoRowScale;
+        float servedWidth = solve.WidestGlass * solve.ScaleTwoRow;
+        float servedHeight = solve.TallestGlass * solve.ScaleTwoRow;
         float liftScale = Mathf.Clamp(PortalFit * Mathf.Min(
             openingWidth / servedWidth,
             openingHeight / servedHeight), 0.30f, 1f);
@@ -1564,7 +1573,7 @@ public static class SortingShelfShowcaseBuilder
         {
             float badgeHeight = SpriteVisualBounds(badge.badgeRenderer.sprite).height;
             float inherited = badge.bottle.profile.ShelfReferenceScale
-                              * solve.SafeTwoRowScale;
+                              * solve.ScaleTwoRow;
             float local = targetWorldHeight
                           / Mathf.Max(0.0001f, badgeHeight * inherited);
             badge.authoredLocalScale = new Vector3(local, local, 1f);

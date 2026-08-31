@@ -40,6 +40,9 @@ namespace LiquidSort.Levels
         [Header("Elle yerleştirilmiş kartlar")]
         [Tooltip("Soldan sağa slot sırasıyla. Level'ın OrderSlots değeri kadarı kullanılır.")]
         [SerializeField] private OrderCardView[] cards = new OrderCardView[0];
+        [Tooltip("Açılışta kartları sağdan kaydırır. Kapalıyken Royal referansı gibi "
+               + "doğrudan son konumlarında görünürler.")]
+        [SerializeField] private bool animateInitialDeal;
 
         [Header("Bardak çizimleri")]
         [Tooltip("Her bardak tipi için ön görsel + iç boşluk maskesi. Üç kart aynı "
@@ -334,7 +337,13 @@ namespace LiquidSort.Levels
 
             int slots = live ? Mathf.Max(1, level.OrderSlots) : 0;
             bool timed = live && level.AllowTimedOrders;
-            bool dealLiveLevel = forceDeal || (live && !hasPresentedLiveLevel);
+            bool initialLivePresentation = live && !hasPresentedLiveLevel;
+            bool suppressInitialMotion = initialLivePresentation && !animateInitialDeal;
+            bool dealLiveLevel = !suppressInitialMotion
+                                 && (forceDeal || initialLivePresentation);
+            int visibleCardCount = VisibleOrderCount(slots);
+
+            int visibleOrdinal = 0;
             int dealIndex = 0;
             float longestDealDuration = 0f;
 
@@ -354,11 +363,26 @@ namespace LiquidSort.Levels
                 OrderDef order = inUse ? controller.OrderAtSlot(i) : null;
                 bool changed = !SameOrder(card.Model, order);
                 bool wasEmpty = card.Model == null;
-                card.SetOrder(order, timed);
                 bool visible = inUse && order != null;
-                bool deal = visible && !suppressEntrances
+
+                // Board siparişleri mantıksal olarak sola paketler; fiziksel kartları
+                // aynı ilk N authoring slotunda bırakmak 2 kartı sol+orta gösteriyordu.
+                // Model/slot indekslerini değiştirmeden yalnız görünür pozları şeridin
+                // merkezi etrafına dağıt: 3 => [-S,0,+S], 2 => [-S/2,+S/2], 1 => [0].
+                Vector2 restingPosition = slotPositions[i];
+                if (visible)
+                {
+                    restingPosition.x = CenteredSlotX(
+                        slotPositions, visibleCardCount, visibleOrdinal);
+                    visibleOrdinal++;
+                }
+                card.SetRestingPosition(restingPosition, true);
+
+                card.SetOrder(order, timed);
+                bool deal = visible && !suppressEntrances && !suppressInitialMotion
                             && (dealLiveLevel || wasEmpty || changed);
-                card.SetVisible(visible, !deal && !suppressEntrances);
+                card.SetVisible(visible,
+                    !deal && !suppressEntrances && !suppressInitialMotion);
                 card.SetHighlighted(order != null && HasMatchingGlass(i));
                 if (deal)
                 {
@@ -372,6 +396,29 @@ namespace LiquidSort.Levels
 
             hasPresentedLiveLevel = live;
             return longestDealDuration;
+        }
+
+        /// <summary>
+        /// Elle yerleştirilmiş slot aralığını koruyarak görünür kart grubunu şeridin
+        /// authoring merkezine taşır. Yalnız X hesaplanır; kartın authored Y değeri
+        /// presenter tarafından olduğu gibi korunur.
+        /// </summary>
+        internal static float CenteredSlotX(IReadOnlyList<Vector2> authoredPositions,
+                                            int visibleCount,
+                                            int visibleOrdinal)
+        {
+            if (authoredPositions == null || authoredPositions.Count == 0) return 0f;
+
+            int authoredCount = authoredPositions.Count;
+            int count = Mathf.Clamp(visibleCount, 1, authoredCount);
+            int ordinal = Mathf.Clamp(visibleOrdinal, 0, count - 1);
+            float left = authoredPositions[0].x;
+            float right = authoredPositions[authoredCount - 1].x;
+            float center = (left + right) * 0.5f;
+            float spacing = authoredCount > 1
+                ? (right - left) / (authoredCount - 1)
+                : 0f;
+            return center + (ordinal - (count - 1) * 0.5f) * spacing;
         }
 
         private bool EnsureCardCapacity(BsLevel level)
@@ -425,13 +472,34 @@ namespace LiquidSort.Levels
             transitionSlotCount = slotCount;
 
             cards[deliveredSlot].PlayQueueExit(DeliveryExitDuration);
+            int postDeliveryVisibleCount = VisibleOrderCount(slotCount);
             float transitionDuration = DeliveryExitDuration;
-            for (int i = deliveredSlot + 1; i < slotCount; i++)
+            for (int i = 0; i < slotCount; i++)
             {
+                if (i == deliveredSlot) continue;
                 OrderCardView card = cards[i];
                 if (card == null || card.Model == null) continue;
-                float delay = (i - deliveredSlot - 1) * QueueShiftStagger;
-                card.PlayQueueShift(slotPositions[i - 1], QueueShiftDuration, delay);
+
+                // Controller snapshot'ı bu noktada teslim sonrasını taşıyor. Hayatta
+                // kalan kartı önce authored slota götürüp committe merkeze sıçratmak
+                // yerine doğrudan yeni görünür grubun nihai merkezli pozuna taşı.
+                int destinationSlot = i < deliveredSlot ? i : i - 1;
+                if (destinationSlot < 0
+                    || destinationSlot >= postDeliveryVisibleCount) continue;
+                Vector2 destination = slotPositions[destinationSlot];
+                destination.x = CenteredSlotX(
+                    slotPositions, postDeliveryVisibleCount, destinationSlot);
+                RectTransform cardRt = card.Rt != null
+                    ? card.Rt
+                    : card.transform as RectTransform;
+                if (cardRt != null
+                    && (cardRt.anchoredPosition - destination).sqrMagnitude
+                    <= 0.000001f) continue;
+
+                float delay = i > deliveredSlot
+                    ? (i - deliveredSlot - 1) * QueueShiftStagger
+                    : 0f;
+                card.PlayQueueShift(destination, QueueShiftDuration, delay);
                 transitionDuration = Mathf.Max(
                     transitionDuration, delay + QueueShiftDuration);
             }
@@ -470,10 +538,6 @@ namespace LiquidSort.Levels
             transitionSlotCount = 0;
 
             RotateCardViewsLeft(deliveredSlot, slotCount);
-            for (int i = 0; i < cards.Length; i++)
-                if (cards[i] != null)
-                    cards[i].SetRestingPosition(slotPositions[i], true);
-
             ClearDeliveryLatch();
             snapshotDirty = false;
             ApplySnapshot(false, true);
@@ -601,6 +665,16 @@ namespace LiquidSort.Levels
                 return 0;
             return Mathf.Min(cards.Length,
                 Mathf.Max(1, controller.CurrentLevel.OrderSlots));
+        }
+
+        private int VisibleOrderCount(int slotCount)
+        {
+            if (cards == null || controller == null) return 0;
+            int count = 0;
+            int limit = Mathf.Min(cards.Length, Mathf.Max(0, slotCount));
+            for (int i = 0; i < limit; i++)
+                if (controller.OrderAtSlot(i) != null) count++;
+            return count;
         }
 
         private void CaptureSlotPositions()

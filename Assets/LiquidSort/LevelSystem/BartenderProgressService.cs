@@ -456,6 +456,90 @@ namespace LiquidSort.Levels
 
 #if UNITY_EDITOR
         /// <summary>
+        /// Editor sunum aracı: etkin turun makbuzunu başka bir kampanya slotuna taşır.
+        /// Can, coin, ilerleme, yaşam sayacı ve settlement geçmişi değişmez. Beklenen
+        /// makbuz/slot eşleşmesi zorunludur; böylece araç yanlış bir oturumu sessizce
+        /// sahiplenemez.
+        /// </summary>
+        internal static bool EditorTryRetargetActiveAttempt(
+            string expectedAttemptId, int expectedCampaignSlot, int targetCampaignSlot,
+            out string rejectionReason)
+        {
+            Refresh();
+            rejectionReason = null;
+            if (!CanMutate(out rejectionReason)) return false;
+            if (string.IsNullOrWhiteSpace(expectedAttemptId)
+                || expectedCampaignSlot < 0 || targetCampaignSlot < 0)
+            {
+                rejectionReason = "Editor tur kimliği geçersiz";
+                return false;
+            }
+            if (!string.Equals(data.ActiveAttemptId, expectedAttemptId,
+                    StringComparison.Ordinal)
+                || data.ActiveAttemptCampaignSlot != expectedCampaignSlot)
+            {
+                rejectionReason = "Editor turu artık etkin değil";
+                return false;
+            }
+            if (data.ActiveAttemptCampaignSlot == targetCampaignSlot) return true;
+
+            ProgressData next = Clone(data);
+            next.ActiveAttemptCampaignSlot = targetCampaignSlot;
+            return Commit(next, false, false, false, out rejectionReason);
+        }
+
+        /// <summary>
+        /// Editor sunum oturumu Play'den çıkarken açık test makbuzunu cezasız kapatır.
+        /// Yalnız tam kimlik eşleşmesi kabul edilir; normal oyuncu turu yanlışlıkla
+        /// silinemez.
+        /// </summary>
+        internal static bool EditorTryDiscardActiveAttempt(
+            string expectedAttemptId, int expectedCampaignSlot,
+            out string rejectionReason)
+        {
+            Refresh();
+            rejectionReason = null;
+            if (!CanMutate(out rejectionReason)) return false;
+            if (string.IsNullOrWhiteSpace(expectedAttemptId)
+                || expectedCampaignSlot < 0)
+            {
+                rejectionReason = "Editor tur kimliği geçersiz";
+                return false;
+            }
+            if (!string.Equals(data.ActiveAttemptId, expectedAttemptId,
+                    StringComparison.Ordinal)
+                || data.ActiveAttemptCampaignSlot != expectedCampaignSlot)
+            {
+                SettlementRecord settled = FindSettlement(expectedAttemptId);
+                if (settled != null && settled.CampaignSlot == expectedCampaignSlot)
+                    return true;
+                rejectionReason = "Editor turu artık etkin değil";
+                return false;
+            }
+
+            ProgressData next = Clone(data);
+            next.ActiveAttemptId = string.Empty;
+            next.ActiveAttemptCampaignSlot = -1;
+            return Commit(next, false, false, false, out rejectionReason);
+        }
+
+        /// <summary>Level Jumper transaction cleanup'ı için exact aktif makbuz snapshot'ı.</summary>
+        internal static bool EditorTryGetActiveAttempt(out string attemptId,
+                                                       out int campaignSlot)
+        {
+            Refresh();
+            if (HasActiveAttempt(data))
+            {
+                attemptId = data.ActiveAttemptId;
+                campaignSlot = data.ActiveAttemptCampaignSlot;
+                return true;
+            }
+            attemptId = null;
+            campaignSlot = -1;
+            return false;
+        }
+
+        /// <summary>
         /// Editor test kolaylığı: aktif kaydın can sayısını doğrudan yazar. Üretim
         /// akışlarıyla aynı atomik commit kullanılır; böylece dosya, sayaç ve
         /// LivesChanged dinleyicileri normal oyundaki gibi güncellenir.

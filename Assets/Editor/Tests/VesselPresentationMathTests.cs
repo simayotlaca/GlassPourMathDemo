@@ -13,7 +13,7 @@ namespace LiquidSort.Tests.EditMode
         // The two boards the shipped showcase actually seats glasses at
         // (SortingShelfShowcase.unity, twoRow/threeRowSpaciousGlassScale).
         private const float TwoRowBoard = 0.78791803f;
-        private const float ThreeRowBoard = 0.60f;
+        private const float ThreeRowBoard = 0.43527383f;
 
         [Test]
         public void Planar_world_scale_tracks_nested_uniform_scales_after_rotation()
@@ -45,15 +45,20 @@ namespace LiquidSort.Tests.EditMode
             const float safeAreaFit = 0.82f;
 
             var safeArea = new GameObject("Safe Area");
+            var seatRoot = new GameObject("SeatRoot");
             var vessel = new GameObject("Vessel");
             VesselProfile profile = ScriptableObject.CreateInstance<VesselProfile>();
             try
             {
                 profile.shelfReferenceScale = royalReference;
+                profile.shelfReferenceRotationDegrees = 7f;
                 safeArea.transform.localScale = Vector3.one * safeAreaFit;
-                vessel.transform.SetParent(safeArea.transform, false);
-                vessel.transform.localScale =
-                    Vector3.one * (royalReference * ThreeRowBoard);
+                seatRoot.transform.SetParent(safeArea.transform, false);
+                seatRoot.transform.localScale = Vector3.one * ThreeRowBoard;
+                vessel.transform.SetParent(seatRoot.transform, false);
+                vessel.transform.localPosition = Vector3.zero;
+                vessel.transform.localRotation = profile.ShelfReferenceLocalRotation;
+                vessel.transform.localScale = profile.ShelfReferenceLocalScale;
 
                 float relative = VesselPresentationMath.RelativeToRoyalReference(
                     vessel.transform, profile);
@@ -62,6 +67,60 @@ namespace LiquidSort.Tests.EditMode
                 Assert.That(
                     VesselPresentationMath.ReferenceDistance(0.16f, relative),
                     Is.EqualTo(0.16f * ThreeRowBoard * safeAreaFit).Within(0.00001f));
+                Assert.That(vessel.transform.localPosition, Is.EqualTo(Vector3.zero));
+                Assert.That(Quaternion.Angle(vessel.transform.localRotation,
+                    profile.ShelfReferenceLocalRotation), Is.LessThan(0.0001f));
+                Assert.That(vessel.transform.localScale,
+                    Is.EqualTo(profile.ShelfReferenceLocalScale));
+            }
+            finally
+            {
+                Object.DestroyImmediate(profile);
+                Object.DestroyImmediate(safeArea);
+            }
+        }
+
+        [TestCase(TwoRowBoard)]
+        [TestCase(ThreeRowBoard)]
+        public void Seat_root_places_support_without_rewriting_the_royal_local_pose(
+            float boardScale)
+        {
+            var safeArea = new GameObject("Safe Area");
+            var seatRoot = new GameObject("SeatRoot");
+            var vessel = new GameObject("Vessel");
+            var frontGlass = new GameObject("FrontGlass");
+            VesselProfile profile = ScriptableObject.CreateInstance<VesselProfile>();
+            try
+            {
+                profile.shelfReferenceScale = 0.539f;
+                profile.shelfReferenceRotationDegrees = -4f;
+                safeArea.transform.localScale = Vector3.one * 0.82f;
+                safeArea.transform.rotation = Quaternion.Euler(0f, 0f, 13f);
+                seatRoot.transform.SetParent(safeArea.transform, false);
+                seatRoot.transform.localScale = Vector3.one * boardScale;
+                vessel.transform.SetParent(seatRoot.transform, false);
+                vessel.transform.localPosition = Vector3.zero;
+                vessel.transform.localRotation = profile.ShelfReferenceLocalRotation;
+                vessel.transform.localScale = profile.ShelfReferenceLocalScale;
+                frontGlass.transform.SetParent(vessel.transform, false);
+                frontGlass.transform.localPosition = new Vector3(0.08f, -0.03f, 0f);
+                frontGlass.transform.localRotation = Quaternion.Euler(0f, 0f, 2f);
+                frontGlass.transform.localScale = new Vector3(0.96f, 1.03f, 1f);
+
+                Vector3 supportLocal = new Vector3(0.21f, -1.17f, 0f);
+                Vector3 desiredWorld = new Vector3(1.34f, -2.08f, 0.4f);
+                seatRoot.transform.position =
+                    VesselPresentationMath.RootPositionForAnchoredPoint(
+                        seatRoot.transform, frontGlass.transform, supportLocal,
+                        desiredWorld);
+
+                Vector3 actualWorld = frontGlass.transform.TransformPoint(supportLocal);
+                Assert.That((actualWorld - desiredWorld).magnitude, Is.LessThan(0.00001f));
+                Assert.That(vessel.transform.localPosition, Is.EqualTo(Vector3.zero));
+                Assert.That(Quaternion.Angle(vessel.transform.localRotation,
+                    profile.ShelfReferenceLocalRotation), Is.LessThan(0.0001f));
+                Assert.That(vessel.transform.localScale,
+                    Is.EqualTo(profile.ShelfReferenceLocalScale));
             }
             finally
             {
@@ -145,6 +204,32 @@ namespace LiquidSort.Tests.EditMode
                 // inset is roughly 1% of it. The old screen-derived value reached almost
                 // 4% of the same chord on a three-row shelf.
                 Assert.That(local, Is.LessThan(0.02f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(profile);
+            }
+        }
+
+        [Test]
+        public void Royal_liquid_insets_keep_the_same_share_at_both_shipped_glass_scales()
+        {
+            const float referenceScale = 0.539f; // CocktailRoyal
+            const float localChord = 2.24145f;
+
+            VesselProfile profile = ScriptableObject.CreateInstance<VesselProfile>();
+            try
+            {
+                profile.shelfReferenceScale = referenceScale;
+                float localInset = VesselPresentationMath.RoyalPixelsToLocal(1.25f, profile);
+
+                float twoRowInset = localInset * referenceScale * TwoRowBoard;
+                float twoRowChord = localChord * referenceScale * TwoRowBoard;
+                float threeRowInset = localInset * referenceScale * ThreeRowBoard;
+                float threeRowChord = localChord * referenceScale * ThreeRowBoard;
+
+                Assert.That(twoRowInset / twoRowChord,
+                    Is.EqualTo(threeRowInset / threeRowChord).Within(0.000001f));
             }
             finally
             {

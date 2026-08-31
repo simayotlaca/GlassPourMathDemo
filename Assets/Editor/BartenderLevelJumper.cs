@@ -3,33 +3,38 @@ using BartenderSort.Core;
 using LiquidSort.Levels;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Test aracı: kampanyanın herhangi bir bölümüne tek tıkla gitmek için.
+/// Sunum/test aracı: kampanyanın herhangi bir bölümünü normal level sunum zinciriyle
+/// tek tıkla açar.
 ///
-/// İki ayrı yol vardır, çünkü controller'ın kendi kuralları ikisini ayırır:
-///
-/// - Play modunda DEĞİLKEN "Başlat", sahnedeki controller'ın startingLevelNumber /
-///   resumeSavedProgress / loadOnStart alanlarını yazar. Play'e basıldığında oyun o
-///   bölümden açılır.
-/// - Play modundayken "Git", etkin turu kapatıp istenen bölümü yükler. Controller etkin
-///   bir tur sonuçlanmadan başka bölüm yüklemeyi reddettiği için önce duraklatıp terk
-///   etmek gerekir; bu da oyunun kendi sözleşmesi gereği BİR CAN harcar. Araç bunu
-///   gizlemez, can sayısını üstte gösterir.
-///
-/// resumeSavedProgress açıkken controller yalnız kayıtlı açık bölümden başlamaya izin
-/// verir, yani serbest atlama imkânsızdır. Her iki yol da bu alanı kapatır; Play modunda
-/// yapılan değişiklik Play bitince kendiliğinden geri döner.
+/// Edit modunda seçim sahneyi kirletmez: tek kullanımlık istek SessionState'te tutulur,
+/// Play açılır ve controller/presenter Start sırası tamamlandıktan sonra uygulanır.
+/// Play modunda etkin tur Editor-only olarak hedef slota taşınır; sahte abandon makbuzu
+/// yazılmaz ve can harcanmaz. Her iki yol da controller'ın gerçek LevelLoaded / board /
+/// order / state event sırasını kullanır; raf, menü ve giriş animasyonu normal çalışır.
 /// </summary>
 public sealed class BartenderLevelJumper : EditorWindow
 {
-    private const string ResumeField = "resumeSavedProgress";
-    private const string StartingLevelField = "startingLevelNumber";
-    private const string LoadOnStartField = "loadOnStart";
+    private const string SessionPrefix = "GlassPourMathDemo.LevelJumper.";
+    private const string PendingLevelKey = SessionPrefix + "PendingLevel";
+    private const string PendingSceneKey = SessionPrefix + "PendingScene";
+    private const string DebugSessionKey = SessionPrefix + "DebugSession";
+    private const string DebugAttemptIdKey = SessionPrefix + "DebugAttemptId";
+    private const string DebugAttemptSlotKey = SessionPrefix + "DebugAttemptSlot";
+    private const string LastMessageKey = SessionPrefix + "LastMessage";
+    private const string LastMessageTypeKey = SessionPrefix + "LastMessageType";
+    private const int NoPendingLevel = 0;
+    private const double PendingTimeoutSeconds = 8d;
+
+    private static double pendingDeadline;
+    private static int pendingStartFrame;
 
     private BartenderLevelController controller;
     private List<BsLevel> campaign = new List<BsLevel>();
     private Vector2 scroll;
+    [SerializeField]
     private int quickLevel = 1;
     private string lastMessage;
     private MessageType lastMessageType = MessageType.Info;
@@ -39,14 +44,245 @@ public sealed class BartenderLevelJumper : EditorWindow
     {
         BartenderLevelJumper window = GetWindow<BartenderLevelJumper>();
         window.titleContent = new GUIContent("Level Jumper");
-        window.minSize = new Vector2(380f, 340f);
+        window.minSize = new Vector2(420f, 430f);
         window.Rescan();
     }
 
-    private void OnEnable() => Rescan();
+    [InitializeOnLoadMethod]
+    private static void HookPlayModeLifecycle()
+    {
+        EditorApplication.playModeStateChanged -= HandlePlayModeStateChanged;
+        EditorApplication.playModeStateChanged += HandlePlayModeStateChanged;
+        AssemblyReloadEvents.beforeAssemblyReload -= HandleBeforeAssemblyReload;
+        AssemblyReloadEvents.beforeAssemblyReload += HandleBeforeAssemblyReload;
+        StopPendingWatch();
+        if (EditorApplication.isPlaying && PendingLevel > NoPendingLevel)
+            BeginPendingWatch();
+    }
+
+    private void OnEnable()
+    {
+        Rescan();
+        lastMessage = SessionState.GetString(LastMessageKey, string.Empty);
+        lastMessageType = (MessageType)Mathf.Clamp(
+            SessionState.GetInt(LastMessageTypeKey, (int)MessageType.Info),
+            (int)MessageType.None, (int)MessageType.Error);
+    }
 
     // Play modunda durum her karede değişebilir; pencere kendi kendine tazelensin.
     private void OnInspectorUpdate() => Repaint();
+
+    private static int PendingLevel =>
+        SessionState.GetInt(PendingLevelKey, NoPendingLevel);
+
+    private static void HandlePlayModeStateChanged(PlayModeStateChange change)
+    {
+        switch (change)
+        {
+            case PlayModeStateChange.EnteredPlayMode:
+                if (PendingLevel > NoPendingLevel) BeginPendingWatch();
+                break;
+
+            case PlayModeStateChange.ExitingPlayMode:
+                StopPendingWatch();
+                CloseDebugAttempt("Play çıkışı");
+                if (PendingLevel > NoPendingLevel)
+                {
+                    ClearPendingRequest();
+                    BroadcastReport("Play modu level açılmadan kapandı.",
+                        MessageType.Warning);
+                }
+                break;
+
+            case PlayModeStateChange.EnteredEditMode:
+                StopPendingWatch();
+                if (PendingLevel > NoPendingLevel)
+                {
+                    ClearPendingRequest();
+                    BroadcastReport("Play açılmadı; bekleyen level isteği temizlendi.",
+                        MessageType.Warning);
+                }
+                CloseDebugAttempt("Edit moda dönüş");
+                break;
+        }
+    }
+
+    private static void HandleBeforeAssemblyReload()
+    {
+        if (EditorApplication.isPlaying)
+            CloseDebugAttempt("assembly reload");
+    }
+
+    private static void BeginPendingWatch()
+    {
+        pendingDeadline = EditorApplication.timeSinceStartup + PendingTimeoutSeconds;
+        pendingStartFrame = Time.frameCount;
+        EditorApplication.update -= TryRunPendingJump;
+        EditorApplication.update += TryRunPendingJump;
+    }
+
+    private static void StopPendingWatch() =>
+        EditorApplication.update -= TryRunPendingJump;
+
+    private static void TryRunPendingJump()
+    {
+        int levelNumber = PendingLevel;
+        if (levelNumber <= NoPendingLevel)
+        {
+            StopPendingWatch();
+            return;
+        }
+        if (!EditorApplication.isPlaying) return;
+        bool bootstrapWaiting = EditorApplication.isCompiling
+                             || EditorApplication.isUpdating
+                             || Time.frameCount <= pendingStartFrame;
+        if (bootstrapWaiting)
+        {
+            if (EditorApplication.timeSinceStartup < pendingDeadline) return;
+            FinishPendingJump(false,
+                "Level sunumu zamanında hazırlanamadı.", MessageType.Error, null);
+            return;
+        }
+
+        string expectedScene = SessionState.GetString(PendingSceneKey, string.Empty);
+        BartenderLevelController target = FindControllerInScene(expectedScene,
+            out string findReason);
+        if (target == null || !target.EditorLevelJumpReady)
+        {
+            if (EditorApplication.timeSinceStartup < pendingDeadline) return;
+            FinishPendingJump(false,
+                string.IsNullOrEmpty(findReason)
+                    ? "Level sunumu zamanında hazırlanamadı."
+                    : findReason,
+                MessageType.Error, null);
+            return;
+        }
+
+        bool loaded = target.EditorTryJumpToLevelNumber(
+            levelNumber, out bool ownershipTouched, out string ownedAttemptId,
+            out int ownedAttemptSlot, out string rejectionReason);
+        ApplyDebugAttemptOwnership(ownershipTouched, ownedAttemptId,
+            ownedAttemptSlot);
+        if (loaded)
+        {
+            FinishPendingJump(true,
+                "Level " + levelNumber
+              + " normal giriş sunumuyla açıldı. Can ve ilerleme korundu.",
+                MessageType.Info, target);
+            return;
+        }
+
+        if (BartenderProgressService.Lives <= 0)
+        {
+            FinishPendingJump(false, rejectionReason, MessageType.Warning, target);
+            return;
+        }
+        if (EditorApplication.timeSinceStartup < pendingDeadline) return;
+        FinishPendingJump(false,
+            "Level " + levelNumber + " açılamadı: " + rejectionReason,
+            MessageType.Error, target);
+    }
+
+    private static BartenderLevelController FindControllerInScene(
+        string expectedScene, out string rejectionReason)
+    {
+        rejectionReason = null;
+        BartenderLevelController[] found =
+            Object.FindObjectsByType<BartenderLevelController>(
+                FindObjectsInactive.Include, FindObjectsSortMode.None);
+        BartenderLevelController match = null;
+        int matches = 0;
+        for (int i = 0; i < found.Length; i++)
+        {
+            BartenderLevelController candidate = found[i];
+            if (candidate == null) continue;
+            string candidateScene = candidate.gameObject.scene.path;
+            if (!string.IsNullOrEmpty(expectedScene)
+                && !string.Equals(candidateScene, expectedScene,
+                    System.StringComparison.Ordinal))
+                continue;
+            match = candidate;
+            matches++;
+        }
+
+        if (matches == 1) return match;
+        rejectionReason = matches == 0
+            ? "İstek yapılan sahnede BartenderLevelController bulunamadı."
+            : "İstek yapılan sahnede birden fazla BartenderLevelController var.";
+        return null;
+    }
+
+    private static void FinishPendingJump(bool success, string message,
+                                          MessageType type,
+                                          BartenderLevelController target)
+    {
+        ClearPendingRequest();
+        StopPendingWatch();
+        if (success)
+            Debug.Log("[Level Jumper] " + message, target);
+        BroadcastReport(message, type);
+    }
+
+    private static void ApplyDebugAttemptOwnership(bool ownershipTouched,
+                                                   string attemptId, int campaignSlot)
+    {
+        if (!ownershipTouched) return;
+        if (string.IsNullOrEmpty(attemptId) || campaignSlot < 0)
+        {
+            ClearDebugAttemptOwnership();
+            return;
+        }
+
+        SessionState.SetBool(DebugSessionKey, true);
+        SessionState.SetString(DebugAttemptIdKey, attemptId);
+        SessionState.SetInt(DebugAttemptSlotKey, campaignSlot);
+    }
+
+    private static bool CloseDebugAttempt(string context)
+    {
+        if (!SessionState.GetBool(DebugSessionKey, false)) return true;
+        string attemptId = SessionState.GetString(DebugAttemptIdKey, string.Empty);
+        int campaignSlot = SessionState.GetInt(DebugAttemptSlotKey, -1);
+        if (string.IsNullOrEmpty(attemptId) || campaignSlot < 0)
+        {
+            Debug.LogWarning("[Level Jumper] " + context
+                           + " sırasında test turu kimliği bulunamadı.");
+            return false;
+        }
+        if (!BartenderProgressService.EditorTryDiscardActiveAttempt(
+                attemptId, campaignSlot, out string rejectionReason))
+        {
+            Debug.LogWarning("[Level Jumper] " + context
+                           + " sırasında test turu kapatılamadı: " + rejectionReason);
+            return false;
+        }
+
+        ClearDebugAttemptOwnership();
+        return true;
+    }
+
+    private static void ClearDebugAttemptOwnership()
+    {
+        SessionState.EraseBool(DebugSessionKey);
+        SessionState.EraseString(DebugAttemptIdKey);
+        SessionState.EraseInt(DebugAttemptSlotKey);
+    }
+
+    private static void ClearPendingRequest()
+    {
+        SessionState.EraseInt(PendingLevelKey);
+        SessionState.EraseString(PendingSceneKey);
+    }
+
+    private static void BroadcastReport(string message, MessageType type)
+    {
+        SessionState.SetString(LastMessageKey, message ?? string.Empty);
+        SessionState.SetInt(LastMessageTypeKey, (int)type);
+        BartenderLevelJumper[] windows =
+            Resources.FindObjectsOfTypeAll<BartenderLevelJumper>();
+        for (int i = 0; i < windows.Length; i++)
+            windows[i].SetReport(message, type);
+    }
 
     private void Rescan()
     {
@@ -107,6 +343,8 @@ public sealed class BartenderLevelJumper : EditorWindow
                      + BartenderProgressService.MaxLives);
             Row("Coin", BartenderProgressService.Coins.ToString());
             Row("Kampanya", campaign.Count + " level");
+            if (PendingLevel > NoPendingLevel)
+                Row("Bekleyen atlama", "Level " + PendingLevel);
 
             if (BartenderProgressService.Lives <= 0)
                 EditorGUILayout.HelpBox(
@@ -123,15 +361,25 @@ public sealed class BartenderLevelJumper : EditorWindow
             using (new EditorGUILayout.HorizontalScope())
             {
                 quickLevel = Mathf.Max(1, EditorGUILayout.IntField("Level no", quickLevel));
-                if (GUILayout.Button(EditorApplication.isPlaying ? "Git" : "Başlat",
-                        GUILayout.Width(110f)))
-                    Go(quickLevel);
+                using (new EditorGUI.DisabledScope(
+                           BartenderProgressService.Lives <= 0
+                        || (!EditorApplication.isPlaying
+                            && EditorApplication.isPlayingOrWillChangePlaymode)))
+                {
+                    if (GUILayout.Button(
+                            EditorApplication.isPlaying ? "Şimdi Git" : "Play'de Aç",
+                            GUILayout.Width(105f)))
+                        Go(quickLevel);
+                }
+                if (PendingLevel > NoPendingLevel
+                    && GUILayout.Button("İptal", GUILayout.Width(48f)))
+                    CancelPendingJump();
             }
 
             EditorGUILayout.LabelField(
                 EditorApplication.isPlaying
-                    ? "Etkin tur terk edilir — bir can harcar."
-                    : "Play'e basınca bu bölümden açılır.",
+                    ? "Sunum kilitliyse sıraya alınır; atlama can harcamaz."
+                    : "Tek tıkla Play açılır; sahne kaydı değiştirilmez.",
                 EditorStyles.miniLabel);
         }
     }
@@ -139,6 +387,9 @@ public sealed class BartenderLevelJumper : EditorWindow
     private void DrawCampaignList()
     {
         EditorGUILayout.LabelField("Kampanya", EditorStyles.boldLabel);
+        bool jumpDisabled = BartenderProgressService.Lives <= 0
+                         || (!EditorApplication.isPlaying
+                             && EditorApplication.isPlayingOrWillChangePlaymode);
         scroll = EditorGUILayout.BeginScrollView(scroll);
         for (int i = 0; i < campaign.Count; i++)
         {
@@ -157,18 +408,22 @@ public sealed class BartenderLevelJumper : EditorWindow
                 EditorGUILayout.LabelField(
                     glasses + " bardak - " + columns + " sutun - " + rows + " sira",
                     EditorStyles.miniLabel);
-                if (GUILayout.Button(EditorApplication.isPlaying ? "Git" : "Başlat",
-                        GUILayout.Width(60f)))
-                    Go(level.Index);
+                using (new EditorGUI.DisabledScope(
+                           jumpDisabled))
+                {
+                    if (GUILayout.Button(
+                            EditorApplication.isPlaying ? "Git" : "Aç",
+                            GUILayout.Width(60f)))
+                        Go(level.Index);
+                }
             }
         }
         EditorGUILayout.EndScrollView();
     }
 
     /// <summary>
-    /// Atlamak can harcadığı için can bitince araç kendi kendini kilitler. Doldurma
-    /// işini BartenderProgressService'in kendi editor API'si yapar: üretimle aynı atomik
-    /// commit kullanıldığı için Play modunda ekranlar da anında güncellenir.
+    /// Level başlatmak için pozitif can hâlâ gerekir; Editor atlamasının kendisi can
+    /// harcamaz. Doldurma, production ile aynı atomik commit ve UI eventlerini kullanır.
     /// </summary>
     private void DrawLifeTools()
     {
@@ -195,88 +450,57 @@ public sealed class BartenderLevelJumper : EditorWindow
 
     private void Go(int levelNumber)
     {
-        if (EditorApplication.isPlaying) JumpNow(levelNumber);
-        else ApplyStartingLevel(levelNumber);
-    }
-
-    /// <summary>
-    /// Play modu dışı yol: Play'e basıldığında controller'ın hangi bölümü açacağını
-    /// belirleyen üç alanı yazar. resumeSavedProgress kapatılmazsa controller kayıtlı
-    /// açık bölümden başlar ve buradaki sayı sessizce yok sayılır.
-    /// </summary>
-    private void ApplyStartingLevel(int levelNumber)
-    {
-        var serialized = new SerializedObject(controller);
-        SerializedProperty starting = serialized.FindProperty(StartingLevelField);
-        SerializedProperty resume = serialized.FindProperty(ResumeField);
-        SerializedProperty loadOnStart = serialized.FindProperty(LoadOnStartField);
-        if (starting == null || resume == null || loadOnStart == null)
+        if (controller == null)
         {
-            Report("Controller alanları bulunamadı; script değişmiş olabilir.",
+            Report("Açık sahnede BartenderLevelController bulunamadı.", MessageType.Error);
+            return;
+        }
+        bool levelExists = false;
+        for (int i = 0; i < campaign.Count; i++)
+        {
+            if (campaign[i] == null || campaign[i].Index != levelNumber) continue;
+            levelExists = true;
+            break;
+        }
+        if (!levelExists)
+        {
+            Report("Level " + levelNumber + " kampanyada yok.", MessageType.Error);
+            return;
+        }
+
+        Scene scene = controller.gameObject.scene;
+        if (!scene.IsValid() || string.IsNullOrEmpty(scene.path))
+        {
+            Report("Level Jumper yalnız kaydedilmiş bir gameplay sahnesinde çalışır.",
                 MessageType.Error);
             return;
         }
 
-        starting.intValue = levelNumber;
-        resume.boolValue = false;
-        loadOnStart.boolValue = true;
-        serialized.ApplyModifiedProperties();
-
-        Report("Level " + levelNumber + " başlangıç bölümü olarak ayarlandı. "
-             + "Play'e bas. (Sahneyi kaydetmen gerekir.)", MessageType.Info);
-    }
-
-    /// <summary>
-    /// Play modu yolu. Sıra, controller'ın kabul ettiği tek sıradır: etkin tur önce
-    /// duraklatılıp terk edilmeli, terminal durum önce boşaltılmalı, ancak ondan sonra
-    /// serbest bir slot yüklenebilir.
-    /// </summary>
-    private void JumpNow(int levelNumber)
-    {
-        // Duraklatmayı biz yaptıysak bunu hatırla: terk etme reddedilirse oyunu
-        // duraklatılmış bırakmak, kullanıcının bulduğu durumu bozmak olur.
-        bool pausedByTool = false;
-        if (controller.State == BartenderLevelState.Playing)
+        quickLevel = levelNumber;
+        SessionState.SetInt(PendingLevelKey, levelNumber);
+        SessionState.SetString(PendingSceneKey, scene.path);
+        if (EditorApplication.isPlaying)
         {
-            if (!controller.Pause())
-            {
-                Report("Tur duraklatılamadı; sunum kilidi açık olabilir, biraz sonra dene.",
-                    MessageType.Warning);
-                return;
-            }
-            pausedByTool = true;
-        }
-
-        if (controller.State == BartenderLevelState.Paused)
-        {
-            if (!controller.TryAbandonToMainMenu(out string abandonReason))
-            {
-                if (pausedByTool) controller.Resume();
-                Report("Etkin tur kapatılamadı: " + abandonReason, MessageType.Warning);
-                return;
-            }
-        }
-        else if (controller.State != BartenderLevelState.Unloaded)
-        {
-            controller.UnloadLevel();
-            if (controller.State != BartenderLevelState.Unloaded)
-            {
-                Report("Bölüm boşaltılamadı (durum: " + controller.State
-                     + "). Sonuç ekranı kapanınca tekrar dene.", MessageType.Warning);
-                return;
-            }
-        }
-
-        SetBool(ResumeField, false);
-
-        if (!controller.LoadLevelNumber(levelNumber))
-        {
-            Report("Level " + levelNumber + " yüklenemedi. Can 0 olabilir ya da bu numara "
-                 + "kampanyada yok — Console gerekçeyi yazar.", MessageType.Warning);
+            Report("Level " + levelNumber
+                 + " sıraya alındı; sunum güvenli noktada değişecek.",
+                MessageType.Info);
+            BeginPendingWatch();
             return;
         }
 
-        Report("Level " + levelNumber + " yüklendi.", MessageType.Info);
+        Report("Level " + levelNumber
+             + " hazırlandı; Play açılıyor ve normal giriş sunumu çalışacak.",
+            MessageType.Info);
+        if (!EditorApplication.isPlayingOrWillChangePlaymode)
+            EditorApplication.EnterPlaymode();
+    }
+
+    private void CancelPendingJump()
+    {
+        if (PendingLevel <= NoPendingLevel) return;
+        ClearPendingRequest();
+        StopPendingWatch();
+        Report("Bekleyen level atlaması iptal edildi.", MessageType.Info);
     }
 
     private void RefillLives()
@@ -307,16 +531,10 @@ public sealed class BartenderLevelJumper : EditorWindow
 
     // ---- Yardımcılar --------------------------------------------------------------
 
-    private void SetBool(string field, bool value)
-    {
-        var serialized = new SerializedObject(controller);
-        SerializedProperty property = serialized.FindProperty(field);
-        if (property == null || property.boolValue == value) return;
-        property.boolValue = value;
-        serialized.ApplyModifiedProperties();
-    }
+    private void Report(string message, MessageType type) =>
+        BroadcastReport(message, type);
 
-    private void Report(string message, MessageType type)
+    private void SetReport(string message, MessageType type)
     {
         lastMessage = message;
         lastMessageType = type;

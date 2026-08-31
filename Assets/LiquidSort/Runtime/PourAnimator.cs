@@ -108,8 +108,6 @@ namespace LiquidSort
         private Vector3 carryControl;
         private Vector3 carryStartScale;
         private Vector3 carryEndScale;
-        private Vector3 carryAnchor;
-        private Vector3 carryMouthOffset;
         private Quaternion carryStartRotation;
         private Quaternion carryEndRotation;
         private TweenCallback tweenCompletedCallback;
@@ -182,7 +180,8 @@ namespace LiquidSort
                 : Quaternion.identity;
             Vector3 homeScale = source != null ? source.transform.localScale : Vector3.one;
             if (!float.IsNaN(homeY)) homePosition.y = homeY;
-            return TryStartPourInternal(source, target, amount, homePosition,
+            return TryStartPourInternal(source, target, amount,
+                source != null ? source.transform : null, homePosition,
                 homeRotation, homeScale, requireColorMatch);
         }
 
@@ -195,13 +194,26 @@ namespace LiquidSort
             Vector3 homePosition, Quaternion homeRotation, Vector3 homeLocalScale,
             bool requireColorMatch = true)
         {
-            return TryStartPourInternal(source, target, amount, homePosition,
+            return TryStartPourInternal(source, target, amount,
+                source != null ? source.transform : null, homePosition,
                 homeRotation, homeLocalScale, requireColorMatch);
         }
 
+        /// <summary>
+        /// Starts a shelf transfer by moving a placement parent while the LiquidBottle
+        /// child keeps its immutable profile-local Royal pose.
+        /// </summary>
+        public bool TryStartPour(LiquidBottle source, LiquidBottle target, int amount,
+            Transform sourceMotionRoot, Vector3 homePosition, Quaternion homeRotation,
+            Vector3 homeLocalScale, bool requireColorMatch = true)
+        {
+            return TryStartPourInternal(source, target, amount, sourceMotionRoot,
+                homePosition, homeRotation, homeLocalScale, requireColorMatch);
+        }
+
         private bool TryStartPourInternal(LiquidBottle source, LiquidBottle target, int amount,
-            Vector3 homePosition, Quaternion homeRotation, Vector3 homeLocalScale,
-            bool requireColorMatch)
+            Transform sourceMotionRoot, Vector3 homePosition, Quaternion homeRotation,
+            Vector3 homeLocalScale, bool requireColorMatch)
         {
             if (stream == null && isActiveAndEnabled) AwakeInternal();
             if (Busy || completingOperation || !isActiveAndEnabled
@@ -212,6 +224,12 @@ namespace LiquidSort
             if (!source.isActiveAndEnabled || !target.isActiveAndEnabled
                 || stream == null || !stream.isActiveAndEnabled)
                 return false;
+
+            Transform resolvedMotionRoot = sourceMotionRoot != null
+                ? sourceMotionRoot
+                : source.transform;
+            if (resolvedMotionRoot != source.transform
+                && !source.transform.IsChildOf(resolvedMotionRoot)) return false;
 
             if (requireColorMatch && !target.CanReceive(source.TopColor)) return false;
 
@@ -235,7 +253,7 @@ namespace LiquidSort
             targetPrepared = false;
             activeSource = source;
             activeTarget = target;
-            activeSourceTransform = source.transform;
+            activeSourceTransform = resolvedMotionRoot;
             activeAmount = amount;
             activeColor = source.TopColor;
             requireMatchingColors = requireColorMatch;
@@ -289,9 +307,10 @@ namespace LiquidSort
             {
                 LiquidBottle source = activeSource;
                 LiquidBottle target = activeTarget;
+                Transform movingRoot = activeSourceTransform;
                 int amount = activeAmount;
                 Color color = activeColor;
-                Vector3 start = source.transform.position;
+                Vector3 start = movingRoot.position;
                 Vector3 home = activeHome;
                 Quaternion homeRotation = activeHomeRotation;
                 Vector3 homeScale = activeHomeScale;
@@ -305,20 +324,30 @@ namespace LiquidSort
 
                 // Tilt towards the target: mouth to the left means a positive Z rotation.
                 float sign = target.transform.position.x < source.transform.position.x ? 1f : -1f;
+                // The profile's canonical tilt lives on the immutable bottle child. Read
+                // it there even though the placement parent owns the animation, otherwise
+                // a non-zero Royal reference rotation is added to the requested pour angle.
                 float homeLocalTilt = SignedDegrees(source.transform.localEulerAngles.z);
                 Vector2 selectedMouth = source.PourMouthLocal(target.transform.position.x);
                 Vector3 mouthLocal = new Vector3(selectedMouth.x, selectedMouth.y, 0f);
-                Vector3 mouthOffset = ScaledLocalOffset(source.transform, mouthLocal) * carryScale;
+                Vector3 mouthWorld = source.transform.TransformPoint(mouthLocal);
+                Vector3 mouthOffset = Quaternion.Inverse(homeRotation)
+                                    * (mouthWorld - movingRoot.position) * carryScale;
 
                 float tiltDelta = sign * Mathf.Min(sourcePose.maximumTilt,
                     source.SpillAngle() + sourcePose.extraTilt) - homeLocalTilt;
                 Vector3 anchor = target.MouthWorld
                                  + Vector3.up * (targetPose.receiveClearance * targetScaleY);
                 Quaternion tiltedRotation = TiltFromHome(homeRotation, tiltDelta);
-                Vector3 destination = anchor - tiltedRotation * mouthOffset;
+                // Approach with the upright mouth at the receiving anchor, then rotate the
+                // vessel around its own carried root. Keeping the old formula
+                //     root = anchor - rotation * mouthOffset
+                // during the tilt nailed the mouth to one screen/world point and forced the
+                // whole glass to slide sideways as its angle changed.
+                Vector3 pourRootPosition = anchor - movingRoot.rotation * mouthOffset;
 
-                yield return LiftAndCarry(operationId, source, start, homeScale, anchor,
-                    mouthOffset, destination, tiltedRotation,
+                yield return LiftAndCarry(operationId, movingRoot, start, homeScale,
+                    pourRootPosition, tiltedRotation,
                     sourcePose.carryArc * sourceScale);
                 if (!OperationCanContinue(operationId)) yield break;
 
@@ -335,7 +364,8 @@ namespace LiquidSort
 
                 float targetFrom = target.DisplayVolume;
                 float transferDuration = Mathf.Max(0.05f, unitTime * amount);
-                yield return Drain(operationId, source, target, amount, anchor, mouthOffset,
+                yield return Drain(operationId, movingRoot, source, target, amount,
+                    pourRootPosition,
                     homeRotation, homeLocalTilt, sign, tiltDelta, sourcePose.extraTilt,
                     sourcePose.maximumTilt, targetFrom, transferDuration);
                 if (!OperationCanContinue(operationId)) yield break;
@@ -344,8 +374,8 @@ namespace LiquidSort
                 // return immediately while the last drop and delayed receiver fill finish.
                 if (stream.Active) stream.StopEmitting();
                 Phase = PourPhase.Return;
-                yield return Return(operationId, source, target, home, homeRotation, homeScale,
-                    sign, targetFrom, amount, transferDuration);
+                yield return Return(operationId, movingRoot, source, target, home,
+                    homeRotation, homeScale, sign, targetFrom, amount, transferDuration);
                 if (!OperationCanContinue(operationId)) yield break;
 
                 Phase = PourPhase.WaitingForTail;
@@ -374,25 +404,21 @@ namespace LiquidSort
 
         /// <summary>
         /// The selected vessel is already lifted by the board. Translation gets the first
-        /// sixty percent of this beat; the last forty percent pivots around the lip at the
-        /// receiving anchor. This reads as approach-then-pour without adding another hop.
+        /// sixty percent of this beat; the last forty percent rotates in place at the
+        /// carried root. The stream follows the live lip, so pinning the lip itself is both
+        /// unnecessary and visually reads as the glass being glued to the screen.
         /// </summary>
-        private IEnumerator LiftAndCarry(int operationId, LiquidBottle source, Vector3 start,
-            Vector3 homeScale, Vector3 anchor, Vector3 mouthOffset, Vector3 destination,
-            Quaternion tiltedRotation, float arc)
+        private IEnumerator LiftAndCarry(int operationId, Transform movingRoot, Vector3 start,
+            Vector3 homeScale, Vector3 pourRootPosition, Quaternion tiltedRotation,
+            float arc)
         {
-            carryDriven = source.transform;
+            carryDriven = movingRoot;
             carryStartPosition = start;
-            carryStartRotation = source.transform.rotation;
+            carryStartRotation = movingRoot.rotation;
             carryEndRotation = tiltedRotation;
             carryStartScale = homeScale;
             carryEndScale = homeScale * carryScale;
-            carryAnchor = anchor;
-            carryMouthOffset = mouthOffset;
-
-            // Scale is already at its carry value when the pivot begins, which makes this
-            // pre-tilt endpoint exactly continuous with anchor - rotation * mouthOffset.
-            carryPreTiltPosition = anchor - carryStartRotation * mouthOffset;
+            carryPreTiltPosition = pourRootPosition;
             float arcHeight = arc
                               + Mathf.Abs(carryPreTiltPosition.x - start.x) * 0.025f;
             carryControl = Vector3.Lerp(start, carryPreTiltPosition, 0.5f)
@@ -400,7 +426,7 @@ namespace LiquidSort
 
             Tween carry = DOVirtual.Float(0f, 1f, Mathf.Max(0.001f, moveTime),
                     carryProgressCallback)
-                .SetEase(Ease.Linear).SetRecyclable(true).SetTarget(source.transform);
+                .SetEase(Ease.Linear).SetRecyclable(true).SetTarget(movingRoot);
             // Keep this in the current state machine. Yielding a second IEnumerator here
             // would create one more managed iterator object for every transfer.
             ArmTween(carry);
@@ -420,8 +446,8 @@ namespace LiquidSort
             if (!OperationCanContinue(operationId)) yield break;
 
             carryDriven = null;
-            source.transform.SetPositionAndRotation(destination, tiltedRotation);
-            source.transform.localScale = carryEndScale;
+            movingRoot.SetPositionAndRotation(pourRootPosition, tiltedRotation);
+            movingRoot.localScale = carryEndScale;
         }
 
         private void ApplyCarryProgress(float progress)
@@ -450,7 +476,7 @@ namespace LiquidSort
             Quaternion rotation = Quaternion.SlerpUnclamped(
                 carryStartRotation, carryEndRotation, tiltEased);
             carryDriven.SetPositionAndRotation(
-                carryAnchor - rotation * carryMouthOffset, rotation);
+                carryPreTiltPosition, rotation);
             carryDriven.localScale = carryEndScale;
         }
 
@@ -460,8 +486,10 @@ namespace LiquidSort
         /// The tilt keeps chasing the angle the shrinking fill wants, the same way a real
         /// bottle has to be turned further as it empties.
         /// </summary>
-        private IEnumerator Drain(int operationId, LiquidBottle source, LiquidBottle target,
-            int amount, Vector3 anchor, Vector3 mouthOffset, Quaternion homeRotation,
+        private IEnumerator Drain(int operationId, Transform movingRoot,
+            LiquidBottle source, LiquidBottle target, int amount,
+            Vector3 pourRootPosition,
+            Quaternion homeRotation,
             float homeLocalTilt, float sign, float startTiltDelta, float extraTilt,
             float maximumTilt, float targetFrom, float duration)
         {
@@ -504,7 +532,7 @@ namespace LiquidSort
                 currentTiltDelta = Mathf.Lerp(currentTiltDelta, wantedTiltDelta,
                     1f - Mathf.Exp(-tiltFollow * Time.deltaTime));
                 Quaternion rotation = TiltFromHome(homeRotation, currentTiltDelta);
-                source.transform.SetPositionAndRotation(anchor - rotation * mouthOffset, rotation);
+                movingRoot.SetPositionAndRotation(pourRootPosition, rotation);
                 yield return null;
             }
 
@@ -536,9 +564,10 @@ namespace LiquidSort
         /// touches down reads as a sprite being repositioned; one that rocks once reads as
         /// having been put down.
         /// </summary>
-        private IEnumerator Return(int operationId, LiquidBottle source, LiquidBottle target,
-            Vector3 home, Quaternion homeRotation, Vector3 homeScale, float pourSign,
-            float targetFrom, int amount, float transferDuration)
+        private IEnumerator Return(int operationId, Transform movingRoot,
+            LiquidBottle source, LiquidBottle target, Vector3 home,
+            Quaternion homeRotation, Vector3 homeScale, float pourSign, float targetFrom,
+            int amount, float transferDuration)
         {
             float total = Mathf.Max(0.03f, returnTime);
             float settle = Mathf.Min(Mathf.Clamp(settleTime, 0.11f, 0.15f),
@@ -548,22 +577,22 @@ namespace LiquidSort
             float rockDegrees = Mathf.Clamp(settleRock, 0.5f, 0.8f);
             Quaternion rockRotation = TiltFromHome(
                 homeRotation, -pourSign * rockDegrees);
-            Sequence sequence = DOTween.Sequence().SetRecyclable(true).SetTarget(source.transform);
-            sequence.Append(source.transform.DOMove(home, travel).SetEase(returnEase).SetRecyclable(true));
-            sequence.Join(source.transform.DORotateQuaternion(homeRotation, travel)
+            Sequence sequence = DOTween.Sequence().SetRecyclable(true).SetTarget(movingRoot);
+            sequence.Append(movingRoot.DOMove(home, travel).SetEase(returnEase).SetRecyclable(true));
+            sequence.Join(movingRoot.DORotateQuaternion(homeRotation, travel)
                 .SetEase(returnEase).SetRecyclable(true));
-            sequence.Join(source.transform.DOScale(homeScale, travel)
+            sequence.Join(movingRoot.DOScale(homeScale, travel)
                 .SetEase(returnEase).SetRecyclable(true));
 
             if (settle > 0.001f)
             {
-                sequence.Append(source.transform.DOMoveY(home.y - drop, settle * 0.38f)
+                sequence.Append(movingRoot.DOMoveY(home.y - drop, settle * 0.38f)
                     .SetEase(Ease.OutSine).SetRecyclable(true));
-                sequence.Join(source.transform.DORotateQuaternion(rockRotation, settle * 0.38f)
+                sequence.Join(movingRoot.DORotateQuaternion(rockRotation, settle * 0.38f)
                     .SetEase(Ease.OutSine).SetRecyclable(true));
-                sequence.Append(source.transform.DOMoveY(home.y, settle * 0.62f)
+                sequence.Append(movingRoot.DOMoveY(home.y, settle * 0.62f)
                     .SetEase(Ease.OutSine).SetRecyclable(true));
-                sequence.Join(source.transform.DORotateQuaternion(homeRotation, settle * 0.62f)
+                sequence.Join(movingRoot.DORotateQuaternion(homeRotation, settle * 0.62f)
                     .SetEase(Ease.OutSine).SetRecyclable(true));
             }
 
@@ -650,6 +679,7 @@ namespace LiquidSort
                    && !cancellationRequested
                    && isActiveAndEnabled
                    && activeSource != null && activeSource.isActiveAndEnabled
+                   && activeSourceTransform != null
                    && activeTarget != null && activeTarget.isActiveAndEnabled
                    && stream != null && stream.isActiveAndEnabled;
         }
@@ -808,13 +838,6 @@ namespace LiquidSort
             if (degrees > 180f) degrees -= 360f;
             if (degrees < -180f) degrees += 360f;
             return degrees;
-        }
-
-        private static Vector3 ScaledLocalOffset(Transform owner, Vector3 local)
-        {
-            Vector3 scale = owner.lossyScale;
-            return new Vector3(local.x * Mathf.Abs(scale.x),
-                local.y * Mathf.Abs(scale.y), local.z * Mathf.Abs(scale.z));
         }
 
         private readonly struct Pose

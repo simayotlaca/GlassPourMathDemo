@@ -58,31 +58,38 @@ public static class LiquidLab
     }
 
     /// <summary>
-    /// True once a refresh has been issued for the request currently on disk. The first
-    /// sighting of a request only kicks off the import; serving it in the same tick would
-    /// render with the assembly that was loaded *before* the edit under test, which looks
-    /// exactly like the edit having had no effect.
+    /// SessionState survives an assembly/domain reload, unlike a static bool. Keeping the
+    /// refresh marker there prevents the still-present request from starting another
+    /// refresh as soon as Unity recreates this type.
     /// </summary>
-    private static bool refreshed;
+    private const string RefreshPendingSessionKey =
+        "GlassPourMathDemo.LiquidLab.RefreshPending";
 
     private static void Poll()
     {
-        if (!File.Exists(RequestPath)) { refreshed = false; return; }
+        if (!File.Exists(RequestPath))
+        {
+            if (SessionState.GetBool(RefreshPendingSessionKey, false))
+                SessionState.EraseBool(RefreshPendingSessionKey);
+            return;
+        }
         if (EditorApplication.isCompiling || EditorApplication.isUpdating) return;
 
-        if (!refreshed)
+        if (!SessionState.GetBool(RefreshPendingSessionKey, false))
         {
-            refreshed = true;
+            SessionState.SetBool(RefreshPendingSessionKey, true);
             AssetDatabase.Refresh();
             return;
         }
-        refreshed = false;
 
         string[] lines;
         try { lines = File.ReadAllLines(RequestPath); }
         catch (IOException) { return; }   // still being written
 
-        File.Delete(RequestPath);
+        try { File.Delete(RequestPath); }
+        catch (IOException) { return; }
+        catch (System.UnauthorizedAccessException) { return; }
+        SessionState.EraseBool(RefreshPendingSessionKey);
 
         try { Run(lines); }
         catch (System.Exception e) { File.WriteAllText(DonePath, "error: " + e); return; }

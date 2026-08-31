@@ -1170,8 +1170,8 @@ Transform:
   m_GameObject: {fileID: 56542163}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalPosition: {x: -0.009236693, y: 0.5372924, z: 0}
+  m_LocalScale: {x: 0.0062537957, y: 0.006246687, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 875176309}
@@ -1225,7 +1225,7 @@ SpriteRenderer:
   m_FlipX: 0
   m_FlipY: 0
   m_DrawMode: 0
-  m_Size: {x: 4.5260415, y: 3.546875}
+  m_Size: {x: 573, y: 417}
   m_AdaptiveModeThreshold: 0.5
   m_SpriteTileMode: 0
   m_WasSpriteAssigned: 1
@@ -5998,6 +5998,7 @@ MonoBehaviour:
   coinBalanceLabel: {fileID: 0}
   coinBalanceRichLabel: {fileID: 0}
   hideCountAbove: 20
+  coinCountDownDuration: 0.5
 --- !u!114 &387264510
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -6068,6 +6069,7 @@ MonoBehaviour:
   - {fileID: 1194158833}
   - {fileID: 1052154931}
   - {fileID: 1606719942}
+  animateInitialDeal: 0
   glassIcons:
   - type: 0
     front: {fileID: 21300000, guid: f81020f7a69454915be91b6e4e2bc095, type: 3}
@@ -6520,7 +6522,7 @@ MonoBehaviour:
   threeRowCompositionScale: 1
   postUpperPlankOverlap: 0.92
   postLowerShelfInset: 0.02
-  animateEntrance: 1
+  animateEntrance: 0
   entranceDropHeight: 7.6
   entranceDropDuration: 0.32
   entranceGlassStagger: 0.055
@@ -17655,7 +17657,8 @@ MonoBehaviour:
   - {fileID: 14297601}
   - {fileID: 1309822795}
   chipSpacing: 31.231998
-  goodColor: {r: 0.3, g: 0.8, b: 0.42, a: 1}
+  completionLineColor: {r: 1, g: 0.95686275, b: 0.8156863, a: 1}
+  completionGlowColor: {r: 1, g: 0.7411765, b: 0.24313726, a: 1}
   accentColor: {r: 0.95, g: 0.68, b: 0.2, a: 1}
   badColor: {r: 0.85, g: 0.28, b: 0.24, a: 1}
   layerBadgeColor: {r: 0.9098039, g: 0.54509807, b: 0.23529412, a: 1}
@@ -20043,7 +20046,8 @@ MonoBehaviour:
   - {fileID: 2127684829}
   - {fileID: 1469435429}
   chipSpacing: 31.231998
-  goodColor: {r: 0.3, g: 0.8, b: 0.42, a: 1}
+  completionLineColor: {r: 1, g: 0.95686275, b: 0.8156863, a: 1}
+  completionGlowColor: {r: 1, g: 0.7411765, b: 0.24313726, a: 1}
   accentColor: {r: 0.95, g: 0.68, b: 0.2, a: 1}
   badColor: {r: 0.85, g: 0.28, b: 0.24, a: 1}
   layerBadgeColor: {r: 0.9098039, g: 0.54509807, b: 0.23529412, a: 1}
@@ -20767,8 +20771,8 @@ Transform:
   m_GameObject: {fileID: 1273196799}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalPosition: {x: -0.009236693, y: 0.5372924, z: 0}
+  m_LocalScale: {x: 0.0062537957, y: 0.006246687, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 933587409}
@@ -20822,7 +20826,7 @@ SpriteRenderer:
   m_FlipX: 0
   m_FlipY: 0
   m_DrawMode: 0
-  m_Size: {x: 4.5260415, y: 3.546875}
+  m_Size: {x: 573, y: 417}
   m_AdaptiveModeThreshold: 0.5
   m_SpriteTileMode: 0
   m_WasSpriteAssigned: 1
@@ -26668,7 +26672,8 @@ MonoBehaviour:
   - {fileID: 1547101602}
   - {fileID: 1756787106}
   chipSpacing: 31.231998
-  goodColor: {r: 0.3, g: 0.8, b: 0.42, a: 1}
+  completionLineColor: {r: 1, g: 0.95686275, b: 0.8156863, a: 1}
+  completionGlowColor: {r: 1, g: 0.7411765, b: 0.24313726, a: 1}
   accentColor: {r: 0.95, g: 0.68, b: 0.2, a: 1}
   badColor: {r: 0.85, g: 0.28, b: 0.24, a: 1}
   layerBadgeColor: {r: 0.9098039, g: 0.54509807, b: 0.23529412, a: 1}

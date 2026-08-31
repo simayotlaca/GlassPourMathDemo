@@ -1,6 +1,7 @@
 using BartenderSort.Core;
 using DG.Tweening;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 namespace LiquidSort.Levels
@@ -64,19 +65,46 @@ namespace LiquidSort.Levels
         private bool terminalCommandPending;
 
         private BartenderUiConfetti confetti;
+        private static bool sceneHooked;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetInstallerStatics()
+        {
+            SceneManager.sceneLoaded -= HandleSceneLoaded;
+            sceneHooked = false;
+        }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        private static void InstallOnSessions()
+        private static void InstallForLoadedScenes()
         {
-            BartenderSession[] sessions = Object.FindObjectsByType<BartenderSession>(
-                FindObjectsInactive.Include, FindObjectsSortMode.None);
-            for (int i = 0; i < sessions.Length; i++)
+            if (!sceneHooked)
             {
-                BartenderSession found = sessions[i];
-                if (found == null
-                    || found.GetComponent<BartenderRoundFeedbackPresenter>() != null)
-                    continue;
-                found.gameObject.AddComponent<BartenderRoundFeedbackPresenter>();
+                SceneManager.sceneLoaded += HandleSceneLoaded;
+                sceneHooked = true;
+            }
+
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+                InstallInScene(SceneManager.GetSceneAt(i));
+        }
+
+        private static void HandleSceneLoaded(Scene scene, LoadSceneMode _) =>
+            InstallInScene(scene);
+
+        private static void InstallInScene(Scene scene)
+        {
+            if (!Application.isPlaying || !scene.IsValid() || !scene.isLoaded) return;
+            GameObject[] roots = scene.GetRootGameObjects();
+            for (int i = 0; i < roots.Length; i++)
+            {
+                BartenderSession[] sessions =
+                    roots[i].GetComponentsInChildren<BartenderSession>(true);
+                for (int j = 0; j < sessions.Length; j++)
+                {
+                    BartenderSession found = sessions[j];
+                    if (found != null
+                        && found.GetComponent<BartenderRoundFeedbackPresenter>() == null)
+                        found.gameObject.AddComponent<BartenderRoundFeedbackPresenter>();
+                }
             }
         }
 

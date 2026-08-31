@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Globalization;
 using UnityEngine;
 using UnityEngine.UI;
@@ -71,6 +72,10 @@ namespace LiquidSort.Levels
         private bool buttonsHooked;
         private float noticeUntil;
         private float lastLayoutHeight = float.NaN;
+        private BartenderLoadingOverlayPresenter loadingOverlay;
+        private Coroutine startGameRoutine;
+        private bool startGameInProgress;
+        private BartenderLevelController loadingBarrierController;
 
         public bool Visible => menuRoot != null && menuRoot.activeSelf;
 
@@ -80,6 +85,8 @@ namespace LiquidSort.Levels
             // Defensive for hand-authored variants. The production scene also serializes
             // loadOnStart=false, so there is no script execution-order race.
             if (controller != null) controller.DisableAutomaticLoadAtRuntime();
+            loadingOverlay = BartenderLoadingOverlayPresenter.Attach(gameObject);
+            loadingOverlay?.Prewarm();
         }
 
         private void OnEnable()
@@ -102,6 +109,7 @@ namespace LiquidSort.Levels
 
         private void OnDisable()
         {
+            CancelStartGameTransition();
             BartenderProgressService.CoinsChanged -= HandleCoinsChanged;
             BartenderProgressService.LivesChanged -= HandleLivesChanged;
             BartenderProgressService.LifeTimerChanged -= HandleLifeTimerChanged;
@@ -218,6 +226,7 @@ namespace LiquidSort.Levels
 
         private void StartGame()
         {
+            if (startGameInProgress) return;
             ResolveController();
             SubscribeController();
             if (controller == null)
@@ -232,11 +241,102 @@ namespace LiquidSort.Levels
                 return;
             }
 
-            if (controller.TryStartSavedCampaign(out string rejectionReason)) return;
-            ShowNotice(string.IsNullOrWhiteSpace(rejectionReason)
-                ? "BÖLÜM BAŞLATILAMADI"
-                : rejectionReason.ToUpper(TurkishCulture));
-            RefreshAll();
+            CloseSettings();
+            CloseMoreLives();
+            if (loadingOverlay == null)
+                loadingOverlay = BartenderLoadingOverlayPresenter.Attach(gameObject);
+
+            startGameInProgress = true;
+            if (playButton != null) playButton.interactable = false;
+            startGameRoutine = StartCoroutine(StartGameRoutine());
+        }
+
+        private IEnumerator StartGameRoutine()
+        {
+            string rejectionReason = null;
+            bool started = false;
+            bool overlayVisible = loadingOverlay != null && loadingOverlay.Begin();
+
+            if (overlayVisible)
+            {
+                // The board load itself is synchronous. Give the overlay one real render
+                // frame, then use restrained pre-roll so a fast level never flashes.
+                loadingOverlay.AdvanceTo(0.30f, 0.26f);
+                yield return null;
+                yield return new WaitForSecondsRealtime(0.18f);
+                loadingOverlay.AdvanceTo(0.56f, 0.16f);
+                yield return new WaitForSecondsRealtime(0.12f);
+            }
+            else
+            {
+                // Preserve the render-before-load contract even if art is unavailable.
+                yield return null;
+            }
+
+            ResolveController();
+            if (controller == null)
+            {
+                rejectionReason = "Oyun sahnesi hazır değil";
+            }
+            else
+            {
+                try
+                {
+                    started = controller.TryStartSavedCampaign(out rejectionReason);
+                }
+                catch (Exception exception)
+                {
+                    rejectionReason = "Bölüm başlatılırken beklenmeyen bir hata oluştu";
+                    Debug.LogException(exception, this);
+                }
+            }
+
+            if (started)
+            {
+                // State is already Playing after the synchronous call. Freeze gameplay
+                // clocks while the last progress beat and fade are still covering it.
+                if (controller != null && controller.AcquirePresentationBarrier(this))
+                    loadingBarrierController = controller;
+
+                if (overlayVisible)
+                {
+                    loadingOverlay.AdvanceTo(0.84f, 0.10f);
+                    yield return new WaitForSecondsRealtime(0.06f);
+                    yield return loadingOverlay.CompleteAndHide();
+                }
+            }
+            else
+            {
+                if (overlayVisible) yield return loadingOverlay.CancelAndHide();
+                ShowNotice(string.IsNullOrWhiteSpace(rejectionReason)
+                    ? "BÖLÜM BAŞLATILAMADI"
+                    : rejectionReason.ToUpper(TurkishCulture));
+                RefreshAll();
+            }
+
+            ReleaseLoadingBarrier();
+            startGameRoutine = null;
+            startGameInProgress = false;
+            if (!started && playButton != null) playButton.interactable = true;
+        }
+
+        private void CancelStartGameTransition()
+        {
+            if (startGameRoutine != null)
+            {
+                StopCoroutine(startGameRoutine);
+                startGameRoutine = null;
+            }
+            ReleaseLoadingBarrier();
+            startGameInProgress = false;
+            if (loadingOverlay != null) loadingOverlay.HideImmediate();
+        }
+
+        private void ReleaseLoadingBarrier()
+        {
+            if (loadingBarrierController != null)
+                loadingBarrierController.ReleasePresentationBarrier(this);
+            loadingBarrierController = null;
         }
 
         private void OpenSettings()
@@ -325,8 +425,8 @@ namespace LiquidSort.Levels
 
         private void ToggleVibration()
         {
-            BartenderProgressService.HardReset();
-            UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex);
+            BartenderSettingsStore.ToggleVibration();
+            RefreshSettings();
         }
 
         private void ShowNotice(string message)

@@ -69,6 +69,20 @@ namespace LiquidSort
         }
 
         /// <summary>
+        /// Solves the moving root position that puts one asset-local point exactly on a
+        /// requested world point, without changing either transform's local pose.
+        /// </summary>
+        public static Vector3 RootPositionForAnchoredPoint(
+            Transform movingRoot, Transform assetSpace, Vector3 assetLocalPoint,
+            Vector3 desiredWorldPoint)
+        {
+            if (movingRoot == null || assetSpace == null) return desiredWorldPoint;
+            Vector3 rootToAnchor = assetSpace.TransformPoint(assetLocalPoint)
+                                 - movingRoot.position;
+            return desiredWorldPoint - rootToAnchor;
+        }
+
+        /// <summary>
         /// Board and safe-area multiplier on top of the canonical RoyalGlassLab scale:
         /// rho = s_currentWorld / s_profileReference. One at Royal, by definition.
         /// </summary>

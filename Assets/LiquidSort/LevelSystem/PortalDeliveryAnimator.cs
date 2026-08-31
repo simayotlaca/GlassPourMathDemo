@@ -462,11 +462,16 @@ namespace LiquidSort.Levels
 
         public bool Play(LiquidBottle glass, Action onGlassHidden = null,
                          Action onFinished = null)
-            => Play(glass, null, null, onGlassHidden, onFinished);
+            => Play(glass, null, null, null, onGlassHidden, onFinished);
 
         public bool Play(LiquidBottle glass, Transform checkBadge, Action onGlassHidden,
                          Action onFinished)
-            => Play(glass, null, checkBadge, onGlassHidden, onFinished);
+            => Play(glass, null, null, checkBadge, onGlassHidden, onFinished);
+
+        public bool Play(LiquidBottle glass, Transform motionAnchor, Transform checkBadge,
+                         Action onGlassHidden, Action onFinished)
+            => Play(glass, null, motionAnchor, checkBadge,
+                onGlassHidden, onFinished);
 
         /// <summary>
         /// Borrows one glass and delivers it through the arch.
@@ -477,12 +482,15 @@ namespace LiquidSort.Levels
         /// kartı refresh belongs. Both also fire on cancellation, so no caller can leak a
         /// glass that never came home.
         /// </summary>
-        public bool Play(LiquidBottle glass, Transform motionAnchor, Transform checkBadge,
-                         Action onGlassHidden, Action onFinished)
+        public bool Play(LiquidBottle glass, Transform motionRoot, Transform motionAnchor,
+                         Transform checkBadge, Action onGlassHidden, Action onFinished)
         {
             if (!Application.isPlaying || !isActiveAndEnabled) return false;
             if (glass == null || !glass.gameObject.activeInHierarchy) return false;
             if (flights.Count > 0 || IsDelivering(glass)) return false;
+            Transform resolvedRoot = motionRoot != null ? motionRoot : glass.transform;
+            if (resolvedRoot != glass.transform
+                && !glass.transform.IsChildOf(resolvedRoot)) return false;
             if (!ValidateBindings(out string reason))
             {
                 LogOnce(reason);
@@ -494,7 +502,7 @@ namespace LiquidSort.Levels
             var flight = new Flight
             {
                 Glass = glass,
-                Root = glass.transform,
+                Root = resolvedRoot,
                 OnGlassHidden = onGlassHidden,
                 OnFinished = onFinished,
                 OwnsPortalChrome = true
