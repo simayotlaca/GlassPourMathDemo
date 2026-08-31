@@ -1335,12 +1335,15 @@ namespace LiquidSort.Levels
             int basePerRow = count / configuredRowCount;
             int remainder = count % configuredRowCount;
 
-            // ONE campaign, ONE glass size. The scale is decided once, up here, and it no
-            // longer reads this board at all: every level wears the size the most crowded
-            // level can hold. Spacing stays per row, so a lighter row seats the same
-            // glasses on the same shelf width and carries the slack as air.
+            // ONE board, ONE glass size. The scale is decided once from this board's
+            // busiest row, never separately for each shelf. A seven-glass board splits
+            // 4+3, so both shelves wear the four-across size while the lighter row keeps
+            // its extra room as spacing. The resolver also keeps the compact budget as a
+            // ceiling for a spacious board: the extra margin is the selection-lift gap
+            // between a wide Royal cocktail rim and the screen-space order cards.
+            int busiestRow = basePerRow + (remainder > 0 ? 1 : 0);
             float compositionScale = CompositionScale(configuredRowCount);
-            float scale = BoardGlassScale(configuredRowCount);
+            float scale = BoardGlassScale(configuredRowCount, busiestRow);
 
             int actorIndex = 0;
             for (int row = 0; row < configuredRowCount; row++)
@@ -1382,22 +1385,25 @@ namespace LiquidSort.Levels
                 opticalSeatInset, twoRowSpaciousGlassScale, boardGlassScale);
 
         /// <summary>
-        /// The single size every vessel wears, on every board of the campaign. The builder
-        /// still solves one budget per layout, but only the tightest of the four is used:
-        /// a glass that fits the most crowded board fits every looser one, so the vessel
-        /// no longer changes size from one level to the next. Before this, the same glass
-        /// was drawn at the two-row budget on levels 1-9 and at the three-row budget from
-        /// level 11 on - a 45% jump mid-campaign on identical artwork.
-        ///
-        /// <paramref name="rowCount"/> is still read, but only for the composition scale,
-        /// which contracts furniture and glasses together instead of resizing a glass
-        /// against the shelf it stands on.
+        /// The single size every vessel on this board wears. The row count provides the
+        /// vertical budget and the busiest row provides the horizontal budget. A spacious
+        /// layout is additionally capped by its same-row compact solution: that small
+        /// reserve is what keeps a selected wide-mouth cocktail visibly inside the world
+        /// stage instead of letting its rim read as if it were stuck to the HUD.
         /// </summary>
-        private float BoardGlassScale(int rowCount)
+        private float BoardGlassScale(int rowCount, int busiestRowColumns)
         {
-            float solvedScale = Mathf.Min(
-                Mathf.Min(twoRowSpaciousGlassScale, threeRowSpaciousGlassScale),
-                Mathf.Min(fourAcrossGlassScale, fourAcrossThreeRowGlassScale));
+            bool compactRow = busiestRowColumns >= 4;
+            bool tallLayout = rowCount >= 3;
+            float compactScale = tallLayout
+                ? fourAcrossThreeRowGlassScale
+                : fourAcrossGlassScale;
+            float spaciousScale = tallLayout
+                ? threeRowSpaciousGlassScale
+                : twoRowSpaciousGlassScale;
+            float solvedScale = compactRow
+                ? compactScale
+                : Mathf.Min(spaciousScale, compactScale);
             return solvedScale * CompositionScale(rowCount);
         }
 

@@ -318,9 +318,21 @@ Shader "LiquidSort/BottleLiquid"
                     // against a band 2.6x shorter, and two units read as one. Capping it
                     // at twice the authored share keeps the floor doing its job without
                     // ever letting it become the rule.
+                    // Capping the screen floor bounds the damage but does not remove it:
+                    // which term wins still depends on board scale AND on device
+                    // resolution. At Royal's own framing aa == 0.85 * unitsPerPixel, so
+                    // aa * 2.5 == 2.125 * _RoyalUnitsPerPixel. Substituting the profile
+                    // constant reproduces Royal's approved shadow exactly everywhere,
+                    // with both bounds vessel-local.
+                    float contactFloor = _RoyalUnitsPerPixel > 0.0
+                        ? _RoyalUnitsPerPixel * 2.125
+                        : aa * 2.5;
                     float contactWidth = max(chord * 0.009,
-                                             min(aa * 2.5, chord * 0.018));
-                    float contactBand = 1.0 - smoothstep(aa * 0.35,
+                                             min(contactFloor, chord * 0.018));
+                    // The inner edge is a genuine antialias ramp and stays screen-floored,
+                    // but it may never become a fat plateau on a shrunk glass.
+                    float contactBand = 1.0 - smoothstep(
+                        min(aa * 0.35, contactWidth * 0.25),
                         contactWidth, abs(signedBoundary));
                     boundaryContact = max(boundaryContact, contactBand);
 
@@ -527,8 +539,11 @@ Shader "LiquidSort/BottleLiquid"
                 // it is not the span. Uncapped it widened the wall band where the top
                 // face pinches out, so the near-rim light, far rim and glint all stopped
                 // further from the glass on a shrunk vessel than on the Royal one.
+                float capSpanFloor = _RoyalUnitsPerPixel > 0.0
+                    ? _RoyalUnitsPerPixel * 1.7   // == surfaceAA * 2.0 at Royal's framing
+                    : surfaceAA * 2.0;
                 float capSpan = max(farTop - nearTop,
-                                    min(surfaceAA * 2.0, topHalfDepth * 0.5 + 1e-5));
+                                    min(capSpanFloor, topHalfDepth * 0.5 + 1e-5));
                 float capT = saturate(surfaceDistance / capSpan);
 
                 // Across the top face the light falls off towards the far rim, but it
