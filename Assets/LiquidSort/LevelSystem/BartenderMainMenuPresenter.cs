@@ -41,6 +41,17 @@ namespace LiquidSort.Levels
         [SerializeField] private Text playLabel;
         [SerializeField] private Text noticeLabel;
 
+        [Header("Daha fazla can")]
+        [SerializeField] private GameObject moreLivesOverlay;
+        [SerializeField] private Button closeMoreLivesButton;
+        [SerializeField] private Button refillLivesButton;
+        [SerializeField] private Button rewardedLifeButton;
+        [SerializeField] private Text moreLivesCountLabel;
+        [SerializeField] private Text moreLivesTimerLabel;
+        [SerializeField] private Text moreLivesCoinBalanceLabel;
+        [SerializeField] private Text moreLivesRefillCostLabel;
+        [SerializeField] private Text moreLivesFeedbackLabel;
+
         [Header("Bottom navigation")]
         [SerializeField] private RectTransform bottomNavigationRect;
         [SerializeField] private Button shopButton;
@@ -164,6 +175,10 @@ namespace LiquidSort.Levels
             if (settingsButton != null) settingsButton.onClick.AddListener(OpenSettings);
             if (addLifeButton != null)
                 addLifeButton.onClick.AddListener(ShowLifeStoreNotice);
+            if (closeMoreLivesButton != null)
+                closeMoreLivesButton.onClick.AddListener(CloseMoreLives);
+            if (refillLivesButton != null)
+                refillLivesButton.onClick.AddListener(RefillLives);
             if (addCoinButton != null)
                 addCoinButton.onClick.AddListener(ShowCoinStoreNotice);
             if (musicButton != null) musicButton.onClick.AddListener(ToggleMusic);
@@ -186,6 +201,10 @@ namespace LiquidSort.Levels
             if (settingsButton != null) settingsButton.onClick.RemoveListener(OpenSettings);
             if (addLifeButton != null)
                 addLifeButton.onClick.RemoveListener(ShowLifeStoreNotice);
+            if (closeMoreLivesButton != null)
+                closeMoreLivesButton.onClick.RemoveListener(CloseMoreLives);
+            if (refillLivesButton != null)
+                refillLivesButton.onClick.RemoveListener(RefillLives);
             if (addCoinButton != null)
                 addCoinButton.onClick.RemoveListener(ShowCoinStoreNotice);
             if (musicButton != null) musicButton.onClick.RemoveListener(ToggleMusic);
@@ -207,6 +226,12 @@ namespace LiquidSort.Levels
                 return;
             }
 
+            if (BartenderProgressService.Lives <= 0)
+            {
+                OpenMoreLives();
+                return;
+            }
+
             if (controller.TryStartSavedCampaign(out string rejectionReason)) return;
             ShowNotice(string.IsNullOrWhiteSpace(rejectionReason)
                 ? "BÖLÜM BAŞLATILAMADI"
@@ -217,6 +242,7 @@ namespace LiquidSort.Levels
         private void OpenSettings()
         {
             if (settingsOverlay == null) return;
+            CloseMoreLives();
             RefreshSettings();
             settingsOverlay.SetActive(true);
         }
@@ -226,7 +252,53 @@ namespace LiquidSort.Levels
             if (settingsOverlay != null) settingsOverlay.SetActive(false);
         }
 
-        private void ShowLifeStoreNotice() => ShowNotice("CAN MAĞAZASI YAKINDA");
+        private void ShowLifeStoreNotice()
+        {
+            if (BartenderProgressService.Lives <= 0)
+            {
+                OpenMoreLives();
+                return;
+            }
+
+            ShowNotice("CANLARIN HAZIR");
+        }
+
+        private void OpenMoreLives()
+        {
+            if (moreLivesOverlay == null)
+            {
+                ShowNotice("CANIN DOLMASINI BEKLE");
+                return;
+            }
+
+            CloseSettings();
+            if (moreLivesFeedbackLabel != null)
+                moreLivesFeedbackLabel.text = string.Empty;
+            RefreshMoreLives();
+            moreLivesOverlay.SetActive(true);
+        }
+
+        private void CloseMoreLives()
+        {
+            if (moreLivesOverlay != null) moreLivesOverlay.SetActive(false);
+        }
+
+        private void RefillLives()
+        {
+            if (BartenderProgressService.TryRefillLivesToMaximum(
+                    BartenderProgressService.FullLifeRefillCoinCost,
+                    out string rejectionReason))
+            {
+                CloseMoreLives();
+                return;
+            }
+
+            if (moreLivesFeedbackLabel != null)
+                moreLivesFeedbackLabel.text = string.IsNullOrWhiteSpace(rejectionReason)
+                    ? "DOLDURULAMADI"
+                    : rejectionReason.ToUpper(TurkishCulture);
+            RefreshMoreLives(false);
+        }
         private void ShowCoinStoreNotice() => ShowNotice("JETON MAĞAZASI YAKINDA");
         private void ShowShopNotice() => ShowNotice("DÜKKAN YAKINDA");
         private void ShowRecipesNotice() => ShowNotice("TARİFLER YAKINDA");
@@ -272,12 +344,19 @@ namespace LiquidSort.Levels
         {
             if (coinLabel != null)
                 coinLabel.text = value.ToString(CultureInfo.InvariantCulture);
+            if (moreLivesCoinBalanceLabel != null)
+                moreLivesCoinBalanceLabel.text = value.ToString(CultureInfo.InvariantCulture);
         }
 
         private void HandleLivesChanged(int value)
         {
             if (lifeCountLabel != null)
                 lifeCountLabel.text = value.ToString(CultureInfo.InvariantCulture);
+            if (moreLivesCountLabel != null)
+                moreLivesCountLabel.text = value.ToString(CultureInfo.InvariantCulture);
+            if (value > 0 && moreLivesOverlay != null
+                && moreLivesOverlay.activeSelf)
+                CloseMoreLives();
             RefreshLevel();
         }
 
@@ -294,7 +373,11 @@ namespace LiquidSort.Levels
                 || controller.State == BartenderLevelState.Unloaded
                 || controller.State == BartenderLevelState.CampaignComplete;
             menuRoot.SetActive(show);
-            if (!show) CloseSettings();
+            if (!show)
+            {
+                CloseSettings();
+                CloseMoreLives();
+            }
             if (show) RefreshAll();
         }
 
@@ -309,19 +392,42 @@ namespace LiquidSort.Levels
 
         private void RefreshLifeTimer(TimeSpan remaining)
         {
-            if (lifeTimerLabel == null) return;
             if (BartenderProgressService.IsLifeFull)
             {
-                lifeTimerLabel.text = "DOLU";
+                if (lifeTimerLabel != null) lifeTimerLabel.text = "DOLU";
+                if (moreLivesTimerLabel != null) moreLivesTimerLabel.text = "DOLU";
                 return;
             }
 
             long totalSeconds = Math.Max(0L, (long)Math.Ceiling(remaining.TotalSeconds));
             long totalMinutes = totalSeconds / 60L;
             long seconds = totalSeconds % 60L;
-            lifeTimerLabel.text = totalMinutes.ToString("00", CultureInfo.InvariantCulture)
-                                + ":"
-                                + seconds.ToString("00", CultureInfo.InvariantCulture);
+            string formatted = totalMinutes.ToString("00", CultureInfo.InvariantCulture)
+                             + ":"
+                             + seconds.ToString("00", CultureInfo.InvariantCulture);
+            if (lifeTimerLabel != null) lifeTimerLabel.text = formatted;
+            if (moreLivesTimerLabel != null) moreLivesTimerLabel.text = formatted;
+        }
+
+        private void RefreshMoreLives(bool clearFeedback = true)
+        {
+            int lives = BartenderProgressService.Lives;
+            HandleCoinsChanged(BartenderProgressService.Coins);
+            if (moreLivesCountLabel != null)
+                moreLivesCountLabel.text = lives.ToString(CultureInfo.InvariantCulture);
+            if (moreLivesRefillCostLabel != null)
+                moreLivesRefillCostLabel.text =
+                    BartenderProgressService.FullLifeRefillCoinCost
+                        .ToString(CultureInfo.InvariantCulture);
+            RefreshLifeTimer(BartenderProgressService.LifeTimer);
+            if (refillLivesButton != null)
+                refillLivesButton.interactable = lives < BartenderProgressService.MaxLives;
+
+            // Projede henüz doğrulanmış rewarded-ad adaptörü yok. Görsel hazırdır ama
+            // doğrulanmamış bir dokunuşla can vermemek için düğme bilerek pasiftir.
+            if (rewardedLifeButton != null) rewardedLifeButton.interactable = false;
+            if (clearFeedback && moreLivesFeedbackLabel != null)
+                moreLivesFeedbackLabel.text = string.Empty;
         }
 
         private void RefreshLevel()

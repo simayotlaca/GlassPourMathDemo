@@ -15,6 +15,7 @@ namespace LiquidSort.Levels
         public const int MaximumLives = 5;
         public const int CoinsPerWin = 50;
         public const int PaidContinueCoinCost = 100;
+        public const int FullLifeRefillCoinCost = 900;
 
 #if UNITY_EDITOR
         // TEST KAPISI: true yapıldığında yalnız Editor ayrı bir kayıt dosyası kullanır.

@@ -134,6 +134,18 @@ namespace LiquidSort.Levels
         [Tooltip("All configured surface heights and glass positions are local to this transform.")]
         [SerializeField] private Transform layoutSpace;
 
+        [Header("Responsive portrait fit")]
+        [Tooltip("The width-fit provider for the world composition. Tall devices leave extra "
+               + "space below a top-aligned reference frame; the shelf group follows a "
+               + "controlled share of that space while the delivery stage stays fixed.")]
+        [SerializeField] private WorldSpaceSafeAreaFitter safeAreaFitter;
+        [Tooltip("Share of the extra height below the 720x1280 frame followed by shelves "
+               + "and seated glasses. 0 keeps the authored pose; 1 follows all of it.")]
+        [SerializeField, Range(0f, 1f)] private float tallScreenShelfFollow = 0.60f;
+        [Tooltip("Safety cap in authored world units so extreme aspect ratios cannot push "
+               + "the lowest shelf into the bottom controls.")]
+        [SerializeField, Min(0f)] private float maximumTallScreenShelfOffset = 1.65f;
+
         [Header("Scene-native Royal glass pools")]
         [Tooltip("Full campaign maximum: 4. Each reference must use ShotRoyal.")]
         [SerializeField] private List<GlassBinding> shotPool = new List<GlassBinding>();
@@ -193,7 +205,9 @@ namespace LiquidSort.Levels
         [SerializeField, Min(0.1f)] private float fourAcrossGlassScale = 0.7101505f;
         [Tooltip("Board scale once any row holds four glasses, inside the three-row layout.")]
         [SerializeField, Min(0.1f)] private float fourAcrossThreeRowGlassScale = 0.43527383f;
-        [Tooltip("Small optical overlap that seats the vessel artwork into the plank.")]
+        [Tooltip("Small optical overlap that seats the vessel artwork into the plank. "
+               + "Authored in world units against the two-row board, then held at a fixed "
+               + "share of the glass on every other board.")]
         [SerializeField, Min(0f)] private float opticalSeatInset = 0.02f;
         [SerializeField] private float glassPlaneZ;
         [Tooltip("Uniform furniture-and-glass scale used when a third shelf is visible. "
@@ -285,6 +299,7 @@ namespace LiquidSort.Levels
         private bool actorCacheBuilt;
         private int configuredColumns = 1;
         private int configuredRowCount;
+        private float appliedResponsiveShelfOffset;
         private string lastLoggedError;
 
         public BartenderLevelController Controller => controller;
@@ -322,6 +337,8 @@ namespace LiquidSort.Levels
 
         private void Awake()
         {
+            if (safeAreaFitter == null && layoutSpace != null)
+                safeAreaFitter = layoutSpace.GetComponentInParent<WorldSpaceSafeAreaFitter>();
             EnsureActorCache(out _);
         }
 
@@ -345,6 +362,8 @@ namespace LiquidSort.Levels
 
         private void LateUpdate()
         {
+            RefreshResponsiveShelfOffset();
+
             if (seatAnimation == null || seatAnimationDeadlineRealtime < 0d
                 || Time.realtimeSinceStartupAsDouble < seatAnimationDeadlineRealtime)
                 return;
@@ -360,6 +379,8 @@ namespace LiquidSort.Levels
             twoAcrossColumnSpacing = Mathf.Max(0.1f, twoAcrossColumnSpacing);
             threeAcrossColumnSpacing = Mathf.Max(0.1f, threeAcrossColumnSpacing);
             compactColumnSpacing = Mathf.Max(0.1f, compactColumnSpacing);
+            tallScreenShelfFollow = Mathf.Clamp01(tallScreenShelfFollow);
+            maximumTallScreenShelfOffset = Mathf.Max(0f, maximumTallScreenShelfOffset);
             twoRowSpaciousGlassScale = Mathf.Max(0.1f, twoRowSpaciousGlassScale);
             threeRowSpaciousGlassScale = Mathf.Max(0.1f, threeRowSpaciousGlassScale);
             fourAcrossGlassScale = Mathf.Max(0.1f, fourAcrossGlassScale);
@@ -452,6 +473,9 @@ namespace LiquidSort.Levels
 
             controller = levelController;
             layoutSpace = sceneLayoutSpace;
+            safeAreaFitter = sceneLayoutSpace != null
+                ? sceneLayoutSpace.GetComponentInParent<WorldSpaceSafeAreaFitter>()
+                : null;
             CopyPool(shots, shotPool);
             CopyPool(cocktails, cocktailPool);
             CopyPool(lattes, lattePool);
@@ -494,6 +518,36 @@ namespace LiquidSort.Levels
                     ClearPresentation();
             }
         }
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// Completes the builder-time binding when the responsive fitter is deliberately
+        /// added after the shelf rig. Runtime scenes still resolve the same parent in Awake;
+        /// this explicit path keeps the serialized scene/prefab source of truth complete.
+        /// </summary>
+        public bool ConfigureResponsiveFitForAuthoring(WorldSpaceSafeAreaFitter fitter)
+        {
+            if (Application.isPlaying || fitter == null) return false;
+            safeAreaFitter = fitter;
+            UnityEditor.EditorUtility.SetDirty(this);
+            return true;
+        }
+
+        /// <summary>
+        /// Reflows an already-presented edit-mode board for a device preview, or restores
+        /// the neutral 720x1280 shelf pose afterwards. It never publishes gameplay events.
+        /// </summary>
+        public bool RefreshResponsiveLayoutForAuthoring(bool applyResponsiveOffset)
+        {
+            if (Application.isPlaying || configuredRowCount <= 0
+                || (applyResponsiveOffset && safeAreaFitter == null)) return false;
+
+            ApplyShelfLayout(configuredRowCount,
+                applyResponsiveOffset ? ResolveResponsiveShelfOffset() : 0f);
+            LayoutActiveActors();
+            return true;
+        }
+#endif
 
         /// <summary>
         /// Authoring API for the delivery portal, mirroring ConfigureSceneBindings. Passing
@@ -1304,13 +1358,28 @@ namespace LiquidSort.Levels
                     actor.Row = row;
                     actor.Column = column;
                     SeatActor(actor, firstX + column * spacing,
-                        shelfSurfaceY - opticalSeatInset * compositionScale, scale);
+                        shelfSurfaceY - SeatInset(scale), scale);
                 }
                 CenterRowSilhouette(rowActorStart, rowCount, shelfCenterX);
             }
 
             RecordSeatPoses();
         }
+
+        /// <summary>
+        /// How deep the vessel artwork sinks into the plank it stands on.
+        ///
+        /// The overlap is there to kill the hairline between a drawn foot and a drawn
+        /// plank, so what has to stay constant is its share of the GLASS, not its size in
+        /// world units. Left absolute it buried a three-row glass 1.81x deeper in its own
+        /// units than a two-row one - the bottom colour band lost visible height that the
+        /// baked optical-height table had already accounted for, which is exactly the
+        /// mismatch against RoyalGlassLab. Normalised by the scale it was eyeballed at,
+        /// so the approved two-row board is unchanged to the last float.
+        /// </summary>
+        private float SeatInset(float boardGlassScale) =>
+            VesselPresentationMath.RescaleAuthoredLength(
+                opticalSeatInset, twoRowSpaciousGlassScale, boardGlassScale);
 
         /// <summary>
         /// The single size every vessel wears, on every board of the campaign. The builder
@@ -1883,6 +1952,12 @@ namespace LiquidSort.Levels
 
         private void ApplyShelfLayout(int rowCount)
         {
+            ApplyShelfLayout(rowCount, ResolveResponsiveShelfOffset());
+        }
+
+        private void ApplyShelfLayout(int rowCount, float responsiveShelfOffset)
+        {
+            appliedResponsiveShelfOffset = responsiveShelfOffset;
             DisableAllShelves();
             ApplyShelfCompositionScale(rowCount);
             for (int row = 0; row < rowCount; row++)
@@ -2040,14 +2115,70 @@ namespace LiquidSort.Levels
 
         private float SurfaceY(int rowCount, int row)
         {
-            if (rowCount <= 2) return row == 0 ? twoRowSurfaceY.x : twoRowSurfaceY.y;
+            if (rowCount <= 2)
+                return (row == 0 ? twoRowSurfaceY.x : twoRowSurfaceY.y)
+                     + appliedResponsiveShelfOffset;
             float authored = row == 0
                 ? threeRowSurfaceY.x
                 : (row == 1 ? threeRowSurfaceY.y : threeRowSurfaceY.z);
             // The bottom shelf is the visual floor. Contract every higher surface toward
             // it so the complete three-row composition moves away from the order cards.
             return threeRowSurfaceY.z
-                 + (authored - threeRowSurfaceY.z) * CompositionScale(rowCount);
+                 + (authored - threeRowSurfaceY.z) * CompositionScale(rowCount)
+                 + appliedResponsiveShelfOffset;
+        }
+
+        /// <summary>
+        /// Width-fit + top alignment deliberately protects the stage and cards. On a
+        /// taller phone it also leaves extra reference-space below them. Shelves follow
+        /// only part of that extension, so the board remains visually attached to the
+        /// bottom controls without making the reference 720x1280 layout move at all.
+        /// </summary>
+        private float ResolveResponsiveShelfOffset()
+        {
+            if (safeAreaFitter == null) return 0f;
+
+            Rect safePixels = safeAreaFitter.AppliedSafeAreaPixels;
+            // Shelf presentation can enable before the fitter's deliberately late
+            // LateUpdate. Resolve it once here so the entrance animation starts from the
+            // final responsive seats instead of landing and then jumping a frame later.
+            if ((safePixels.width <= 0f || safePixels.height <= 0f)
+                && safeAreaFitter.ApplyNow())
+                safePixels = safeAreaFitter.AppliedSafeAreaPixels;
+            Vector2Int reference = safeAreaFitter.ReferenceResolution;
+            if (safePixels.width <= 0f || safePixels.height <= 0f
+                || reference.x <= 0 || reference.y <= 0)
+                return 0f;
+
+            float safeAspect = safePixels.width / safePixels.height;
+            float referenceAspect = (float)reference.x / reference.y;
+            if (safeAspect >= referenceAspect) return 0f;
+
+            float referenceHeight = 2f * safeAreaFitter.ReferenceOrthographicSize;
+            float visibleHeightInReferenceUnits =
+                referenceHeight * referenceAspect / Mathf.Max(0.0001f, safeAspect);
+            float unusedHeight = Mathf.Max(0f,
+                visibleHeightInReferenceUnits - referenceHeight);
+            float unusedBelow = unusedHeight
+                              * Mathf.Clamp01(safeAreaFitter.ContentAlignment.y);
+            float downward = Mathf.Min(maximumTallScreenShelfOffset,
+                unusedBelow * tallScreenShelfFollow);
+            return -downward;
+        }
+
+        private void RefreshResponsiveShelfOffset()
+        {
+            if (!Application.isPlaying || configuredRowCount <= 0) return;
+
+            float wanted = ResolveResponsiveShelfOffset();
+            if (Mathf.Abs(wanted - appliedResponsiveShelfOffset) <= 0.001f) return;
+            if (SeatAnimationPlaying || DeliveryPlaying || SynchronizationDeferred) return;
+
+            ApplyShelfLayout(configuredRowCount);
+            LayoutActiveActors();
+            // Board assignments did not change. Do not publish PresentationChanged:
+            // input already reads the live seat pose every frame, so a selected glass can
+            // follow the responsive move without being spuriously deselected.
         }
 
         private float CompositionScale(int rowCount) => rowCount >= 3

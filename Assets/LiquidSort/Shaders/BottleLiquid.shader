@@ -20,10 +20,13 @@ Shader "LiquidSort/BottleLiquid"
         // One shared curve avoids a gap, dark seam or two overlapping ellipses.
         _InnerCurve ("Inner Junction Curve", Range(0,1)) = 1.0
         _SurfaceScale ("Exposed Surface Depth Scale", Range(0,1)) = 1.0
-        // A local-space inset changes size on screen with the vessel. Expressing this
-        // one in pixels keeps the same fine glass/liquid separation in RoyalGlassLab
-        // and in the smaller SortingShelf presentation without changing the waterline.
-        _CapWallInset ("Top Face Wall Inset (pixels)", Range(0,3)) = 1.25
+        // Authored in pixels, but pixels of ROYAL's framing, not of whatever screen this
+        // ends up on. _RoyalUnitsPerPixel carries how much vessel-local length one such
+        // pixel stood for; the vessel publishes it from its own profile, so the inset is
+        // the same share of the glass at every board scale and every device resolution.
+        // Zero falls back to the old screen-derivative path for unpublished materials.
+        _CapWallInset ("Top Face Wall Inset (Royal pixels)", Range(0,3)) = 1.25
+        _RoyalUnitsPerPixel ("Royal Local Units Per Pixel", Float) = 0
         // Measured separately from the cap, because they are not the same quantity.
         // Reference junction sags 14px on a 143px chord: 0.098 of the chord. On a narrow
         // bottle that happens to equal the cap depth, which is why one constant looked
@@ -171,6 +174,7 @@ Shader "LiquidSort/BottleLiquid"
             float _InnerCurve;
             float _SurfaceScale;
             float _CapWallInset;
+            float _RoyalUnitsPerPixel;
             float _InnerBulge;
             float _InnerMax;
             float _BulgeMax;
@@ -304,9 +308,18 @@ Shader "LiquidSort/BottleLiquid"
                     // contact shadow below their curved handoff when the material asks
                     // for it. This is evaluated for every covered boundary, so orange,
                     // green and pink each keep their own readable slab instead of
-                    // merging into one tall multicolour block. The width is chord-based
-                    // and therefore stays visually consistent across vessel shapes.
-                    float contactWidth = max(aa * 2.5, chord * 0.009);
+                    // merging into one tall multicolour block.
+                    //
+                    // The width is chord-based so it stays consistent across vessel
+                    // shapes, and the aa term is only a legibility FLOOR: a shadow thinner
+                    // than its own antialiasing is a grey smear. Left uncapped that floor
+                    // took over the moment the glass shrank - aa is a constant screen
+                    // width, so on a three-row shelf glass it drew a shadow 2.6x thicker
+                    // against a band 2.6x shorter, and two units read as one. Capping it
+                    // at twice the authored share keeps the floor doing its job without
+                    // ever letting it become the rule.
+                    float contactWidth = max(chord * 0.009,
+                                             min(aa * 2.5, chord * 0.018));
                     float contactBand = 1.0 - smoothstep(aa * 0.35,
                         contactWidth, abs(signedBoundary));
                     boundaryContact = max(boundaryContact, contactBand);
@@ -323,10 +336,19 @@ Shader "LiquidSort/BottleLiquid"
                 float topChord = topHalfChord * 2.0;
 
                 // BandInfo keeps the exact baked chord because it is part of the volume
-                // calculation. Only the exposed face is pulled away from the glass. The
-                // derivative converts the authored pixel inset to liquid-local units, so
-                // a scaled-down shelf glass retains the same visible clearance as Royal.
-                float localUnitsPerPixel = length(float2(ddx(lx), ddy(lx)));
+                // calculation. Only the exposed face is pulled away from the glass.
+                //
+                // The inset must be a fixed share of THIS GLASS, which is what Royal shows
+                // and what the volume law assumes. A screen derivative gives the opposite:
+                // lx is object space, so ddx(lx) grows as the vessel shrinks on screen, and
+                // the same authored 1.25px ate 0.99% of a Royal beer's top chord but 3.91%
+                // of the same beer on a three-row shelf - and a different share again on
+                // the next device resolution. _RoyalUnitsPerPixel is the profile's own
+                // constant, so the eroded share is identical everywhere. The derivative
+                // path remains only for a material nothing has published to.
+                float localUnitsPerPixel = _RoyalUnitsPerPixel > 0.0
+                    ? _RoyalUnitsPerPixel
+                    : length(float2(ddx(lx), ddy(lx)));
                 float capWallInset = min(
                     localUnitsPerPixel * max(_CapWallInset, 0.0),
                     topHalfChord * 0.15);
@@ -501,7 +523,12 @@ Shader "LiquidSort/BottleLiquid"
 
                 // Bright near lip and a short warm glint live only on the top face,
                 // so neither can read as a broad front-glass reflection.
-                float capSpan = max(farTop - nearTop, surfaceAA * 2.0);
+                // Same rule as the contact shadow: the aa term guards a degenerate span,
+                // it is not the span. Uncapped it widened the wall band where the top
+                // face pinches out, so the near-rim light, far rim and glint all stopped
+                // further from the glass on a shrunk vessel than on the Royal one.
+                float capSpan = max(farTop - nearTop,
+                                    min(surfaceAA * 2.0, topHalfDepth * 0.5 + 1e-5));
                 float capT = saturate(surfaceDistance / capSpan);
 
                 // Across the top face the light falls off towards the far rim, but it

@@ -12,7 +12,7 @@ namespace LiquidSort
         // Bump whenever the meaning of a published liquid property changes. Pooled
         // renderers include this in their dirty signature, so hot reloads cannot leave a
         // mixture of old and new MaterialPropertyBlocks on otherwise identical glasses.
-        public const int Revision = 2;
+        public const int Revision = 3;
         public const string ShaderName = "LiquidSort/BottleLiquid";
         public const string BulgeProperty = "_Bulge";
         public const string BulgeMaxProperty = "_BulgeMax";
@@ -21,6 +21,10 @@ namespace LiquidSort
         public const string InnerMaxProperty = "_InnerMax";
         public const string SurfaceScaleProperty = "_SurfaceScale";
         public const string CapWallInsetProperty = "_CapWallInset";
+        // The vessel-local length one ROYAL-framed pixel stands for. Published per vessel
+        // so a pixel-authored inset stays the same share of the glass at every board scale
+        // and every device resolution, instead of being re-derived from the screen.
+        public const string RoyalUnitsPerPixelProperty = "_RoyalUnitsPerPixel";
 
         public static readonly int BulgeId = Shader.PropertyToID(BulgeProperty);
         public static readonly int BulgeMaxId = Shader.PropertyToID(BulgeMaxProperty);
@@ -30,6 +34,10 @@ namespace LiquidSort
         public static readonly int BandCountId = Shader.PropertyToID("_BandCount");
         public static readonly int SurfaceScaleId =
             Shader.PropertyToID(SurfaceScaleProperty);
+        public static readonly int CapWallInsetId =
+            Shader.PropertyToID(CapWallInsetProperty);
+        public static readonly int RoyalUnitsPerPixelId =
+            Shader.PropertyToID(RoyalUnitsPerPixelProperty);
 
         private static readonly string[] RequiredMaterialProperties =
         {
@@ -41,6 +49,11 @@ namespace LiquidSort
             InnerMaxProperty,
             SurfaceScaleProperty,
             CapWallInsetProperty,
+            // RoyalUnitsPerPixelProperty is deliberately NOT required. The shader treats
+            // zero as "fall back to the screen derivative", so a material that predates it
+            // still draws. Requiring it would abort Refresh entirely - the renderer keeps
+            // its last property block and the vessel freezes mid-look - for a value the
+            // shader is designed to do without.
             "_Wave",
             "_SplashAmp",
             "_SplashX",

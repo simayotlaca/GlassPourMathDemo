@@ -85,7 +85,6 @@ public static class SortingShelfShowcaseBuilder
     private const string ShelfPlankPath = ArtRoot + "/ShelfParts/ShelfPlank_Burgundy_v1.png";
     private const string ShelfPostPath = ArtRoot + "/ShelfParts/ShelfPost_BurgundyGold_v1.png";
     private const string CheckBadgePath = ArtRoot + "/CheckBadge_Clean.png";
-    private const string GlassLockPath = ArtRoot + "/Ui/Lock/GlassLock_Gold_Clean.png";
     private const string SkyPath = ArtRoot + "/UpperStage/UpperSkyBackdrop_v1.png";
     private const string ArchPath = ArtRoot + "/UpperStage/UpperStoneArch_v1.png";
     private const string CurtainPath = ArtRoot + "/UpperStage/UpperCurtainPair_v1.png";
@@ -673,8 +672,7 @@ public static class SortingShelfShowcaseBuilder
         ChromaBoundsCache.Clear();
         foreach (string path in new[]
                  {
-                     ShelfPlankPath, ShelfPostPath, CheckBadgePath, GlassLockPath,
-                     SkyPath, ArchPath,
+                     ShelfPlankPath, ShelfPostPath, CheckBadgePath, SkyPath, ArchPath,
                      CurtainPath, ColumnPath, RailBasePath,
                      PortalBackPath, PortalFrontPath, PortalOccluderPath, PortalSidePath
                  })
@@ -830,7 +828,11 @@ public static class SortingShelfShowcaseBuilder
             // The safe-area fitter is attached last and its reference pose is written
             // explicitly. Letting it capture on its own would bake whatever aspect the
             // editor's Game View happened to have into the scene.
-            AttachSafeAreaFitter(root.transform, camera, worldContent);
+            WorldSpaceSafeAreaFitter safeAreaFitter =
+                AttachSafeAreaFitter(root.transform, camera, worldContent);
+            if (!rig.ShelfView.ConfigureResponsiveFitForAuthoring(safeAreaFitter))
+                throw new InvalidOperationException(
+                    "Could not bind the responsive fitter to the authored shelf view.");
 
             // Reassert both camera-space canvas bindings immediately before saving and
             // previewing. The portable prefab intentionally clears these references
@@ -845,7 +847,7 @@ public static class SortingShelfShowcaseBuilder
                 != UnityEngine.Rendering.GraphicsDeviceType.Null)
             {
                 RenderPreview(camera);
-                RenderPreview(camera, root.GetComponent<WorldSpaceSafeAreaFitter>(),
+                RenderPreview(camera, safeAreaFitter, rig.ShelfView,
                     PhonePreviewWidth, PhonePreviewHeight, PhonePreviewPath);
             }
             else
@@ -907,7 +909,6 @@ public static class SortingShelfShowcaseBuilder
         public readonly Sprite Plank = Load<Sprite>(ShelfPlankPath);
         public readonly Sprite Post = Load<Sprite>(ShelfPostPath);
         public readonly Sprite CheckBadge = Load<Sprite>(CheckBadgePath);
-        public readonly Sprite GlassLock = Load<Sprite>(GlassLockPath);
         public readonly Sprite Sky = Load<Sprite>(SkyPath);
         public readonly Sprite Arch = Load<Sprite>(ArchPath);
         public readonly Sprite Curtain = Load<Sprite>(CurtainPath);
@@ -2136,7 +2137,7 @@ public static class SortingShelfShowcaseBuilder
 
         rig.Badges = host.AddComponent<DeliveryBadgePresenter>();
         rig.Badges.ConfigureSceneBindings(rig.Controller, rig.ShelfView, delivery.Portal,
-            rig.Interaction, badges, glassLockSprite: art.GlassLock);
+            rig.Interaction, badges);
 
         rig.Strip = host.AddComponent<OrderStripPresenter>();
         rig.Strip.ConfigureSceneBindings(rig.Controller, rig.ShelfView, strip.Cards, icons);
@@ -2249,8 +2250,8 @@ public static class SortingShelfShowcaseBuilder
         }
     }
 
-    private static void AttachSafeAreaFitter(Transform host, Camera camera,
-                                             Transform compositionRoot)
+    private static WorldSpaceSafeAreaFitter AttachSafeAreaFitter(
+        Transform host, Camera camera, Transform compositionRoot)
     {
         var fitter = host.gameObject.AddComponent<WorldSpaceSafeAreaFitter>();
         SerializedObject serialized = new SerializedObject(fitter);
@@ -2279,6 +2280,7 @@ public static class SortingShelfShowcaseBuilder
         // must contain; the fitter derives everything else from it at run time.
         compositionRoot.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
         compositionRoot.localScale = Vector3.one;
+        return fitter;
     }
 
     // =================================================================================
@@ -3403,7 +3405,7 @@ public static class SortingShelfShowcaseBuilder
 
     private static void RenderPreview(Camera camera)
     {
-        RenderPreview(camera, null, DesignWidth, DesignHeight, PreviewPath);
+        RenderPreview(camera, null, null, DesignWidth, DesignHeight, PreviewPath);
     }
 
     /// <summary>
@@ -3412,6 +3414,7 @@ public static class SortingShelfShowcaseBuilder
     /// width-fit/top-align math use this device rather than the editor Game View.
     /// </summary>
     private static void RenderPreview(Camera camera, WorldSpaceSafeAreaFitter fitter,
+                                      BartenderShelfLevelView shelfView,
                                       int width, int height, string previewPath)
     {
         var target = new RenderTexture(width, height, 24,
@@ -3432,6 +3435,7 @@ public static class SortingShelfShowcaseBuilder
             ? compositionRoot.rotation : Quaternion.identity;
         Vector3 previousRootScale = compositionRoot != null
             ? compositionRoot.localScale : Vector3.one;
+        bool restoreShelfLayout = false;
         var texture = new Texture2D(width, height, TextureFormat.RGBA32,
             false, false);
         try
@@ -3440,6 +3444,13 @@ public static class SortingShelfShowcaseBuilder
             if (fitter != null && !fitter.ApplyNow())
                 throw new InvalidOperationException(
                     "Could not apply the phone preview's responsive composition.");
+            if (fitter != null && shelfView != null)
+            {
+                restoreShelfLayout = true;
+                if (!shelfView.RefreshResponsiveLayoutForAuthoring(true))
+                    throw new InvalidOperationException(
+                        "Could not apply the phone preview's responsive shelf layout.");
+            }
             Canvas.ForceUpdateCanvases();
             camera.Render();
             RenderTexture.active = target;
@@ -3469,6 +3480,8 @@ public static class SortingShelfShowcaseBuilder
             UnityEngine.Object.DestroyImmediate(texture);
             target.Release();
             UnityEngine.Object.DestroyImmediate(target);
+            if (restoreShelfLayout)
+                shelfView.RefreshResponsiveLayoutForAuthoring(false);
         }
     }
 

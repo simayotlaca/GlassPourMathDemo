@@ -83,6 +83,7 @@ namespace LiquidSort.Levels
         public Vector2Int ReferenceResolution => referenceResolution;
         public float ReferenceOrthographicSize => referenceOrthographicSize;
         public bool RespectSafeArea => respectSafeArea;
+        public Vector2 ContentAlignment => contentAlignment;
         public bool ReferencePoseCaptured => referencePoseCaptured;
 
         /// <summary>Safe area actually used, in physical screen pixels.</summary>

@@ -625,6 +625,7 @@ namespace LiquidSort
                 hash = hash * 397 + LiquidPalette.Revision;
                 hash = hash * 397 + capacity;
                 hash = hash * 397 + SurfaceScale(volume).GetHashCode();
+                hash = hash * 397 + RoyalUnitsPerPixel.GetHashCode();
                 hash = hash * 397 + Bulge.GetHashCode();
                 hash = hash * 397 + CapDepth.GetHashCode();
                 hash = hash * 397 + Headroom.GetHashCode();
@@ -766,6 +767,13 @@ namespace LiquidSort
             block.SetFloat(LiquidSurfaceContract.InnerBulgeId, JunctionDepth);
             block.SetFloat(LiquidSurfaceContract.SurfaceScaleId,
                 LiquidSurfaceContract.ExposedSurfaceScale(volume, capacity));
+            // The one screen-anchored value in the liquid handshake, converted back into
+            // vessel-local units against RoyalGlassLab's own framing. Everything else the
+            // shader receives is already local, so once this is local too the complete
+            // liquid layout is a pure function of the profile: the same share of the same
+            // glass at any board scale, on any device resolution.
+            block.SetFloat(LiquidSurfaceContract.RoyalUnitsPerPixelId,
+                RoyalUnitsPerPixel);
             block.SetFloat(LiquidSurfaceContract.BulgeMaxId,
                 Mathf.Max(0.005f, InteriorHeight * CapDepth));
             block.SetFloat(WaveId, waveAmplitude);
@@ -858,6 +866,15 @@ namespace LiquidSort
         /// </summary>
         private float SurfaceScale(float volume) =>
             LiquidSurfaceContract.ExposedSurfaceScale(volume, capacity);
+
+        /// <summary>
+        /// Vessel-local length of one RoyalGlassLab pixel. Zero for an unprofiled bottle,
+        /// which leaves the shader on its screen-derivative fallback because there is no
+        /// Royal reference scale to anchor to.
+        /// </summary>
+        private float RoyalUnitsPerPixel => Profiled
+            ? VesselPresentationMath.RoyalLocalUnitsPerPixel(profile)
+            : 0f;
 
         /// <summary>
         /// Volume fraction under the free surface. Expressed as a fraction rather than a
@@ -1267,6 +1284,62 @@ namespace LiquidSort
 
         /// <summary>Local space bounds of the interior polygon, padded by a texel or two.</summary>
         public Rect InteriorBounds => ComputeQuadRect();
+
+        /// <summary>
+        /// Returns the visible centre and height of one fixed-capacity liquid unit in
+        /// bottle-local space. The result comes from the same optical unit boundaries as
+        /// the liquid shader, so a lock marker stays on its own band even in tapered or
+        /// stemmed vessels.
+        /// </summary>
+        public bool TryGetUnitVisualBand(int unitIndex, out Vector2 center,
+                                         out float bandHeight)
+        {
+            center = default;
+            bandHeight = 0f;
+            EnsurePolygon();
+            if (interiorPolygon == null || interiorPolygon.Length < 3
+                || unitIndex < 0 || unitIndex >= capacity)
+                return false;
+
+            float lower = UnitFrontEdgeLevelUpright(unitIndex);
+            float upper = UnitFrontEdgeLevelUpright(unitIndex + 1f);
+            // These are already the viewer-facing curved-boundary edges. Applying
+            // WaterlineForFrontEdge again would double the ellipse correction and move
+            // the marker toward the band above it.
+            float y = (lower + upper) * 0.5f;
+            float halfWidth = VesselFillMath.HalfWidthAt(interiorPolygon, y,
+                                                         out float centerX);
+            if (halfWidth <= 0.0001f) centerX = InteriorBounds.center.x;
+
+            center = new Vector2(centerX, y);
+            bandHeight = Mathf.Abs(upper - lower);
+            return bandHeight > 0.0001f;
+        }
+
+        /// <summary>
+        /// Centre of the complete fixed-unit liquid column. Whole-glass chain markers use
+        /// this rather than the transform origin, which may sit in a stem or mug handle.
+        /// </summary>
+        public bool TryGetLiquidColumnVisualCenter(out Vector2 center,
+                                                   out float columnHeight)
+        {
+            center = default;
+            columnHeight = 0f;
+            EnsurePolygon();
+            if (interiorPolygon == null || interiorPolygon.Length < 3 || capacity < 1)
+                return false;
+
+            float lower = UnitFrontEdgeLevelUpright(0f);
+            float upper = UnitFrontEdgeLevelUpright(capacity);
+            float y = (lower + upper) * 0.5f;
+            float halfWidth = VesselFillMath.HalfWidthAt(interiorPolygon, y,
+                                                         out float centerX);
+            if (halfWidth <= 0.0001f) centerX = InteriorBounds.center.x;
+
+            center = new Vector2(centerX, y);
+            columnHeight = Mathf.Abs(upper - lower);
+            return columnHeight > 0.0001f;
+        }
 
         /// <summary>Local pour lip on the side facing a world-space target.</summary>
         public Vector2 PourMouthLocal(float targetWorldX)

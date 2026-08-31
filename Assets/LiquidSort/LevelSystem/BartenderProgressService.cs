@@ -38,6 +38,8 @@ namespace LiquidSort.Levels
         public const int WinCoinReward = BartenderProgressTuning.CoinsPerWin;
         public const int FailureContinueCoinCost =
             BartenderProgressTuning.PaidContinueCoinCost;
+        public const int FullLifeRefillCoinCost =
+            BartenderProgressTuning.FullLifeRefillCoinCost;
         public static readonly TimeSpan LifeRegenerationInterval = TimeSpan.FromMinutes(10d);
 
         private const int CurrentVersion = 2;
@@ -170,6 +172,44 @@ namespace LiquidSort.Levels
             ProgressData next = Clone(data);
             next.Coins = (int)nextCoins;
             return Commit(next, true, false, false, out rejectionReason);
+        }
+
+        /// <summary>
+        /// Ana menüdeki can kartının atomik doldurma işlemi. Jeton ve can aynı
+        /// kayıtta değişir; etkin bir oyun turu varken menü alışverişi yapılamaz.
+        /// </summary>
+        public static bool TryRefillLivesToMaximum(int coinCost,
+                                                   out string rejectionReason)
+        {
+            Refresh();
+            rejectionReason = null;
+            if (!CanMutate(out rejectionReason)) return false;
+            if (coinCost <= 0)
+            {
+                rejectionReason = "Can doldurma ücreti geçersiz";
+                return false;
+            }
+            if (!string.IsNullOrEmpty(data.ActiveAttemptId))
+            {
+                rejectionReason = "Etkin tur sırasında can doldurulamaz";
+                return false;
+            }
+            if (data.Lives >= MaxLives)
+            {
+                rejectionReason = "Can zaten dolu";
+                return false;
+            }
+            if (data.Coins < coinCost)
+            {
+                rejectionReason = $"Yetersiz jeton: {data.Coins}/{coinCost}";
+                return false;
+            }
+
+            ProgressData next = Clone(data);
+            next.Coins -= coinCost;
+            next.Lives = MaxLives;
+            next.NextLifeUtcTicks = 0L;
+            return Commit(next, true, true, false, out rejectionReason);
         }
 
         /// <summary>
@@ -413,6 +453,37 @@ namespace LiquidSort.Levels
 
             PublishLifeTimerIfChanged(nowTicks);
         }
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// Editor test kolaylığı: aktif kaydın can sayısını doğrudan yazar. Üretim
+        /// akışlarıyla aynı atomik commit kullanılır; böylece dosya, sayaç ve
+        /// LivesChanged dinleyicileri normal oyundaki gibi güncellenir.
+        /// </summary>
+        public static bool EditorSetLives(int value, out string rejectionReason)
+        {
+            Refresh();
+            rejectionReason = null;
+            if (!CanMutate(out rejectionReason)) return false;
+
+            int target = Mathf.Clamp(value, 0, MaxLives);
+            long nowTicks = DateTime.UtcNow.Ticks;
+            ProgressData next = Clone(data);
+            next.Lives = target;
+            next.NextLifeUtcTicks = target >= MaxLives
+                ? 0L
+                : SafeAddTicks(nowTicks, LifeRegenerationInterval.Ticks);
+
+            bool livesChanged = next.Lives != data.Lives;
+            if (!livesChanged && next.NextLifeUtcTicks == data.NextLifeUtcTicks)
+                return true;
+            return Commit(next, false, livesChanged, false, out rejectionReason);
+        }
+
+        /// <summary>Editor test kolaylığı: canı tavana çeker.</summary>
+        public static bool EditorRefillLives(out string rejectionReason) =>
+            EditorSetLives(MaxLives, out rejectionReason);
+#endif
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStaticState()

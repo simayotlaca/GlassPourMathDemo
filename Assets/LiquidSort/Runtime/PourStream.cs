@@ -47,6 +47,12 @@ namespace LiquidSort
         private Vector3 lip;
         private float activeWidth, activeTipWidth;
         private float activeLipDrop, activeMinimumFall;
+        /// <summary>Taper span authored in RoyalGlassLab world units.</summary>
+        private const float TipTaperRoyalSpan = 0.22f;
+        /// <summary>Royal-world length under which a strip or drop stops being drawn.</summary>
+        private const float VisibilityFloorRoyal = 0.0005f;
+        private float activeTipTaper = TipTaperRoyalSpan;
+        private float activeVisibilityFloor = VisibilityFloorRoyal;
 
         private readonly List<Vector3> vertices = new List<Vector3>(64);
         private readonly List<Color32> colors = new List<Color32>(64);
@@ -128,6 +134,8 @@ namespace LiquidSort
             float distanceScale = Mathf.Max(0.0001f, referenceDistanceScale);
             activeLipDrop = Mathf.Max(0.0001f, lipDrop * distanceScale);
             activeMinimumFall = Mathf.Max(0.0001f, minimumFall * distanceScale);
+            activeTipTaper = Mathf.Max(0.0001f, TipTaperRoyalSpan * distanceScale);
+            activeVisibilityFloor = VisibilityFloorRoyal * distanceScale;
 
             UpdateEndpoints();
             headY = lip.y;
@@ -257,7 +265,7 @@ namespace LiquidSort
             int count = Mathf.Max(3, segments);
             float top = Mathf.Max(tailY, headY);
             float bottom = headY;
-            bool drawStrip = top - bottom >= 0.0005f;
+            bool drawStrip = top - bottom >= activeVisibilityFloor;
             bool drawDrop = !emitting && tailProgress > 0.42f;
             if (!drawStrip && !drawDrop) { meshRenderer.enabled = false; return; }
 
@@ -284,7 +292,12 @@ namespace LiquidSort
                     Vector2 normal = new Vector2(-tangent.y, tangent.x);
                     previous = p;
 
-                    float toHead = Mathf.InverseLerp(0.22f, 0f, y - headY);
+                    // Royal-authored taper span. Every other length in this mesh already
+                    // follows the board (activeWidth, activeTipWidth, activeLipDrop,
+                    // activeMinimumFall); leaving this one absolute gave a shrunk stream a
+                    // taper longer than its own fall, so the column arrived at the target
+                    // still at tip width instead of full width.
+                    float toHead = Mathf.InverseLerp(activeTipTaper, 0f, y - headY);
                     float w = Mathf.Lerp(activeWidth, activeTipWidth, toHead * toHead)
                               * ramp * 0.5f;
 
@@ -321,7 +334,9 @@ namespace LiquidSort
 
         private void AddDrop(Vector2 centre, float radius, Color32 bright, Color32 body)
         {
-            if (radius <= 0.0005f) return;
+            // Begin's rule: a numerical guard must not become a visible world-size floor,
+            // or the stream stops shrinking while the glass keeps shrinking.
+            if (radius <= activeVisibilityFloor) return;
 
             const int sides = 8;
             int centreIndex = vertices.Count;

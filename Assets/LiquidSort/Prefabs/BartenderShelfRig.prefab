@@ -13876,6 +13876,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   controller: {fileID: 6482460472789596143}
   layoutSpace: {fileID: 458193029739795318}
+  safeAreaFitter: {fileID: 436610440024883694}
+  tallScreenShelfFollow: 0.6
+  maximumTallScreenShelfOffset: 1.65
   shotPool:
   - bottle: {fileID: 8142621675580824068}
     footAnchor: {fileID: 20134379632390144}
@@ -14266,7 +14269,6 @@ MonoBehaviour:
     badge: {fileID: 8584911913988399791}
     badgeRenderer: {fileID: 3097893221093820245}
     authoredLocalScale: {x: 0.6367433, y: 0.6367433, z: 1}
-  lockSprite: {fileID: 21300000, guid: 38c93f318796247ccbe4b9d317a247d0, type: 3}
   tapDelivers: 1
   tapPadding: 0.12
   popDuration: 0.22

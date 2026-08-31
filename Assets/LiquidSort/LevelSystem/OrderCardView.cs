@@ -1405,13 +1405,17 @@ namespace LiquidSort.Levels
                 : transform.childCount;
 
             RectTransform root = CreateTimerRect(RuntimeTimerName, transform,
-                Vector2.zero, new Vector2(138f, 30f));
-            root.anchoredPosition = new Vector2(0f, -96f);
+                Vector2.zero, new Vector2(146f, 42f));
+            // Kartın alt kenarına üstten dock edilir. Böylece kart ölçüsü değişse bile
+            // sayaç yukarı kayıp chip satırına girmez ve doğal 3:1 plate oranı korunur.
+            root.anchorMin = root.anchorMax = new Vector2(0.5f, 0f);
+            root.pivot = new Vector2(0.5f, 1f);
+            root.anchoredPosition = new Vector2(0f, 20f);
             root.SetSiblingIndex(siblingIndex);
             timerRoot = root;
 
             Image plate = CreateTimerImage("Plate", root, cachedTimerPlate,
-                Vector2.zero, new Vector2(138f, 30f));
+                Vector2.zero, new Vector2(146f, 42f));
             if (cachedTimerPlate != null)
             {
                 plate.type = Image.Type.Sliced;
@@ -1431,7 +1435,7 @@ namespace LiquidSort.Levels
             if (cachedTimerFill != null)
             {
                 RectTransform lane = CreateTimerRect("Fill Lane", root,
-                    new Vector2(20f, -1.5f), new Vector2(72f, 5.5f));
+                    new Vector2(21f, -8f), new Vector2(78f, 7.5f));
                 timerFill = CreateTimerImage("Fill", lane, cachedTimerFill,
                     Vector2.zero, lane.sizeDelta);
                 timerFill.type = Image.Type.Sliced;
@@ -1442,12 +1446,12 @@ namespace LiquidSort.Levels
             if (cachedTimerClock != null)
             {
                 timerClock = CreateTimerImage("Clock", root, cachedTimerClock,
-                    new Vector2(-51f, 0f), new Vector2(24f, 24f));
+                    new Vector2(-55f, 0f), new Vector2(32f, 32f));
                 timerClock.preserveAspect = true;
             }
 
             timerLegacyLabel = CreateTimerLabel("Seconds", root,
-                new Vector2(28f, 4.5f), new Vector2(66f, 15f));
+                new Vector2(28f, 7f), new Vector2(72f, 17f));
 
             CaptureTimerArtState();
             root.gameObject.SetActive(false);
@@ -1580,7 +1584,7 @@ namespace LiquidSort.Levels
             Text label = go.GetComponent<Text>();
             label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf")
                          ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
-            label.fontSize = 13;
+            label.fontSize = 15;
             label.fontStyle = FontStyle.Bold;
             label.alignment = TextAnchor.MiddleCenter;
             label.color = new Color(1f, 0.96f, 0.84f, 1f);

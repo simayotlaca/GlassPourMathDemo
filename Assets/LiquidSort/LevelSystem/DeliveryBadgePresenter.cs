@@ -7,8 +7,8 @@ using UnityEngine;
 namespace LiquidSort.Levels
 {
     /// <summary>
-    /// Bardak durum rozeti. Aktif bir bardak/zincir kilidinde asma kilit, açık bir
-    /// siparişi karşılayan bardakta ✓ gösterir; ✓ durumunda dokunuşla teslimi başlatır.
+    /// ✓ rozeti: bir bardağın açık bir siparişi karşıladığını gösterir ve dokunuşla
+    /// teslimi başlatır.
     ///
     /// Hazır bardağın gövdesine veya rozetine tek dokunuş teslim eder. Rozet ayrı bir
     /// hit-area sunar; domain komutu yine BartenderPourInteraction'ın tek transaction
@@ -52,9 +52,6 @@ namespace LiquidSort.Levels
         [Header("Hand-authored badges")]
         [Tooltip("Her havuz bardağı için bir satır. Rozeti olmayan bardak sessizce atlanır.")]
         [SerializeField] private List<BadgeBinding> badges = new List<BadgeBinding>();
-        [Tooltip("UnlockAfter veya LockUntil hâlâ aktifken ✓ taşıyıcısında gösterilecek "
-               + "asma kilit sprite'ı.")]
-        [SerializeField] private Sprite lockSprite;
 
         [Header("Dokunuş")]
         [Tooltip("Rozete dokunmak teslim etsin. Kapalıyken rozet yalnızca göstergedir.")]
@@ -71,12 +68,7 @@ namespace LiquidSort.Levels
 
         private readonly Dictionary<LiquidBottle, BadgeBinding> badgeByBottle =
             new Dictionary<LiquidBottle, BadgeBinding>();
-        private readonly Dictionary<BadgeBinding, Sprite> checkSpriteByBadge =
-            new Dictionary<BadgeBinding, Sprite>();
-        // shownBadges deliberately means MATCHED badges. Lock badges stay out of this set
-        // so neither the portal nor the badge hit-test can mistake a lock for a ✓.
         private readonly HashSet<BadgeBinding> shownBadges = new HashSet<BadgeBinding>();
-        private readonly HashSet<BadgeBinding> lockedBadges = new HashSet<BadgeBinding>();
 
         private BartenderLevelController subscribedController;
         private bool cacheBuilt;
@@ -130,8 +122,7 @@ namespace LiquidSort.Levels
                                            PortalDeliveryAnimator portal,
                                            BartenderPourInteraction pour,
                                            IReadOnlyList<BadgeBinding> bindings,
-                                           Camera sceneCamera = null,
-                                           Sprite glassLockSprite = null)
+                                           Camera sceneCamera = null)
         {
             Unsubscribe();
             controller = levelController;
@@ -139,7 +130,6 @@ namespace LiquidSort.Levels
             deliveryPortal = portal;
             pourInteraction = pour;
             inputCamera = sceneCamera;
-            lockSprite = glassLockSprite;
 
             badges.Clear();
             if (bindings != null)
@@ -184,11 +174,6 @@ namespace LiquidSort.Levels
             if (shelfView == null)
             {
                 reason = "BartenderShelfLevelView Inspector referansı eksik.";
-                return false;
-            }
-            if (lockSprite == null)
-            {
-                reason = "Kilitli bardak rozeti için lock sprite referansı eksik.";
                 return false;
             }
             if (tapDelivers && pourInteraction == null)
@@ -254,7 +239,6 @@ namespace LiquidSort.Levels
             BuildCache();
             if (glass == null) return null;
             return badgeByBottle.TryGetValue(glass, out BadgeBinding binding)
-                   && shownBadges.Contains(binding)
                    && binding.badge != null && binding.badge.gameObject.activeSelf
                 ? binding.badge
                 : null;
@@ -296,13 +280,6 @@ namespace LiquidSort.Levels
                 return;
             }
 
-            BsBoard snapshot = controller.Board;
-            if (snapshot == null)
-            {
-                HideAll();
-                return;
-            }
-
             for (int i = 0; i < badges.Count; i++)
             {
                 BadgeBinding binding = badges[i];
@@ -315,23 +292,13 @@ namespace LiquidSort.Levels
                 if (deliveryPortal != null && deliveryPortal.IsDelivering(binding.bottle))
                     continue;
 
-                int glassId = -1;
-                bool bound = binding.bottle != null
+                bool matched = binding.bottle != null
                     && binding.bottle.gameObject.activeInHierarchy
-                    && shelfView.TryGetGlassId(binding.bottle, out glassId);
-                RtGlass glass = bound ? snapshot.GlassById(glassId) : null;
-                bool locked = HasActiveLock(glass, snapshot.Delivered);
-                bool matched = !locked && glass != null
-                    && snapshot.MatchedSlot(glass) >= 0;
-                SetBadgeState(binding, matched
-                    ? BadgeState.Matched
-                    : (locked ? BadgeState.Locked : BadgeState.Hidden));
+                    && shelfView.TryGetGlassId(binding.bottle, out int glassId)
+                    && controller.MatchedOrderSlot(glassId) >= 0;
+                SetMatched(binding, matched);
             }
         }
-
-        private static bool HasActiveLock(RtGlass glass, int delivered) =>
-            glass != null
-            && (glass.IsChained(delivered) || glass.HasLocked(delivered));
 
         /// <summary>
         /// Cheap per-frame reconciliation. Teslim biten bardak havuza döndüğünde board
@@ -347,71 +314,39 @@ namespace LiquidSort.Levels
                     || !deliveryPortal.IsDelivering(pendingDeliveredBottle)))
                 pendingDeliveredBottle = null;
 
-            if (shownBadges.Count == 0 && lockedBadges.Count == 0) return;
+            if (shownBadges.Count == 0) return;
             for (int i = 0; i < badges.Count; i++)
             {
                 BadgeBinding binding = badges[i];
                 if (binding == null || binding.badge == null
-                    || (!shownBadges.Contains(binding)
-                        && !lockedBadges.Contains(binding))) continue;
+                    || !shownBadges.Contains(binding)) continue;
                 if (ReferenceEquals(binding.bottle, pendingDeliveredBottle)) continue;
                 if (deliveryPortal != null && deliveryPortal.IsDelivering(binding.bottle))
                     continue;
                 if (binding.bottle == null || !binding.bottle.gameObject.activeInHierarchy
                     || shelfView == null || !shelfView.Ready
                     || !shelfView.TryGetGlassId(binding.bottle, out _))
-                    SetBadgeState(binding, BadgeState.Hidden);
+                    SetMatched(binding, false);
             }
         }
 
-        private enum BadgeState
+        private void SetMatched(BadgeBinding binding, bool matched)
         {
-            Hidden,
-            Locked,
-            Matched
-        }
-
-        private void SetBadgeState(BadgeBinding binding, BadgeState state)
-        {
-            bool wasMatched = shownBadges.Contains(binding);
-            bool wasLocked = lockedBadges.Contains(binding);
-            if ((state == BadgeState.Hidden && !wasMatched && !wasLocked)
-                || (state == BadgeState.Locked && wasLocked)
-                || (state == BadgeState.Matched && wasMatched))
-                return;
+            bool shown = shownBadges.Contains(binding);
+            if (shown == matched) return;
 
             GameObject badgeObject = binding.badge.gameObject;
             KillBadgeTween(binding.badge);
-            shownBadges.Remove(binding);
-            lockedBadges.Remove(binding);
 
-            if (state == BadgeState.Hidden)
+            if (!matched)
             {
-                RestoreCheckSprite(binding);
+                shownBadges.Remove(binding);
                 binding.badge.localScale = binding.authoredLocalScale;
                 badgeObject.SetActive(false);
                 return;
             }
 
-            if (state == BadgeState.Locked)
-            {
-                if (lockSprite == null)
-                {
-                    RestoreCheckSprite(binding);
-                    binding.badge.localScale = binding.authoredLocalScale;
-                    badgeObject.SetActive(false);
-                    return;
-                }
-
-                lockedBadges.Add(binding);
-                binding.badgeRenderer.sprite = lockSprite;
-                binding.badge.localScale = ScaleForSprite(binding, lockSprite);
-                badgeObject.SetActive(true);
-                return;
-            }
-
             shownBadges.Add(binding);
-            RestoreCheckSprite(binding);
             badgeObject.SetActive(true);
             if (popDuration <= 0f)
             {
@@ -433,27 +368,6 @@ namespace LiquidSort.Levels
                 .SetEase(Ease.OutBack).SetRecyclable(true));
         }
 
-        private void RestoreCheckSprite(BadgeBinding binding)
-        {
-            if (binding.badgeRenderer != null
-                && checkSpriteByBadge.TryGetValue(binding, out Sprite checkSprite))
-                binding.badgeRenderer.sprite = checkSprite;
-        }
-
-        /// <summary>
-        /// The imported lock and ✓ use the same PPU, but their trimmed art heights differ.
-        /// Preserve the hand-authored on-glass height when swapping the sprite.
-        /// </summary>
-        private Vector3 ScaleForSprite(BadgeBinding binding, Sprite sprite)
-        {
-            if (sprite == null
-                || !checkSpriteByBadge.TryGetValue(binding, out Sprite checkSprite)
-                || checkSprite == null || sprite.bounds.size.y <= 0.0001f)
-                return binding.authoredLocalScale;
-            return binding.authoredLocalScale
-                 * (checkSprite.bounds.size.y / sprite.bounds.size.y);
-        }
-
         private void HideAll()
         {
             for (int i = 0; i < badges.Count; i++)
@@ -461,12 +375,10 @@ namespace LiquidSort.Levels
                 BadgeBinding binding = badges[i];
                 if (binding == null || binding.badge == null) continue;
                 KillBadgeTween(binding.badge);
-                RestoreCheckSprite(binding);
                 binding.badge.localScale = binding.authoredLocalScale;
                 binding.badge.gameObject.SetActive(false);
             }
             shownBadges.Clear();
-            lockedBadges.Clear();
         }
 
         private static void KillBadgeTween(Transform badge)
@@ -601,14 +513,11 @@ namespace LiquidSort.Levels
             if (cacheBuilt) return;
             cacheBuilt = true;
             badgeByBottle.Clear();
-            checkSpriteByBadge.Clear();
             for (int i = 0; i < badges.Count; i++)
             {
                 BadgeBinding binding = badges[i];
                 if (binding == null || binding.bottle == null) continue;
                 badgeByBottle[binding.bottle] = binding;
-                if (binding.badgeRenderer != null)
-                    checkSpriteByBadge[binding] = binding.badgeRenderer.sprite;
             }
         }
 
