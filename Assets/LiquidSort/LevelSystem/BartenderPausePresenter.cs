@@ -52,8 +52,8 @@ namespace LiquidSort.Levels
         [SerializeField] private GameObject soundOffMark = null;
         [SerializeField] private GameObject vibrationOffMark = null;
 
-        [Header("Ayar sesi")]
-        [Tooltip("Yalnız ayar düğmelerinin kısa tıklama sesini çalar.")]
+        [Header("Eski serialize tıklama referansı")]
+        [Tooltip("Sahne/prefab uyumluluğu için korunur; oynatma artık BsAudio üzerinden yapılır.")]
         [SerializeField] private AudioSource settingsAudioSource = null;
         [SerializeField] private AudioClip buttonClick = null;
 
@@ -62,40 +62,43 @@ namespace LiquidSort.Levels
         [SerializeField] private Button confirmExitButton = null;
         [SerializeField] private Button cancelExitButton = null;
 
-        private const string MusicKey = "LiquidSort.Bartender.Settings.Music";
-        private const string SoundKey = "LiquidSort.Bartender.Settings.Sound";
-        private const string VibrationKey = "LiquidSort.Bartender.Settings.Vibration";
-
         private readonly BsPauseOverlayStateMachine overlayFlow =
             new BsPauseOverlayStateMachine();
 
         private BartenderSession subscribedSession;
+        private Image overlayBlocker;
         private bool buttonsHooked;
 
         public BsPauseOverlayState OverlayState => overlayFlow.State;
-        public bool MusicOn { get; private set; } = true;
-        public bool SoundOn { get; private set; } = true;
-        public bool VibrationOn { get; private set; } = true;
+        public bool MusicOn => BartenderSettingsStore.MusicOn;
+        public bool SoundOn => BartenderSettingsStore.SoundOn;
+        public bool VibrationOn => BartenderSettingsStore.VibrationOn;
         public AudioSource SettingsAudioSource => settingsAudioSource;
         public AudioClip ButtonClick => buttonClick;
 
         /// <summary>
-        /// Ayar değerleri değişti. Tercihler saklanır; bu dar port yalnız kaynakta
-        /// gerçekten bulunan ayar tıklama sesini tüketir.
+        /// Ayar değerleri değişti. Tercihler saklanır; ses köprüsü ayrı SFX ve BGM
+        /// kanallarını bu projeksiyona göre günceller.
         /// </summary>
-        public event Action SettingsChanged;
+        public event Action SettingsChanged
+        {
+            add => BartenderSettingsStore.SettingsChanged += value;
+            remove => BartenderSettingsStore.SettingsChanged -= value;
+        }
 
         private void Awake()
         {
             ResolveDependencies();
-            LoadSettings();
         }
 
         private void OnEnable()
         {
             ResolveDependencies();
+            ConfigureButtonSounds();
             HookButtons();
             Subscribe();
+            BartenderSettingsStore.SettingsChanged -= ApplySettingsMarks;
+            BartenderSettingsStore.SettingsChanged += ApplySettingsMarks;
             ResolveOffMarks();
             ApplySettingsMarks();
             Project(session != null ? session.State : BsFlowState.Menu);
@@ -103,6 +106,7 @@ namespace LiquidSort.Levels
 
         private void OnDisable()
         {
+            BartenderSettingsStore.SettingsChanged -= ApplySettingsMarks;
             Unsubscribe();
             UnhookButtons();
         }
@@ -113,6 +117,11 @@ namespace LiquidSort.Levels
             if (controller == null && session != null) controller = session.Controller;
             if (controller == null) controller = GetComponent<BartenderLevelController>();
             if (settingsAudioSource == null) settingsAudioSource = GetComponent<AudioSource>();
+            if (overlayBlocker == null && settingsOverlay != null)
+            {
+                Transform blocker = settingsOverlay.transform.Find("RaycastBlocker");
+                if (blocker != null) overlayBlocker = blocker.GetComponent<Image>();
+            }
             if (buttonClick == null)
                 buttonClick = Resources.Load<AudioClip>("Audio/SFX_ButtonClick");
         }
@@ -174,70 +183,80 @@ namespace LiquidSort.Levels
 
         public void CancelExitToMainMenu()
         {
-            if (session == null || session.State != BsFlowState.Paused) return;
-            if (!overlayFlow.Dispatch(BsPauseOverlayTrigger.ExitCancelled)) return;
-            ApplyProjection(BsFlowState.Paused);
+            if (session == null || controller == null) return;
+            if (session.State != BsFlowState.Paused
+                || overlayFlow.State != BsPauseOverlayState.ExitConfirmation) return;
+
+            // Vazgeç doğrudan oyuna döner. Overlay'i iyimser biçimde kapatma;
+            // Resume reddedilirse onay kartı açık kalsın. Kabul edilen durum
+            // değişikliği Project(Playing) üzerinden PauseEnded'i yollar.
+            controller.Resume();
         }
 
         /// <summary>
-        /// Levelı boşaltır; akış oradan menüye düşer. Komut reddedilirse onay kartı
-        /// açık kalır, çünkü durum değişikliği hiç gelmez.
+        /// Turu abandon makbuzuyla kapatır ve bir canı tam bir kez harcar; akış oradan
+        /// menüye düşer. Kayıt reddedilirse onay kartı açık kalır.
         /// </summary>
         public void ConfirmExitToMainMenu()
         {
             if (session == null || controller == null) return;
             if (session.State != BsFlowState.Paused
                 || overlayFlow.State != BsPauseOverlayState.ExitConfirmation) return;
-            controller.UnloadLevel();
+            controller.TryAbandonToMainMenu(out _);
         }
 
         // ---- Ayar düğmeleri -------------------------------------------------------
 
         public void ToggleMusic()
         {
-            PlaySettingsClick();
-            MusicOn = !MusicOn;
-            PlayerPrefs.SetInt(MusicKey, MusicOn ? 1 : 0);
-            CommitSettings();
+            PlaySettingsClickFallback(musicButton);
+            BartenderSettingsStore.ToggleMusic();
+            ApplySettingsMarks();
         }
 
         public void ToggleSound()
         {
             // Kapatırken mute uygulanmadan önce, açarken mute kalktıktan sonra bir kez
             // çal: kaynak oyundaki işitsel geri bildirim sırası budur.
-            if (SoundOn) PlaySettingsClick();
-            SoundOn = !SoundOn;
-            if (SoundOn) PlaySettingsClick();
-            PlayerPrefs.SetInt(SoundKey, SoundOn ? 1 : 0);
-            CommitSettings();
+            bool wasOn = SoundOn;
+            if (wasOn) BsAudio.UI(BsSfx.ButtonClick);
+            bool enabled = BartenderSettingsStore.ToggleSound();
+            if (!wasOn && enabled) BsAudio.UI(BsSfx.ButtonClick);
+            ApplySettingsMarks();
+        }
+
+        private void ConfigureButtonSounds()
+        {
+            EnsureButtonSound(pauseButton);
+            EnsureButtonSound(closeButton);
+            EnsureButtonSound(resumeButton);
+            EnsureButtonSound(exitButton);
+            EnsureButtonSound(confirmExitButton);
+            EnsureButtonSound(cancelExitButton);
+            EnsureButtonSound(musicButton);
+            EnsureButtonSound(vibrationButton);
+
+            if (soundButton == null) return;
+            BsButtonSound feedback = BsButtonSound.Ensure(soundButton.gameObject);
+            if (feedback != null) feedback.EnableClickSound = false;
+        }
+
+        private static void EnsureButtonSound(Button button)
+        {
+            if (button != null) BsButtonSound.Ensure(button.gameObject);
         }
 
         public void ToggleVibration()
         {
-            PlaySettingsClick();
-            VibrationOn = !VibrationOn;
-            PlayerPrefs.SetInt(VibrationKey, VibrationOn ? 1 : 0);
-            CommitSettings();
-        }
-
-        private void PlaySettingsClick()
-        {
-            if (!SoundOn || settingsAudioSource == null || buttonClick == null) return;
-            settingsAudioSource.PlayOneShot(buttonClick);
-        }
-
-        private void CommitSettings()
-        {
-            PlayerPrefs.Save();
+            PlaySettingsClickFallback(vibrationButton);
+            BartenderSettingsStore.ToggleVibration();
             ApplySettingsMarks();
-            SettingsChanged?.Invoke();
         }
 
-        private void LoadSettings()
+        private static void PlaySettingsClickFallback(Button source)
         {
-            MusicOn = PlayerPrefs.GetInt(MusicKey, 1) != 0;
-            SoundOn = PlayerPrefs.GetInt(SoundKey, 1) != 0;
-            VibrationOn = PlayerPrefs.GetInt(VibrationKey, 1) != 0;
+            if (source != null && source.GetComponent<BsButtonSound>() != null) return;
+            BsAudio.UI(BsSfx.ButtonClick);
         }
 
         private void ApplySettingsMarks()
@@ -296,6 +315,10 @@ namespace LiquidSort.Levels
             }
 
             if (settingsOverlay) settingsOverlay.SetActive(paused);
+            if (overlayBlocker)
+                overlayBlocker.color = confirmation
+                    ? new Color(0.035f, 0.012f, 0.08f, 0.72f)
+                    : Color.clear;
             if (settingsCard && settingsCard != settingsOverlay)
                 settingsCard.SetActive(settings);
             if (exitConfirmationCard) exitConfirmationCard.SetActive(confirmation);

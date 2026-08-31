@@ -49,7 +49,18 @@ namespace LiquidSort
             Pair("Deep Teal",        0x1E7A63, 0x39A98B),
             Pair("Lime Punch",       0x8ED12A, 0xB9EE55),
             Pair("Grape Pop",        0x8447E9, 0xB17AFF),
-            Pair("Lemon Candy",      0xF3C928, 0xFFE36A)
+            Pair("Lemon Candy",      0xF3C928, 0xFFE36A),
+
+            // Exact colours emitted by BsPalette. Without these matches the generic
+            // fallback barely lifts bright gameplay colours, which erases both the
+            // exposed top disc and the broad cylindrical key seen in the original lab.
+            Pair("Gameplay Red",      0xE8453C, 0xF87869),
+            Pair("Gameplay Orange",   0xF5893B, 0xFFB265),
+            Pair("Gameplay Yellow",   0xF7CE46, 0xFFE36A),
+            Pair("Gameplay Green",    0x5BC24B, 0x86DF76),
+            Pair("Gameplay Blue",     0x3E8EDE, 0x7DB6F7),
+            Pair("Gameplay Purple",   0x7D32BF, 0xAF6AE8),
+            Pair("Gameplay Pink",     0xEE6FA8, 0xFEA4D5)
         };
 
         /// <summary>Palette entry by name. Case and spacing are ignored.</summary>

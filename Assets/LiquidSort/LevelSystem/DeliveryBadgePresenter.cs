@@ -10,11 +10,10 @@ namespace LiquidSort.Levels
     /// ✓ rozeti: bir bardağın açık bir siparişi karşıladığını gösterir ve dokunuşla
     /// teslimi başlatır.
     ///
-    /// Referans oyunda tap bir kez teslim ediyordu ve geri alındı — ama orada tap
-    /// bardağın GÖVDESİNDEYDİ, yani ✓'li bir bardak kazara servis ediliyordu. Burada
-    /// dokunma alanı rozetin kendisi: gövdeye dokunmak eskisi gibi "dökmek için seç"
-    /// olarak kalır, dolayısıyla hazır bardağı tutup hamlede kullanma kararı hâlâ
-    /// oyuncunun elinde.
+    /// Hazır bardağın gövdesine veya rozetine tek dokunuş teslim eder. Rozet ayrı bir
+    /// hit-area sunar; domain komutu yine BartenderPourInteraction'ın tek transaction
+    /// kapısından geçer. Böylece kullanıcının beklediği "hazır bardağa basınca gider"
+    /// davranışı küçük ✓ görselini tam isabet ettirmeyi gerektirmez.
     ///
     /// Bileşen hiçbir GameObject yaratmaz. Her rozet, bardağı gibi elle yerleştirilmiş
     /// bir sahne objesidir ve bardağın ÇOCUĞU olmak zorundadır: teslim uçuşu boyunca
@@ -434,8 +433,8 @@ namespace LiquidSort.Levels
 
         /// <summary>
         /// Hit-tests the shown badges only. Dokunma alanı rozetin kendi sprite sınırı
-        /// artı pay: bardağın gövde alanı hiç genişletilmez, o yüzden gövdeye dokunmak
-        /// dökme akışına gitmeye devam eder.
+        /// artı paydır; gövde hit-testini BartenderPourInteraction ayrı yapar ve eşleşen
+        /// bardakta o da aynı teslim transaction'ını başlatır.
         /// </summary>
         private bool TryPickBadge(Vector2 screenPoint, out int glassId)
         {

@@ -52,7 +52,7 @@ namespace BartenderSort.Core
             Add("Sarı", "#F7CE46");
             Add("Yeşil", "#5BC24B");
             Add("Mavi", "#3E8EDE");
-            Add("Mor", "#9A5BD1");
+            Add("Mor", "#7D32BF");
             Add("Pembe", "#EE6FA8");
 
             // 12'ydi, 7'ye indirildi — ÖLÇÜLDÜ.

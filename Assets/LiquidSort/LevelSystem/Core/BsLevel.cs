@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 namespace BartenderSort.Core
 {
@@ -37,6 +38,13 @@ namespace BartenderSort.Core
     [Serializable]
     public class OrderDef
     {
+        /// <summary>
+        /// Runtime board kurulurken level destesindeki kalıcı sıra numarası atanır.
+        /// Serialize edilmez; clone/undo arasında taşınarak süre bonusunun aynı mantıksal
+        /// siparişi bulmasını sağlar.
+        /// </summary>
+        [NonSerialized] public int RuntimeOrderIndex = -1;
+
         public OrderKind Kind = OrderKind.Set;
         public GlassType Glass = GlassType.Kadeh;
         /// <summary>SET için sıra anlamsızdır; LAYER için dipten yukarı sıradır.</summary>
@@ -54,7 +62,8 @@ namespace BartenderSort.Core
                 Kind = Kind,
                 Glass = Glass,
                 Contents = new List<int>(Contents),
-                TimeLimit = TimeLimit
+                TimeLimit = TimeLimit,
+                RuntimeOrderIndex = RuntimeOrderIndex
             };
         }
 
@@ -138,9 +147,10 @@ namespace BartenderSort.Core
             return changed;
         }
 
-        [Header("Booster stokları (MVP: bedava ve bol)")]
+        [Header("Booster stokları")]
         public int UndoCount = 99;
-        public int ExtraGlassCount = 99;
+        [FormerlySerializedAs("ExtraGlassCount")]
+        public int TimeBoostCount = 99;
         public int ShuffleCount = 99;
 
         [Header("Doğrulama durumu (editör yazar)")]
@@ -167,7 +177,7 @@ namespace BartenderSort.Core
             target.AllowHiddenColors = AllowHiddenColors;
             target.AllowTimedOrders = AllowTimedOrders;
             target.UndoCount = UndoCount;
-            target.ExtraGlassCount = ExtraGlassCount;
+            target.TimeBoostCount = TimeBoostCount;
             target.ShuffleCount = ShuffleCount;
             target.ValidatedSolvable = ValidatedSolvable;
             target.ValidationNote = ValidationNote;

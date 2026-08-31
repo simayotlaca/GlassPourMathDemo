@@ -154,7 +154,7 @@ MonoBehaviour:
   surfaceAllowance: 0.8
   evenBandHeights: 1
   singleUnitSurfaceLift: 0.17
-  innerJunctionCurve: 1
+  innerJunctionCurve: 0.72
   innerJunctionDepth: 0.098
   lockJunctionLayoutToLogicalVolume: 0
   tilted:

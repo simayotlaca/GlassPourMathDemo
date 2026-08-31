@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace LiquidSort
@@ -21,6 +22,16 @@ namespace LiquidSort
     [DisallowMultipleComponent]
     public sealed class BottleShell : MonoBehaviour
     {
+        // Unprofiled development vessels retain the legacy CPU fallback. Campaign
+        // profiles use their baked interior mask directly on the GPU and never reach it.
+        private const float MaximumRealtimeGlassLightPixelsPerUnit = 64f;
+
+        // SpriteRenderer needs a Sprite wrapper, but the baked mask is stored as a
+        // Texture2D sub-asset. One zero-copy wrapper per profile texture is shared by all
+        // pooled vessels; no pixels are read, copied or uploaded here.
+        private static readonly Dictionary<Texture2D, Sprite> ProfiledLightSprites =
+            new Dictionary<Texture2D, Sprite>();
+
         public float pixelsPerUnit = 384f;
         [Tooltip("Glass wall thickness. The reference art uses 6.3% of the interior width.")]
         public float wallThickness = 0.063f;
@@ -107,8 +118,11 @@ namespace LiquidSort
         private Sprite generatedShadow;
         private bool built;
         private Sprite styledLine;
+        private Sprite profiledLightSprite;
+        private Texture2D profiledLightTexture;
         private MaterialPropertyBlock contourBlock;
         private MaterialPropertyBlock thinFxBlock;
+        private MaterialPropertyBlock glassLightBlock;
         private static readonly int ContourDarkId = Shader.PropertyToID("_ContourDark");
         private static readonly int ContourLightId = Shader.PropertyToID("_ContourLight");
         private static readonly int LightAngleId = Shader.PropertyToID("_LightAngle");
@@ -133,6 +147,18 @@ namespace LiquidSort
         private static readonly int FxMaskRectId = Shader.PropertyToID("_MaskRect");
         private static readonly int FxMaskReachId = Shader.PropertyToID("_MaskReach");
         private static readonly int FxUseMaskId = Shader.PropertyToID("_UseMask");
+        private static readonly int GlassUseProfileMaskId =
+            Shader.PropertyToID("_UseProfileMask");
+        private static readonly int GlassMaskRectId =
+            Shader.PropertyToID("_ProfileMaskRect");
+        private static readonly int GlassLightRectId =
+            Shader.PropertyToID("_ProfileLightRect");
+        private static readonly int GlassPrimaryGlossId =
+            Shader.PropertyToID("_PrimaryGloss");
+        private static readonly int GlassSecondaryGlossId =
+            Shader.PropertyToID("_SecondaryGloss");
+        private static readonly int GlassShoulderId =
+            Shader.PropertyToID("_ShoulderGloss");
         private int builtLineHash;
         private bool bounceApplied;
         private Color appliedBounceColor;
@@ -147,9 +173,13 @@ namespace LiquidSort
 
         private void OnEnable()
         {
-            built = false;
-            builtSettingsHash = 0;
-            builtGeometryHash = 0;
+            // A pooled vessel keeps its immutable shell sprites. SettingsHash below still
+            // rebuilds them if its profile or visual settings changed while it was hidden.
+            if (!built)
+            {
+                builtSettingsHash = 0;
+                builtGeometryHash = 0;
+            }
             appliedSortingHash = 0;
             bounceApplied = false;
             appliedBounceStrength = -1f;
@@ -157,6 +187,12 @@ namespace LiquidSort
 
         private void OnDisable()
         {
+            // SetActive(false) is the normal pool path. The whole hierarchy is invisible,
+            // so retain its generated shell for the next level instead of paying the
+            // distance-field cost again. Explicit component disables still clean up, and
+            // OnDestroy remains the final owner cleanup.
+            if (Application.isPlaying && !gameObject.activeInHierarchy) return;
+
             // This renderer owns no generated art, but it is still a child renderer and
             // would otherwise survive while only BottleShell is disabled. Clearing it
             // also guarantees that OnEnable -> Build restores the material, sprite and
@@ -405,8 +441,10 @@ namespace LiquidSort
 
             // The supplied glass PNG already contains its approved modelling and light.
             // In this mode it is a literal foreground plate: white vertex colour, no
-            // inherited property block, and Unity's ordinary sprite material. Liquid,
-            // sorting and pour transforms remain independent underneath it.
+            // inherited property block, and the theme's pass-through sprite material.
+            // That material may add the scene's restrained overhead key, but it never
+            // recolours transparent cavity pixels. Liquid, sorting and pour transforms
+            // remain independent underneath it.
             bool authoredFrontPassThrough = UsesAuthoredFront(authoredFront);
             if (authoredFrontPassThrough)
             {
@@ -550,11 +588,22 @@ namespace LiquidSort
             }
 
             Material lightMaterial = GlassLightMaterial();
-            if (drawGlassLight && lightMaterial != null)
+            Sprite maskLightSprite = null;
+            Texture2D maskLightTexture = null;
+            Rect maskLightRect = default;
+            bool hasAssignedLightProfile = bottle.profile != null;
+            bool hasProfiledLight = !hasAssignedLightProfile;
+            if (drawGlassLight && lightMaterial != null && hasAssignedLightProfile)
             {
-                // The procedural front glass is already lit from the same key light, so
-                // the layer only has to top it up. Authored artwork is flat and needs
-                // the whole thing.
+                hasProfiledLight = TryGetProfiledLightSprite(
+                    bottle, out maskLightSprite, out maskLightTexture,
+                    out maskLightRect);
+            }
+            bool supportsProfiledLight = !hasAssignedLightProfile
+                || (bottle.Profiled && SupportsProfiledGlassLight(lightProfile));
+            if (drawGlassLight && lightMaterial != null
+                && hasProfiledLight && supportsProfiledLight)
+            {
                 GlassLightProfile profile = lightProfile;
                 if (authoredFront == null)
                 {
@@ -564,14 +613,45 @@ namespace LiquidSort
 
                 glassLight = Child("GlassLight", lightOrder, glassLight);
                 glassLight.sharedMaterial = lightMaterial;
-                Sprite nextLight = BottleArtFactory.GlassLight(
-                    interior, padded, pixelsPerUnit, wall, profile);
-                AssignSprite(glassLight, nextLight, ref generatedLight, true);
+                if (bottle.Profiled)
+                {
+                    AssignSprite(glassLight, maskLightSprite, ref generatedLight, false);
+                    profiledLightSprite = maskLightSprite;
+                    profiledLightTexture = maskLightTexture;
+                    ConfigureProfiledGlassLight(
+                        maskLightTexture, maskLightRect, padded, profile);
+                }
+                else
+                {
+                    profiledLightSprite = null;
+                    profiledLightTexture = null;
+                    ResetGlassLightPropertyBlock();
+                    float lightPixelsPerUnit = Mathf.Min(
+                        pixelsPerUnit, MaximumRealtimeGlassLightPixelsPerUnit);
+                    Sprite nextLight = BottleArtFactory.GlassLight(
+                        interior, padded, lightPixelsPerUnit, wall, profile);
+                    AssignSprite(glassLight, nextLight, ref generatedLight, true);
+                }
                 ApplyHighlight();
             }
             else
             {
-                DisableLayer("GlassLight", ref glassLight, ref generatedLight);
+                if (drawGlassLight && lightMaterial != null && hasAssignedLightProfile)
+                {
+                    if (!bottle.Profiled)
+                        Debug.LogError(
+                            $"{bottle.name}: atanmış VesselProfile bake verisi geçersiz; "
+                          + "pahalı CPU GlassLight fallback güvenli biçimde engellendi.", bottle);
+                    else if (!hasProfiledLight)
+                        Debug.LogError(
+                            $"{bottle.name}: profilli GlassLight için baked interiorMask "
+                          + "eksik; runtime texture üretimi güvenli biçimde atlandı.", bottle);
+                    else if (!supportsProfiledLight)
+                        Debug.LogError(
+                            $"{bottle.name}: profilli GPU GlassLight rim/fill alanı "
+                          + "desteklemiyor; pahalı CPU fallback yerine katman kapatıldı.", bottle);
+                }
+                DisableGlassLight();
             }
 
             // New child renderers appeared, so the sorting offset cache the bottle keeps
@@ -648,6 +728,26 @@ namespace LiquidSort
             thinGlassFx.SetPropertyBlock(null);
         }
 
+        private void DisableGlassLight()
+        {
+            if (glassLight == null)
+            {
+                Transform found = transform.Find("GlassLight");
+                if (found != null) glassLight = found.GetComponent<SpriteRenderer>();
+            }
+
+            ReleaseGeneratedSprite(ref generatedLight, glassLight);
+            profiledLightSprite = null;
+            profiledLightTexture = null;
+            if (glassLight == null) return;
+            glassLight.enabled = false;
+            glassLight.sprite = null;
+            glassLight.transform.localPosition = Vector3.zero;
+            glassLight.transform.localRotation = Quaternion.identity;
+            glassLight.transform.localScale = Vector3.one;
+            glassLight.SetPropertyBlock(null);
+        }
+
         private void DisableFrame()
         {
             if (frame == null)
@@ -680,7 +780,7 @@ namespace LiquidSort
             ReleaseGeneratedSprite(ref generatedBack, back);
             ReleaseGeneratedSprite(ref generatedFront, front);
             ReleaseGeneratedSprite(ref generatedNeck, neck);
-            ReleaseGeneratedSprite(ref generatedLight, glassLight);
+            DisableGlassLight();
             ReleaseGeneratedSprite(ref generatedShadow, shadow);
             ReleaseGeneratedSprite(ref styledLine, front);
             built = false;
@@ -748,10 +848,47 @@ namespace LiquidSort
                 return true;
             if (!wantsThinFx && thinGlassFx != null && thinGlassFx.enabled) return true;
 
-            bool wantsLight = drawGlassLight && GlassLightMaterial() != null;
-            if (wantsLight && (glassLight == null || generatedLight == null
+            Material wantedLightMaterial = GlassLightMaterial();
+            Sprite wantedProfiledLight = null;
+            Texture2D wantedLightTexture = null;
+            Rect wantedLightMaskRect = default;
+            bool hasAssignedLightProfile = current.profile != null;
+            bool hasProfiledLight = !hasAssignedLightProfile;
+            if (drawGlassLight && wantedLightMaterial != null
+                && hasAssignedLightProfile)
+            {
+                hasProfiledLight = TryGetProfiledLightSprite(
+                    current, out wantedProfiledLight, out wantedLightTexture,
+                    out wantedLightMaskRect);
+            }
+            bool wantsLight = drawGlassLight && wantedLightMaterial != null
+                           && hasProfiledLight
+                           && (!hasAssignedLightProfile
+                               || (current.Profiled
+                                   && SupportsProfiledGlassLight(lightProfile)));
+            Sprite wantedLight = hasAssignedLightProfile
+                ? wantedProfiledLight
+                : generatedLight;
+            if (wantsLight && (glassLight == null || wantedLight == null
                                || !glassLight.enabled
-                               || glassLight.sprite != generatedLight
+                               || glassLight.sprite != wantedLight
+                               || glassLight.sharedMaterial != wantedLightMaterial
+                               || (current.Profiled
+                                   && (profiledLightSprite != wantedProfiledLight
+                                       || profiledLightTexture != wantedLightTexture
+                                       || generatedLight != null
+                                       || glassLight.transform.localPosition
+                                          != new Vector3(wantedLightMaskRect.center.x,
+                                              wantedLightMaskRect.center.y, 0f)
+                                       || glassLight.transform.localRotation
+                                          != Quaternion.identity
+                                       || glassLight.transform.localScale
+                                          != new Vector3(
+                                              wantedLightMaskRect.width
+                                                  / wantedLightTexture.width,
+                                              wantedLightMaskRect.height
+                                                  / wantedLightTexture.height,
+                                              1f)))
                                || glassLight.sortingLayerID != layer))
                 return true;
             if (!wantsLight && glassLight != null && glassLight.enabled) return true;
@@ -849,6 +986,13 @@ namespace LiquidSort
                 {
                     hash = hash * 31 + ObjectId(source.profile.frame);
                     hash = hash * 31 + ObjectId(source.profile.front);
+                    hash = hash * 31 + ObjectId(source.profile.interiorMask);
+                    hash = hash * 31 + source.profile.QuadRect.GetHashCode();
+                    if (source.profile.interiorMask != null)
+                    {
+                        hash = hash * 31 + source.profile.interiorMask.width;
+                        hash = hash * 31 + source.profile.interiorMask.height;
+                    }
                     hash = hash * 31 + ObjectId(source.profile.contourMaterial);
                     hash = hash * 31 + ObjectId(source.profile.thinGlassFxMaterial);
                     hash = hash * 31 + source.profile.handleGlassLight.GetHashCode();
@@ -905,6 +1049,76 @@ namespace LiquidSort
         }
 
         private static int ObjectId(Object value) => value != null ? value.GetInstanceID() : 0;
+
+        private static bool TryGetProfiledLightSprite(LiquidBottle source,
+            out Sprite sprite, out Texture2D texture, out Rect maskRect)
+        {
+            sprite = null;
+            texture = null;
+            maskRect = default;
+            if (source == null || !source.Profiled || source.profile.interiorMask == null)
+                return false;
+
+            texture = source.profile.interiorMask;
+            maskRect = source.profile.QuadRect;
+            if (texture.width <= 0 || texture.height <= 0
+                || maskRect.width <= 1e-5f || maskRect.height <= 1e-5f)
+                return false;
+
+            if (ProfiledLightSprites.TryGetValue(texture, out sprite) && sprite != null)
+                return true;
+
+            // Centre pivot plus a per-renderer position/scale makes the wrapper reusable
+            // even if a profile's local rect does not contain the transform origin.
+            sprite = Sprite.Create(texture,
+                new Rect(0f, 0f, texture.width, texture.height),
+                new Vector2(0.5f, 0.5f), 1f, 0, SpriteMeshType.FullRect);
+            sprite.name = texture.name + " GlassLight View";
+            sprite.hideFlags = HideFlags.HideAndDontSave;
+            ProfiledLightSprites[texture] = sprite;
+            return true;
+        }
+
+        private static bool SupportsProfiledGlassLight(GlassLightProfile profile) =>
+            Mathf.Abs(profile.rimStrength) <= 0.0001f
+            && Mathf.Abs(profile.fillStrength) <= 0.0001f;
+
+        private void ConfigureProfiledGlassLight(Texture2D maskTexture, Rect maskRect,
+            Rect lightRect, GlassLightProfile profile)
+        {
+            Transform lightTransform = glassLight.transform;
+            lightTransform.localPosition = new Vector3(
+                maskRect.center.x, maskRect.center.y, 0f);
+            lightTransform.localScale = new Vector3(
+                maskRect.width / maskTexture.width,
+                maskRect.height / maskTexture.height, 1f);
+
+            glassLightBlock ??= new MaterialPropertyBlock();
+            glassLightBlock.Clear();
+            glassLightBlock.SetFloat(GlassUseProfileMaskId, 1f);
+            glassLightBlock.SetVector(GlassMaskRectId, new Vector4(
+                maskRect.xMin, maskRect.yMin, maskRect.width, maskRect.height));
+            glassLightBlock.SetVector(GlassLightRectId, new Vector4(
+                lightRect.xMin, lightRect.yMin, lightRect.width, lightRect.height));
+            glassLightBlock.SetVector(GlassPrimaryGlossId, new Vector4(
+                profile.glossX, profile.glossWidth,
+                profile.glossStrength, profile.streakStrength));
+            glassLightBlock.SetVector(GlassSecondaryGlossId, new Vector4(
+                profile.secondaryGlossX, profile.secondaryGlossWidth,
+                profile.secondaryGlossStrength, profile.shoulderStrength));
+            glassLightBlock.SetVector(GlassShoulderId, new Vector4(
+                profile.shoulderHeight, 0f, 0f, 0f));
+            glassLight.SetPropertyBlock(glassLightBlock);
+        }
+
+        private void ResetGlassLightPropertyBlock()
+        {
+            if (glassLight == null) return;
+            glassLightBlock ??= new MaterialPropertyBlock();
+            glassLightBlock.Clear();
+            glassLightBlock.SetFloat(GlassUseProfileMaskId, 0f);
+            glassLight.SetPropertyBlock(glassLightBlock);
+        }
 
         private bool TryGetThinFx(LiquidBottle source, out Sprite sprite,
             out Material material, out Rect interiorBounds)

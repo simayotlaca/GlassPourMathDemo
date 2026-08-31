@@ -22,16 +22,10 @@ namespace LiquidSort
         // lookup every call, and a moving bottle sets fifteen of them every frame.
         private static readonly int BandColorId = Shader.PropertyToID("_BandColor");
         private static readonly int BandCapId = Shader.PropertyToID("_BandCap");
-        private static readonly int BandInfoId = Shader.PropertyToID("_BandInfo");
-        private static readonly int BandCountId = Shader.PropertyToID("_BandCount");
         private static readonly int AngleId = Shader.PropertyToID("_Angle");
-        private static readonly int BulgeId = Shader.PropertyToID("_Bulge");
-        private static readonly int InnerCurveId = Shader.PropertyToID("_InnerCurve");
-        private static readonly int SurfaceScaleId = Shader.PropertyToID("_SurfaceScale");
         private static readonly int SplashAmpId = Shader.PropertyToID("_SplashAmp");
         private static readonly int SplashXId = Shader.PropertyToID("_SplashX");
         private static readonly int SplashLifeId = Shader.PropertyToID("_SplashLife");
-        private static readonly int BulgeMaxId = Shader.PropertyToID("_BulgeMax");
         private static readonly int WaveId = Shader.PropertyToID("_Wave");
         private static readonly int CapFlashId = Shader.PropertyToID("_CapFlash");
         private static readonly int MaskUvId = Shader.PropertyToID("_MaskUV");
@@ -157,6 +151,10 @@ namespace LiquidSort
         private float splashPeak;
         private float splashAge = SplashDuration;
         private bool splashActive;
+        private Material validatedContractMaterial;
+        private Shader validatedContractShader;
+        private bool liquidContractValid;
+        private bool liquidContractErrorLogged;
 
         /// <summary>True once a baked profile is driving this vessel.</summary>
         public bool Profiled => profile != null && profile.IsBaked;
@@ -170,6 +168,9 @@ namespace LiquidSort
         private float Allowance => Profiled ? profile.surfaceAllowance : surfaceAllowance;
         private float EvenBands => Profiled ? profile.evenBandHeights : evenBandHeights;
         private float JunctionCurve => Profiled ? profile.innerJunctionCurve : innerJunctionCurve;
+        private float JunctionDepth => Profiled
+            ? profile.innerJunctionDepth
+            : innerJunctionDepth;
         private float InteriorHeight => Profiled ? profile.interiorBounds.height : interiorHeight;
 
         public int UnitCount => units.Count;
@@ -540,6 +541,7 @@ namespace LiquidSort
         {
             EnsurePolygon();
             EnsureRenderer();
+            if (!EnsureLiquidRenderContract()) return;
             EnsureQuad();
             UpdateSlosh();
 
@@ -712,13 +714,16 @@ namespace LiquidSort
             liquidRenderer.GetPropertyBlock(block);
             block.SetVectorArray(BandColorId, bandColors);
             block.SetVectorArray(BandCapId, bandCaps);
-            block.SetVectorArray(BandInfoId, bandInfo);
-            block.SetFloat(BandCountId, bandCount);
+            block.SetVectorArray(LiquidSurfaceContract.BandInfoId, bandInfo);
+            block.SetFloat(LiquidSurfaceContract.BandCountId, bandCount);
             block.SetFloat(AngleId, angle * Mathf.Deg2Rad);
-            block.SetFloat(BulgeId, Bulge);
-            block.SetFloat(InnerCurveId, JunctionCurve);
-            block.SetFloat(SurfaceScaleId, SurfaceScale(volume));
-            block.SetFloat(BulgeMaxId, Mathf.Max(0.005f, InteriorHeight * CapDepth));
+            block.SetFloat(LiquidSurfaceContract.BulgeId, Bulge);
+            block.SetFloat(LiquidSurfaceContract.InnerCurveId, JunctionCurve);
+            block.SetFloat(LiquidSurfaceContract.InnerBulgeId, JunctionDepth);
+            block.SetFloat(LiquidSurfaceContract.SurfaceScaleId,
+                LiquidSurfaceContract.ExposedSurfaceScale(volume, capacity));
+            block.SetFloat(LiquidSurfaceContract.BulgeMaxId,
+                Mathf.Max(0.005f, InteriorHeight * CapDepth));
             block.SetFloat(WaveId, waveAmplitude);
             // Measured on the reference: the lump stands about 15% of the *chord* proud of
             // the surface, not 15% of the vessel's height. On a tall glass those are very
@@ -810,7 +815,7 @@ namespace LiquidSort
         /// remains fixed when another colour lands on it.
         /// </summary>
         private float SurfaceScale(float volume) =>
-            Mathf.Clamp01(volume / Mathf.Max(1f, capacity));
+            LiquidSurfaceContract.ExposedSurfaceScale(volume, capacity);
 
         /// <summary>
         /// Volume fraction under the free surface. Expressed as a fraction rather than a
@@ -1061,6 +1066,37 @@ namespace LiquidSort
             liquidRenderer.sharedMaterial = resolved;
         }
 
+        private bool EnsureLiquidRenderContract()
+        {
+            Material material = liquidRenderer != null
+                ? liquidRenderer.sharedMaterial
+                : null;
+            Shader shader = material != null ? material.shader : null;
+
+            if (material == validatedContractMaterial
+                && shader == validatedContractShader)
+                return liquidContractValid;
+
+            validatedContractMaterial = material;
+            validatedContractShader = shader;
+            liquidContractValid = LiquidSurfaceContract.TryValidate(
+                material, out string reason);
+            liquidContractErrorLogged = false;
+
+            if (liquidContractValid) return true;
+
+            if (liquidRenderer != null) liquidRenderer.enabled = false;
+            if (!liquidContractErrorLogged)
+            {
+                Debug.LogError(
+                    $"{name}: BottleLiquid render contract failed: {reason}. "
+                    + "Liquid was hidden instead of drawing an incorrect full-depth "
+                    + "surface.", this);
+                liquidContractErrorLogged = true;
+            }
+            return false;
+        }
+
         private static Material shared;
 
         /// <summary>
@@ -1071,10 +1107,11 @@ namespace LiquidSort
         private static Material SharedMaterial()
         {
             if (shared != null) return shared;
-            Shader shader = Shader.Find("LiquidSort/BottleLiquid");
+            Shader shader = Shader.Find(LiquidSurfaceContract.ShaderName);
             if (shader == null)
             {
-                Debug.LogError("LiquidSort: shader 'LiquidSort/BottleLiquid' not found.");
+                Debug.LogError(
+                    $"LiquidSort: shader '{LiquidSurfaceContract.ShaderName}' not found.");
                 return null;
             }
             shared = new Material(shader) { name = "LiquidSortBottle", hideFlags = HideFlags.DontSave };

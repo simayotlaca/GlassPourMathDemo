@@ -25,6 +25,21 @@ namespace LiquidSort.Levels
         /// <summary>Bir siparişin kaç birim gösterebileceğinin üst sınırı (fıçı bardak).</summary>
         public const int MaxUnits = 5;
 
+        private const string TimerViewResource = "Ui/OrderTimer/OrderTimerView";
+        private const string TimerPlateResource = "Ui/OrderTimer/Ui_OrderTimerPlate";
+        private const string TimerClockResource = "Ui/OrderTimer/Ui_OrderTimerClock";
+        private const string TimerFillResource = "Ui/OrderTimer/Ui_OrderTimerFill";
+        private const string RuntimeTimerName = "Order Timer - Runtime";
+
+        private static GameObject cachedTimerViewPrefab;
+        private static bool timerViewLoadAttempted;
+        private static bool timerViewWarningIssued;
+        private static Sprite cachedTimerPlate;
+        private static Sprite cachedTimerClock;
+        private static Sprite cachedTimerFill;
+        private static bool timerArtLoadAttempted;
+        private static bool timerArtWarningIssued;
+
         /// <summary>
         /// Bir bardak tipinin kart üstündeki çizimi. Üç parça birlikte anlam taşır:
         /// <paramref name="front"/> bardağın kendisi, <paramref name="interiorMask"/> o
@@ -56,6 +71,8 @@ namespace LiquidSort.Levels
         [SerializeField] private TextMeshProUGUI kindLabel = null;
         [SerializeField] private TextMeshProUGUI description = null;
         [SerializeField] private TextMeshProUGUI timerLabel = null;
+        [Tooltip("TMP etiketi bağlanmamış eski sahneler için runtime saniye etiketi.")]
+        [SerializeField] private Text timerLegacyLabel = null;
         [Tooltip("Slot boşken görünen yazı.")]
         [SerializeField] private TextMeshProUGUI emptyLabel = null;
         [SerializeField] private Image timerFill = null;
@@ -85,17 +102,42 @@ namespace LiquidSort.Levels
         [SerializeField] private Color layerBadgeColor = new Color32(0xE8, 0x8B, 0x3C, 0xFF);
         [Tooltip("Boş slot dolu bir kart gibi görünmemeli — sadece soluk bir yuva.")]
         [SerializeField] private Color emptySlotColor = new Color(1f, 1f, 1f, 0.14f);
+        [Header("Süre rayı")]
+        [SerializeField] private Color timerNormalColor = new Color32(0xFF, 0xD3, 0x53, 0xFF);
+        [SerializeField] private Color timerWarningColor = new Color32(0xFF, 0x9F, 0x3D, 0xFF);
+        [SerializeField] private Color timerCriticalColor = new Color32(0xFF, 0x59, 0x64, 0xFF);
+        [SerializeField, Range(0.05f, 0.95f)] private float timerWarningRatio = 0.33f;
+        [SerializeField, Min(1f)] private float timerCriticalSeconds = 5f;
 
         private bool highlighted;
         private bool initialized;
+        private bool restPositionInitialized;
+        private bool desiredVisible;
+        private readonly BsOrderCardStateMachine presentationState =
+            new BsOrderCardStateMachine();
+        private uint lifecycleRevision;
+        private uint tickRevision;
+        private uint edgeRevision;
+        private Tween lifecycleTween;
+        private Tween visibilityTween;
+        private Tween edgeTween;
+        private Tween tickTween;
         private Vector3 authoredScale = Vector3.one;
         private Vector3 authoredTickScale = Vector3.one;
+        private Vector3 authoredTimerScale = Vector3.one;
+        private Vector2 restingAnchoredPosition;
+        private int shownTimerSecond = -1;
+        private float urgentTimerKick;
+        private bool timerFillGeometryCaptured;
+        private float timerFillFullWidth;
+        private float timerFillLeftEdge;
         private BsPalette palette;
         private readonly Dictionary<GlassType, GlassIcon> iconByType =
             new Dictionary<GlassType, GlassIcon>(5);
 
         public OrderDef Model { get; private set; }
         public RectTransform Rt => rt;
+        internal BsOrderCardState PresentationState => presentationState.State;
 
         /// <summary>
         /// Elle bağlanmamış parçaları sayar; kurulum denetimi için.
@@ -115,13 +157,30 @@ namespace LiquidSort.Levels
         public void Initialize(BsPalette pal)
         {
             palette = pal;
+            // Presenter her snapshot'ta güncel controller paletini yeniden yayınlar.
+            // Layout/tween dinlenme pozlarını ise yalnız ilk kurulumda yakala; aksi halde
+            // devam eden bir deal animasyonunun geçici scale'i yeni authoredScale olur.
+            if (initialized) return;
+
             if (rt == null) rt = transform as RectTransform;
             authoredScale = rt != null ? rt.localScale : Vector3.one;
+            if (rt != null && !restPositionInitialized)
+            {
+                restingAnchoredPosition = rt.anchoredPosition;
+                restPositionInitialized = true;
+            }
             authoredTickScale = tickBadge != null
                 ? tickBadge.rectTransform.localScale
                 : Vector3.one;
+            authoredTimerScale = timerRoot != null
+                ? timerRoot.localScale
+                : Vector3.one;
+            CaptureTimerFillGeometry();
             if (edge != null) edge.color = Transparent(goodColor);
             highlighted = false;
+            desiredVisible = false;
+            presentationState.Dispatch(BsOrderCardTrigger.InitializeHidden);
+            CanonicalizeVisibility(false);
             initialized = true;
         }
 
@@ -155,6 +214,7 @@ namespace LiquidSort.Levels
         {
             if (!initialized) Initialize(palette);
 
+            bool orderChanged = !SameOrder(Model, order);
             Model = order;
             bool has = order != null;
 
@@ -162,14 +222,20 @@ namespace LiquidSort.Levels
             if (kindBadge != null) kindBadge.gameObject.SetActive(has);
             if (tickBadge != null) tickBadge.gameObject.SetActive(false);
             if (background != null) background.color = has ? Color.white : emptySlotColor;
-            if (edge != null) edge.color = Transparent(goodColor);
-            highlighted = false;
+            if (orderChanged)
+            {
+                CancelEdgeTween();
+                CancelTickTween();
+                if (edge != null) edge.color = Transparent(goodColor);
+                highlighted = false;
+            }
             if (emptyLabel != null) emptyLabel.gameObject.SetActive(!has);
 
             if (!has)
             {
                 if (description != null) description.text = "";
                 if (timerRoot != null) timerRoot.gameObject.SetActive(false);
+                ResetTimerVisual();
                 DrawOrder(null);
                 return;
             }
@@ -181,7 +247,9 @@ namespace LiquidSort.Levels
                 description.text = order.Describe(palette);
 
             bool timed = timedOrdersEnabled && order.TimeLimit > 0f;
+            if (timed) EnsureTimerVisuals();
             if (timerRoot != null) timerRoot.gameObject.SetActive(timed);
+            if (!timed || orderChanged) ResetTimerVisual();
             DrawOrder(order);
         }
 
@@ -319,27 +387,232 @@ namespace LiquidSort.Levels
         public void SetVisible(bool visible, bool animate)
         {
             if (canvasGroup == null) return;
-            canvasGroup.DOKill();
-            float a = visible ? 1f : 0f;
-            if (!animate || Mathf.Approximately(canvasGroup.alpha, a))
+            if (!initialized) Initialize(palette);
+
+            desiredVisible = visible;
+            bool lifecycleBoundary = presentationState.State
+                                     == BsOrderCardState.Uninitialized
+                                     || presentationState.State
+                                     == BsOrderCardState.Disabled;
+            if (!isActiveAndEnabled || !gameObject.activeInHierarchy)
             {
-                canvasGroup.alpha = a;
+                InvalidateLifecycleTweens();
+                CanonicalizePose();
+                presentationState.Dispatch(BsOrderCardTrigger.Disable);
+                CanonicalizeVisibility(false);
                 return;
             }
-            canvasGroup.DOFade(a, 0.2f).SetUpdate(true).SetRecyclable(true);
+            // Serialize edilmiş CanvasGroup alpha'sı 1 olabilir. İlk gizleme hiçbir
+            // zaman fade değildir; render edilmeden önce atomik Hidden'a geçer.
+            if (!visible && lifecycleBoundary) animate = false;
+
+            float targetAlpha = visible ? 1f : 0f;
+            bool alreadyStable = visible
+                ? presentationState.State == BsOrderCardState.Visible
+                  && Mathf.Approximately(canvasGroup.alpha, 1f)
+                : presentationState.State == BsOrderCardState.Hidden
+                  && Mathf.Approximately(canvasGroup.alpha, 0f);
+            bool matchingTransition = visible
+                ? presentationState.State == BsOrderCardState.Dealing
+                  && HasActiveTween(lifecycleTween, visibilityTween)
+                : presentationState.State == BsOrderCardState.Exiting
+                  && HasActiveTween(lifecycleTween, visibilityTween);
+
+            // animate=false bir komuttur ve her zaman canonicalize edilir. animate=true
+            // ise ancak gerçek state + alpha da hedefi doğruluyorsa no-op olabilir.
+            if (animate && (alreadyStable || matchingTransition))
+            {
+                SetCanvasInteraction(false);
+                return;
+            }
+
+            uint revision = InvalidateLifecycleTweens();
+            CanonicalizePose();
+            if (!animate || Mathf.Approximately(canvasGroup.alpha, targetAlpha))
+            {
+                presentationState.Dispatch(visible
+                    ? BsOrderCardTrigger.ShowImmediate
+                    : BsOrderCardTrigger.HideImmediate);
+                CanonicalizeVisibility(visible);
+                return;
+            }
+
+            bool accepted = presentationState.Dispatch(visible
+                ? BsOrderCardTrigger.BeginDeal
+                : BsOrderCardTrigger.BeginExit);
+            if (!accepted)
+            {
+                presentationState.Dispatch(visible
+                    ? BsOrderCardTrigger.ShowImmediate
+                    : BsOrderCardTrigger.HideImmediate);
+                CanonicalizeVisibility(visible);
+                return;
+            }
+
+            SetCanvasInteraction(false);
+            Tween tween = canvasGroup.DOFade(targetAlpha, 0.2f)
+                .SetUpdate(true).SetRecyclable(true);
+            visibilityTween = tween;
+            tween.OnComplete(() => CompleteVisibilityTween(tween, revision, visible))
+                .OnKill(() => ForgetVisibilityTween(tween, revision));
         }
 
-        public void SetTimer(float remaining, float total)
+        public void SetTimer(float remaining, float total) =>
+            SetTimer(remaining, total, true);
+
+        /// <summary>
+        /// Gerçek sipariş deadline'ını ray + sayı olarak sunar. Hareket ayrı kapıdır:
+        /// pause veya presentation lock sırasında değer yerinde kalır, rozet oynamaz.
+        /// </summary>
+        public void SetTimer(float remaining, float total, bool motionAllowed)
         {
+            EnsureTimerVisuals();
             if (timerRoot == null || !timerRoot.gameObject.activeSelf) return;
-            float t = total > 0f ? Mathf.Clamp01(remaining / total) : 0f;
+
+            float safeRemaining = Mathf.Max(0f, remaining);
+            float t = total > 0f ? Mathf.Clamp01(safeRemaining / total) : 0f;
+            SetTimerProgress(t);
+
+            bool critical = safeRemaining > 0f && safeRemaining <= timerCriticalSeconds;
             if (timerFill != null)
+                timerFill.color = critical
+                    ? timerCriticalColor
+                    : t <= timerWarningRatio ? timerWarningColor : timerNormalColor;
+
+            int second = Mathf.CeilToInt(safeRemaining);
+            if (second != shownTimerSecond)
             {
-                timerFill.rectTransform.anchorMax = new Vector2(t, 1f);
-                timerFill.color = t > 0.5f ? goodColor : (t > 0.22f ? accentColor : badColor);
+                SetTimerText(second + " sn");
+                if (critical && shownTimerSecond >= 0) urgentTimerKick = 1f;
+                shownTimerSecond = second;
             }
-            if (timerLabel != null)
-                timerLabel.text = Mathf.CeilToInt(Mathf.Max(0f, remaining)) + " sn";
+
+            if (!critical || !motionAllowed)
+            {
+                ResetTimerMotion();
+                return;
+            }
+
+            // Yalnız son beş saniye: her saniye değişiminde tek, küçük bir vurgu.
+            // Sürekli nefes/sallama yok; bardak çizimi ve teslim animasyonu sakin kalır.
+            float scale = 1f + urgentTimerKick * 0.055f;
+            timerRoot.localScale = authoredTimerScale * scale;
+            urgentTimerKick = Mathf.MoveTowards(
+                urgentTimerKick, 0f, Time.unscaledDeltaTime * 7.5f);
+        }
+
+        /// <summary>
+        /// Teslim/presentation gecikmesinde değer başka slota ait olabilir; sayıyı
+        /// değiştirmeden yalnız son-saniye vurgusunu dinlenme pozuna döndürür.
+        /// </summary>
+        public void SuspendTimerEmphasis() => ResetTimerMotion();
+
+        /// <summary>
+        /// Presenter'ın sabit slot koordinatını karta verir. Kart görünümleri teslimde
+        /// gerçekten yer değiştirdiği için dinlenme pozu artık doğduğu slot değil,
+        /// presenter'ın o anda ona atadığı slottur.
+        /// </summary>
+        public void SetRestingPosition(Vector2 anchoredPosition, bool snap)
+        {
+            if (rt == null) rt = transform as RectTransform;
+            restingAnchoredPosition = anchoredPosition;
+            restPositionInitialized = true;
+            if (!snap || rt == null) return;
+
+            InvalidateLifecycleTweens();
+            presentationState.Dispatch(desiredVisible
+                ? BsOrderCardTrigger.ResetVisible
+                : BsOrderCardTrigger.ResetHidden);
+            rt.anchoredPosition = anchoredPosition;
+            rt.localScale = authoredScale;
+            CanonicalizeVisibility(desiredVisible);
+        }
+
+        /// <summary>Yeni siparişi sağdan dağıtır; sprite veya ek pivot gerektirmez.</summary>
+        public Tween PlayDealIn(float delay = 0f)
+        {
+            if (rt == null || canvasGroup == null) return null;
+            if (!isActiveAndEnabled || !gameObject.activeInHierarchy)
+            {
+                SetVisible(true, false);
+                return null;
+            }
+
+            desiredVisible = true;
+            uint revision = InvalidateLifecycleTweens();
+            presentationState.Dispatch(BsOrderCardTrigger.BeginDeal);
+            ResetTimerVisual();
+            float width = Mathf.Max(1f, rt.rect.width);
+            Vector2 start = restingAnchoredPosition + new Vector2(width * 0.48f, -width * 0.06f);
+            rt.anchoredPosition = start;
+            rt.localScale = authoredScale * 0.90f;
+            canvasGroup.alpha = 0f;
+
+            Sequence sequence = DOTween.Sequence()
+                .SetTarget(rt).SetUpdate(true).SetRecyclable(true);
+            if (delay > 0f) sequence.AppendInterval(delay);
+            sequence.Append(rt.DOAnchorPos(restingAnchoredPosition, 0.26f)
+                .SetEase(Ease.OutCubic).SetRecyclable(true));
+            sequence.Join(canvasGroup.DOFade(1f, 0.14f)
+                .SetEase(Ease.OutQuad).SetRecyclable(true));
+            sequence.Join(rt.DOScale(authoredScale * 1.035f, 0.21f)
+                .SetEase(Ease.OutCubic).SetRecyclable(true));
+            sequence.Append(rt.DOScale(authoredScale, 0.11f)
+                .SetEase(Ease.OutBack).SetRecyclable(true));
+            return TrackLifecycle(sequence, revision, true);
+        }
+
+        /// <summary>Teslim damgası okunduktan sonra kartı kuyruktan çıkarır.</summary>
+        public Tween PlayQueueExit(float duration)
+        {
+            if (rt == null || canvasGroup == null) return null;
+
+            desiredVisible = false;
+            uint revision = InvalidateLifecycleTweens();
+            if (!presentationState.Dispatch(BsOrderCardTrigger.BeginExit))
+            {
+                presentationState.Dispatch(BsOrderCardTrigger.HideImmediate);
+                CanonicalizeVisibility(false);
+                return null;
+            }
+            float width = Mathf.Max(1f, rt.rect.width);
+            float height = Mathf.Max(1f, rt.rect.height);
+            Vector2 end = restingAnchoredPosition
+                          + new Vector2(-width * 0.58f, height * 0.16f);
+
+            Sequence sequence = DOTween.Sequence()
+                .SetTarget(rt).SetUpdate(true).SetRecyclable(true);
+            sequence.Append(rt.DOAnchorPos(end, duration)
+                .SetEase(Ease.InCubic).SetRecyclable(true));
+            sequence.Join(rt.DOScale(authoredScale * 0.86f, duration)
+                .SetEase(Ease.InQuad).SetRecyclable(true));
+            sequence.Join(canvasGroup.DOFade(0f, duration * 0.78f)
+                .SetEase(Ease.InQuad).SetRecyclable(true));
+            return TrackLifecycle(sequence, revision, false);
+        }
+
+        /// <summary>
+        /// Kartın içeriğini değiştirmeden komşu slota taşır. Dinlenme konumu completion
+        /// anında presenter tarafından commit edilir; yarıda kesilirse ResetPose eski
+        /// slota güvenle dönebilir.
+        /// </summary>
+        public Tween PlayQueueShift(Vector2 destination, float duration, float delay)
+        {
+            if (rt == null) return null;
+            desiredVisible = true;
+            uint revision = InvalidateLifecycleTweens();
+            if (!presentationState.Dispatch(BsOrderCardTrigger.BeginShift))
+            {
+                presentationState.Dispatch(BsOrderCardTrigger.ShowImmediate);
+                CanonicalizeVisibility(true);
+            }
+
+            Sequence sequence = DOTween.Sequence()
+                .SetTarget(rt).SetUpdate(true).SetRecyclable(true);
+            if (delay > 0f) sequence.AppendInterval(delay);
+            sequence.Append(rt.DOAnchorPos(destination, duration)
+                .SetEase(Ease.InOutCubic).SetRecyclable(true));
+            return TrackLifecycle(sequence, revision, false);
         }
 
         /// <summary>
@@ -350,26 +623,52 @@ namespace LiquidSort.Levels
         /// </summary>
         public void ShowDelivered()
         {
+            ResetTimerMotion();
+            if (timerRoot != null) timerRoot.gameObject.SetActive(false);
+
+            desiredVisible = true;
+            uint poseRevision = InvalidateLifecycleTweens();
+            presentationState.Dispatch(BsOrderCardTrigger.ResetVisible);
+            CanonicalizePose();
+            CanonicalizeVisibility(true);
+
             if (tickBadge != null)
             {
                 tickBadge.gameObject.SetActive(true);
                 RectTransform trt = tickBadge.rectTransform;
-                trt.DOKill();
+                uint revision = InvalidateTickTween();
                 trt.localScale = Vector3.zero;
-                DOTween.Sequence().SetTarget(trt).SetUpdate(true).SetRecyclable(true)
+                Sequence tickSequence = DOTween.Sequence()
+                    .SetTarget(trt).SetUpdate(true).SetRecyclable(true)
                     .Append(trt.DOScale(authoredTickScale * 1.3f, 0.16f)
                         .SetEase(Ease.OutQuad).SetRecyclable(true))
                     .Append(trt.DOScale(authoredTickScale, 0.2f)
                         .SetEase(Ease.OutBack).SetRecyclable(true));
+                TrackTick(tickSequence, revision);
             }
 
             if (rt == null) return;
-            rt.DOKill();
-            DOTween.Sequence().SetTarget(rt).SetUpdate(true).SetRecyclable(true)
+            Sequence poseSequence = DOTween.Sequence()
+                .SetTarget(rt).SetUpdate(true).SetRecyclable(true)
                 .Append(rt.DOScale(authoredScale * 0.94f, 0.14f)
                     .SetEase(Ease.OutQuad).SetRecyclable(true))
                 .Append(rt.DOScale(authoredScale, 0.18f)
                     .SetEase(Ease.OutBack).SetRecyclable(true));
+            TrackPosePulse(poseSequence, poseRevision);
+        }
+
+        /// <summary>
+        /// Presenter watchdog endpoint. If a global tween pause/kill prevents the authored
+        /// deal callback, the card is seated atomically before the strip releases gameplay.
+        /// </summary>
+        internal void CompletePendingDeal()
+        {
+            if (presentationState.State != BsOrderCardState.Dealing) return;
+            desiredVisible = true;
+            InvalidateLifecycleTweens();
+            presentationState.Dispatch(BsOrderCardTrigger.ResetVisible);
+            CanonicalizePose();
+            CanonicalizeVisibility(true);
         }
 
         /// <summary>
@@ -382,48 +681,564 @@ namespace LiquidSort.Levels
         /// </summary>
         public void SetHighlighted(bool on)
         {
-            if (highlighted == on) return;
+            bool edgeCanonical = edge == null || (on
+                ? Approximately(edge.color, goodColor)
+                : Approximately(edge.color, Transparent(goodColor)));
+            if (highlighted == on && edgeCanonical && !IsTweenActive(edgeTween)) return;
             highlighted = on;
 
             if (edge != null)
             {
-                edge.DOKill();
-                edge.DOColor(on ? goodColor : Transparent(goodColor), 0.18f)
+                uint edgeTweenRevision = InvalidateEdgeTween();
+                Color target = on ? goodColor : Transparent(goodColor);
+                Tween tween = edge.DOColor(target, 0.18f)
                     .SetEase(Ease.OutQuad).SetUpdate(true).SetRecyclable(true);
+                edgeTween = tween;
+                tween.OnComplete(() => CompleteEdgeTween(
+                        tween, edgeTweenRevision, target))
+                    .OnKill(() => ForgetEdgeTween(tween, edgeTweenRevision));
             }
 
-            if (!on || rt == null) return;
-            rt.DOKill();
-            DOTween.Sequence().SetTarget(rt).SetUpdate(true).SetRecyclable(true)
+            if (!on || rt == null || presentationState.State
+                != BsOrderCardState.Visible || IsTweenActive(lifecycleTween)) return;
+            uint revision = InvalidateLifecycleTweens();
+            Sequence sequence = DOTween.Sequence()
+                .SetTarget(rt).SetUpdate(true).SetRecyclable(true)
                 .Append(rt.DOScale(authoredScale * 1.06f, 0.12f)
                     .SetEase(Ease.OutQuad).SetRecyclable(true))
                 .Append(rt.DOScale(authoredScale, 0.16f)
                     .SetEase(Ease.OutBack).SetRecyclable(true));
+            TrackPosePulse(sequence, revision);
         }
 
         /// <summary>Kartı elle verilmiş dinlenme pozuna döndürür ve tween'leri keser.</summary>
         public void ResetPose()
         {
+            InvalidateLifecycleTweens();
+            presentationState.Dispatch(desiredVisible
+                ? BsOrderCardTrigger.ResetVisible
+                : BsOrderCardTrigger.ResetHidden);
             if (rt != null)
             {
-                rt.DOKill();
                 rt.localScale = authoredScale;
+                if (restPositionInitialized) rt.anchoredPosition = restingAnchoredPosition;
             }
+            CanonicalizeVisibility(desiredVisible);
+            InvalidateTickTween();
             if (tickBadge != null)
             {
-                tickBadge.rectTransform.DOKill();
                 tickBadge.rectTransform.localScale = authoredTickScale;
                 tickBadge.gameObject.SetActive(false);
             }
+            CancelEdgeTween();
             if (edge != null)
-            {
-                edge.DOKill();
                 edge.color = Transparent(goodColor);
-            }
             highlighted = false;
+            ResetTimerVisual();
         }
 
-        private void OnDisable() => ResetPose();
+        private void OnEnable()
+        {
+            if (!initialized) return;
+            presentationState.Dispatch(desiredVisible
+                ? BsOrderCardTrigger.ResetVisible
+                : BsOrderCardTrigger.ResetHidden);
+            CanonicalizeVisibility(desiredVisible);
+        }
+
+        private void OnDisable()
+        {
+            InvalidateLifecycleTweens();
+            InvalidateTickTween();
+            CancelEdgeTween();
+            presentationState.Dispatch(BsOrderCardTrigger.Disable);
+            if (rt != null)
+            {
+                rt.localScale = authoredScale;
+                if (restPositionInitialized) rt.anchoredPosition = restingAnchoredPosition;
+            }
+            CanonicalizeVisibility(false);
+            if (tickBadge != null)
+            {
+                tickBadge.rectTransform.localScale = authoredTickScale;
+                tickBadge.gameObject.SetActive(false);
+            }
+            if (edge != null) edge.color = Transparent(goodColor);
+            highlighted = false;
+            ResetTimerVisual();
+        }
+
+        private Tween TrackLifecycle(Sequence sequence, uint revision, bool snapToRest)
+        {
+            if (sequence == null) return null;
+            lifecycleTween = sequence;
+            sequence.OnComplete(() =>
+                {
+                    if (revision != lifecycleRevision
+                        || !ReferenceEquals(lifecycleTween, sequence)) return;
+                    lifecycleTween = null;
+                    presentationState.Dispatch(BsOrderCardTrigger.AnimationCompleted);
+                    bool visible = presentationState.State == BsOrderCardState.Visible;
+                    if (rt != null)
+                    {
+                        rt.localScale = authoredScale;
+                        if (snapToRest && restPositionInitialized)
+                            rt.anchoredPosition = restingAnchoredPosition;
+                    }
+                    CanonicalizeVisibility(visible);
+                })
+                .OnKill(() => ForgetLifecycleTween(sequence, revision));
+            return sequence;
+        }
+
+        private Tween TrackPosePulse(Sequence sequence, uint revision)
+        {
+            if (sequence == null) return null;
+            lifecycleTween = sequence;
+            sequence.OnComplete(() =>
+                {
+                    if (revision != lifecycleRevision
+                        || !ReferenceEquals(lifecycleTween, sequence)) return;
+                    lifecycleTween = null;
+                    if (rt != null) rt.localScale = authoredScale;
+                    CanonicalizeVisibility(desiredVisible);
+                })
+                .OnKill(() => ForgetLifecycleTween(sequence, revision));
+            return sequence;
+        }
+
+        private void TrackTick(Sequence sequence, uint revision)
+        {
+            if (sequence == null) return;
+            tickTween = sequence;
+            sequence.OnComplete(() =>
+                {
+                    if (revision != tickRevision
+                        || !ReferenceEquals(tickTween, sequence)) return;
+                    tickTween = null;
+                    if (tickBadge != null)
+                        tickBadge.rectTransform.localScale = authoredTickScale;
+                })
+                .OnKill(() =>
+                {
+                    if (revision == tickRevision
+                        && ReferenceEquals(tickTween, sequence)) tickTween = null;
+                });
+        }
+
+        private uint InvalidateLifecycleTweens()
+        {
+            lifecycleRevision++;
+            Tween oldLifecycle = lifecycleTween;
+            Tween oldVisibility = visibilityTween;
+            lifecycleTween = null;
+            visibilityTween = null;
+            KillTween(oldLifecycle);
+            KillTween(oldVisibility);
+            return lifecycleRevision;
+        }
+
+        private uint InvalidateTickTween()
+        {
+            tickRevision++;
+            Tween old = tickTween;
+            tickTween = null;
+            KillTween(old);
+            return tickRevision;
+        }
+
+        private void CancelTickTween() => InvalidateTickTween();
+
+        private uint InvalidateEdgeTween()
+        {
+            edgeRevision++;
+            Tween old = edgeTween;
+            edgeTween = null;
+            KillTween(old);
+            return edgeRevision;
+        }
+
+        private void CancelEdgeTween() => InvalidateEdgeTween();
+
+        private void CompleteEdgeTween(Tween tween, uint revision, Color target)
+        {
+            if (revision != edgeRevision || !ReferenceEquals(edgeTween, tween)) return;
+            edgeTween = null;
+            if (edge != null) edge.color = target;
+        }
+
+        private void ForgetEdgeTween(Tween tween, uint revision)
+        {
+            if (revision == edgeRevision && ReferenceEquals(edgeTween, tween))
+                edgeTween = null;
+        }
+
+        private void CompleteVisibilityTween(Tween tween, uint revision, bool visible)
+        {
+            if (revision != lifecycleRevision
+                || !ReferenceEquals(visibilityTween, tween)) return;
+            visibilityTween = null;
+            presentationState.Dispatch(BsOrderCardTrigger.AnimationCompleted);
+            if (presentationState.State != (visible
+                    ? BsOrderCardState.Visible
+                    : BsOrderCardState.Hidden))
+                presentationState.Dispatch(visible
+                    ? BsOrderCardTrigger.ShowImmediate
+                    : BsOrderCardTrigger.HideImmediate);
+            CanonicalizeVisibility(visible);
+        }
+
+        private void ForgetVisibilityTween(Tween tween, uint revision)
+        {
+            if (revision == lifecycleRevision
+                && ReferenceEquals(visibilityTween, tween)) visibilityTween = null;
+        }
+
+        private void ForgetLifecycleTween(Tween tween, uint revision)
+        {
+            if (revision == lifecycleRevision
+                && ReferenceEquals(lifecycleTween, tween)) lifecycleTween = null;
+        }
+
+        private void CanonicalizePose()
+        {
+            if (rt == null) return;
+            rt.localScale = authoredScale;
+            if (restPositionInitialized)
+                rt.anchoredPosition = restingAnchoredPosition;
+        }
+
+        private void CanonicalizeVisibility(bool visible)
+        {
+            if (canvasGroup == null) return;
+            bool canRender = isActiveAndEnabled && gameObject.activeInHierarchy
+                             && presentationState.State != BsOrderCardState.Disabled;
+            canvasGroup.alpha = visible && canRender ? 1f : 0f;
+            SetCanvasInteraction(false);
+        }
+
+        private void SetCanvasInteraction(bool interactive)
+        {
+            if (canvasGroup == null) return;
+            canvasGroup.interactable = interactive;
+            canvasGroup.blocksRaycasts = interactive;
+        }
+
+        private static void KillTween(Tween tween)
+        {
+            if (tween != null && tween.IsActive()) tween.Kill(false);
+        }
+
+        private static bool IsTweenActive(Tween tween) =>
+            tween != null && tween.IsActive() && tween.IsPlaying();
+
+        private static bool HasActiveTween(Tween first, Tween second) =>
+            IsTweenActive(first) || IsTweenActive(second);
+
+        private static bool Approximately(Color first, Color second)
+        {
+            const float epsilon = 0.002f;
+            return Mathf.Abs(first.r - second.r) <= epsilon
+                   && Mathf.Abs(first.g - second.g) <= epsilon
+                   && Mathf.Abs(first.b - second.b) <= epsilon
+                   && Mathf.Abs(first.a - second.a) <= epsilon;
+        }
+
+        private void ResetTimerVisual()
+        {
+            shownTimerSecond = -1;
+            ResetTimerMotion();
+            SetTimerText(string.Empty);
+            SetTimerProgress(1f);
+            if (timerFill != null) timerFill.color = timerNormalColor;
+        }
+
+        private void ResetTimerMotion()
+        {
+            urgentTimerKick = 0f;
+            if (timerRoot != null) timerRoot.localScale = authoredTimerScale;
+        }
+
+        private void SetTimerText(string value)
+        {
+            if (timerLabel != null) timerLabel.text = value;
+            if (timerLegacyLabel != null) timerLegacyLabel.text = value;
+        }
+
+        private void SetTimerProgress(float normalized)
+        {
+            if (timerFill == null) return;
+            float value = Mathf.Clamp01(normalized);
+            if (timerFill.type == Image.Type.Filled)
+            {
+                timerFill.fillAmount = value;
+                return;
+            }
+
+            RectTransform fillRect = timerFill.rectTransform;
+            if (!timerFillGeometryCaptured) CaptureTimerFillGeometry();
+            float width = timerFillFullWidth * value;
+            fillRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, width);
+            Vector2 position = fillRect.anchoredPosition;
+            position.x = timerFillLeftEdge + width * fillRect.pivot.x;
+            fillRect.anchoredPosition = position;
+        }
+
+        private void CaptureTimerFillGeometry()
+        {
+            timerFillGeometryCaptured = false;
+            if (timerFill == null) return;
+
+            RectTransform fillRect = timerFill.rectTransform;
+            float width = fillRect.rect.width;
+            if (width <= 0f) width = Mathf.Abs(fillRect.sizeDelta.x);
+            if (width <= 0f) return;
+
+            timerFillFullWidth = width;
+            timerFillLeftEdge = fillRect.anchoredPosition.x - width * fillRect.pivot.x;
+            timerFillGeometryCaptured = true;
+        }
+
+        /// <summary>
+        /// Görsel hiyerarşiyi tek Resources prefabından, yalnız ilk süreli siparişte kurar.
+        /// Böylece standalone showcase ve ana rig aynı authored görünümü paylaşır; doğrudan
+        /// bağlanmış bir timer varsa ona dokunmaz. Procedural üretim yalnız acil fallback'tir.
+        /// </summary>
+        private void EnsureTimerVisuals()
+        {
+            if (timerRoot != null) return;
+            if (!Application.isPlaying) return;
+
+            Transform existing = transform.Find(RuntimeTimerName);
+            if (existing != null && TryBindRuntimeTimer(existing)) return;
+            if (TryInstantiateTimerView()) return;
+
+            // Prefabın bulunamadığı/bozuk olduğu paketlerde süre görünmez kalmasın.
+            // Aşağıdaki procedural yol yalnız acil durum fallback'idir.
+            if (!timerArtLoadAttempted)
+            {
+                timerArtLoadAttempted = true;
+                cachedTimerPlate = Resources.Load<Sprite>(TimerPlateResource);
+                cachedTimerClock = Resources.Load<Sprite>(TimerClockResource);
+                cachedTimerFill = Resources.Load<Sprite>(TimerFillResource);
+            }
+
+            if (cachedTimerPlate == null || cachedTimerClock == null
+                || cachedTimerFill == null)
+            {
+                if (!timerArtWarningIssued)
+                {
+                    timerArtWarningIssued = true;
+                    Debug.LogWarning(
+                        "Sipariş süre rayı sprite'larından biri Resources altında bulunamadı; "
+                        + "saniye sayacı sade fallback ile gösterilecek.", this);
+                }
+            }
+
+            int siblingIndex = tickBadge != null
+                ? tickBadge.transform.GetSiblingIndex()
+                : transform.childCount;
+
+            RectTransform root = CreateTimerRect(RuntimeTimerName, transform,
+                Vector2.zero, new Vector2(138f, 30f));
+            root.anchoredPosition = new Vector2(0f, -96f);
+            root.SetSiblingIndex(siblingIndex);
+            timerRoot = root;
+
+            Image plate = CreateTimerImage("Plate", root, cachedTimerPlate,
+                Vector2.zero, new Vector2(138f, 30f));
+            if (cachedTimerPlate != null)
+            {
+                plate.type = Image.Type.Sliced;
+                plate.fillCenter = true;
+            }
+            else
+            {
+                // Art paketleme hatasında timeout görünmez kalmasın: sayı için sakin,
+                // opak bir zemin bırak. Doğru asset geldiğinde bu yol hiç çalışmaz.
+                plate.type = Image.Type.Simple;
+                plate.color = new Color(0.18f, 0.06f, 0.46f, 0.96f);
+                var outline = plate.gameObject.AddComponent<Outline>();
+                outline.effectColor = new Color(1f, 0.65f, 0.08f, 0.95f);
+                outline.effectDistance = new Vector2(1f, -1f);
+            }
+
+            if (cachedTimerFill != null)
+            {
+                RectTransform lane = CreateTimerRect("Fill Lane", root,
+                    new Vector2(20f, -1.5f), new Vector2(72f, 5.5f));
+                timerFill = CreateTimerImage("Fill", lane, cachedTimerFill,
+                    Vector2.zero, lane.sizeDelta);
+                timerFill.type = Image.Type.Sliced;
+                timerFill.color = timerNormalColor;
+                CaptureTimerFillGeometry();
+            }
+
+            if (cachedTimerClock != null)
+            {
+                Image clock = CreateTimerImage("Clock", root, cachedTimerClock,
+                    new Vector2(-51f, 0f), new Vector2(24f, 24f));
+                clock.preserveAspect = true;
+            }
+
+            timerLegacyLabel = CreateTimerLabel("Seconds", root,
+                new Vector2(28f, 4.5f), new Vector2(66f, 15f));
+
+            root.gameObject.SetActive(false);
+        }
+
+        private bool TryInstantiateTimerView()
+        {
+            if (!timerViewLoadAttempted)
+            {
+                timerViewLoadAttempted = true;
+                cachedTimerViewPrefab = Resources.Load<GameObject>(TimerViewResource);
+            }
+
+            if (cachedTimerViewPrefab == null)
+            {
+                WarnTimerPrefabFallback("Resources prefabı bulunamadı");
+                return false;
+            }
+
+            GameObject instance = Instantiate(cachedTimerViewPrefab, transform, false);
+            instance.name = RuntimeTimerName;
+            instance.SetActive(false);
+            SetLayerRecursively(instance.transform, gameObject.layer);
+
+            if (!TryBindRuntimeTimer(instance.transform))
+            {
+                WarnTimerPrefabFallback("prefab binding sözleşmesi eksik");
+                instance.name = RuntimeTimerName + " - Invalid";
+                Destroy(instance);
+                return false;
+            }
+
+            int siblingIndex = tickBadge != null
+                ? tickBadge.transform.GetSiblingIndex()
+                : transform.childCount - 1;
+            timerRoot.SetSiblingIndex(siblingIndex);
+            return true;
+        }
+
+        private bool TryBindRuntimeTimer(Transform candidate)
+        {
+            if (candidate == null) return false;
+            RectTransform root = candidate as RectTransform;
+            Transform fillNode = candidate.Find("Fill Lane/Fill");
+            Transform secondsNode = candidate.Find("Seconds");
+            Image fill = fillNode != null ? fillNode.GetComponent<Image>() : null;
+            Text legacy = secondsNode != null ? secondsNode.GetComponent<Text>() : null;
+            TextMeshProUGUI tmp = secondsNode != null
+                ? secondsNode.GetComponent<TextMeshProUGUI>()
+                : null;
+            if (root == null || fill == null || (legacy == null && tmp == null))
+                return false;
+
+            timerRoot = root;
+            timerFill = fill;
+            timerLegacyLabel = legacy;
+            timerLabel = tmp;
+            authoredTimerScale = root.localScale;
+            CaptureTimerFillGeometry();
+            return true;
+        }
+
+        private void WarnTimerPrefabFallback(string reason)
+        {
+            if (timerViewWarningIssued) return;
+            timerViewWarningIssued = true;
+            Debug.LogWarning(
+                "OrderTimerView " + reason + "; procedural sayaç fallback'i kullanılacak.",
+                this);
+        }
+
+        private static void SetLayerRecursively(Transform node, int layer)
+        {
+            if (node == null) return;
+            node.gameObject.layer = layer;
+            for (int i = 0; i < node.childCount; i++)
+                SetLayerRecursively(node.GetChild(i), layer);
+        }
+
+        private static RectTransform CreateTimerRect(string name, Transform parent,
+                                                     Vector2 position, Vector2 size)
+        {
+            var go = new GameObject(name, typeof(RectTransform));
+            go.layer = parent != null ? parent.gameObject.layer : 0;
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(parent, false);
+            rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+            return rect;
+        }
+
+        private static Image CreateTimerImage(string name, Transform parent, Sprite sprite,
+                                              Vector2 position, Vector2 size)
+        {
+            var go = new GameObject(name, typeof(RectTransform),
+                typeof(CanvasRenderer), typeof(Image));
+            go.layer = parent != null ? parent.gameObject.layer : 0;
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(parent, false);
+            rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+
+            Image image = go.GetComponent<Image>();
+            image.sprite = sprite;
+            image.color = Color.white;
+            image.raycastTarget = false;
+            return image;
+        }
+
+        private static Text CreateTimerLabel(string name, Transform parent,
+                                             Vector2 position, Vector2 size)
+        {
+            var go = new GameObject(name, typeof(RectTransform),
+                typeof(CanvasRenderer), typeof(Text));
+            go.layer = parent != null ? parent.gameObject.layer : 0;
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(parent, false);
+            rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+
+            Text label = go.GetComponent<Text>();
+            label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf")
+                         ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
+            label.fontSize = 13;
+            label.fontStyle = FontStyle.Bold;
+            label.alignment = TextAnchor.MiddleCenter;
+            label.color = new Color(1f, 0.96f, 0.84f, 1f);
+            label.raycastTarget = false;
+            label.supportRichText = false;
+            label.horizontalOverflow = HorizontalWrapMode.Overflow;
+            label.verticalOverflow = VerticalWrapMode.Overflow;
+
+            var outline = go.AddComponent<Outline>();
+            outline.effectColor = new Color(0.12f, 0.03f, 0.28f, 0.92f);
+            outline.effectDistance = new Vector2(1f, -1f);
+            return label;
+        }
+
+        private static bool SameOrder(OrderDef a, OrderDef b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null || a.Kind != b.Kind || a.Glass != b.Glass
+                || !Mathf.Approximately(a.TimeLimit, b.TimeLimit))
+                return false;
+
+            int count = a.Contents != null ? a.Contents.Count : 0;
+            if (count != (b.Contents != null ? b.Contents.Count : 0)) return false;
+            for (int i = 0; i < count; i++)
+                if (a.Contents[i] != b.Contents[i]) return false;
+            return true;
+        }
 
         private static Color Transparent(Color c) => new Color(c.r, c.g, c.b, 0f);
     }

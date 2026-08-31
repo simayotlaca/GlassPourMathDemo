@@ -51,6 +51,11 @@ Shader "LiquidSort/BottleLiquid"
         // to the cup while the liquid frame remains world-horizontal during a pour.
         _CylinderKey ("Cylinder Key", Range(0,1)) = 0.0
         _CylinderShade ("Cylinder Shade", Range(0,0.5)) = 0.0
+        // Shared stage key for this unlit liquid. It is deliberately strongest on the
+        // horizontal top face and only a quiet fill on the body, which gives the scene
+        // one overhead source without flattening every authored gameplay colour.
+        _OverheadColor ("Scene Overhead Light", Color) = (1.0,0.97,0.91,1)
+        _OverheadStrength ("Scene Overhead Strength", Range(0,0.30)) = 0.0
         _BodyShade ("Depth Shade", Range(0,1)) = 0.0
         _DepthRange ("Depth Range", Float) = 2.0
         // Inner wall contact shade. _EdgeShade darkens by distance from the middle of
@@ -171,6 +176,8 @@ Shader "LiquidSort/BottleLiquid"
             float _EdgeShade;
             float _CylinderKey;
             float _CylinderShade;
+            fixed4 _OverheadColor;
+            float _OverheadStrength;
             float _BodyShade;
             float _DepthRange;
             float _WallShade;
@@ -279,9 +286,10 @@ Shader "LiquidSort/BottleLiquid"
                     // colour presses down into the lower one, which is what makes it read
                     // as the dominant slab. A plus sign here draws the far rim instead —
                     // the shape a surface only has while nothing covers it — and the lower
-                    // colour bulges up through the upper one. Depth is the exposed
-                    // surface's own, so a run keeps its crest shape once it is covered.
-                    float halfDepth = min(chord * max(_Bulge, 0.001), _BulgeMax) * _InnerCurve;
+                    // colour bulges up through the upper one. The shared boundary keeps
+                    // its separately authored depth when another colour covers it.
+                    float halfDepth = min(
+                        chord * max(_InnerBulge, 0.001), _InnerMax) * _InnerCurve;
                     float nearY = info.x - halfDepth * ellipse;
                     float signedBoundary = ly - nearY;
                     float aa = max(fwidth(signedBoundary) * 0.85, chord * 0.0015);
@@ -524,6 +532,14 @@ Shader "LiquidSort/BottleLiquid"
 
                 c *= 1.0 - _FloorShade * floorAO * (1.0 - surface);
                 c = lerp(c, LitFace(c), saturate(_FloorGlow * floorGlow) * (1.0 - surface));
+
+                // The shelf scene is made from unlit sprites, so a Unity Light cannot
+                // reach this draw call. Recreate the shared overhead key in headroom:
+                // the exposed horizontal face receives the source, while the vertical
+                // body gets just enough ambient spill to belong to the same scene.
+                float overhead = saturate(_OverheadStrength)
+                               * lerp(0.18, 1.0, surface);
+                c += (1.0 - saturate(c)) * _OverheadColor.rgb * overhead;
 
                 float alpha = mask * max(liquidCoverage, dropletCoverage) * _Alpha;
                 clip(alpha - (1.0 / 255.0));

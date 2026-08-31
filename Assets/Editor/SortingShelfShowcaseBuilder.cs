@@ -13,10 +13,10 @@ using UnityEngine.UI;
 
 /// <summary>
 /// Creates the sorting-game scene as ordinary, serialized scene objects. There are
-/// deliberately no prefab instances and no runtime object generator: every Royal glass,
-/// shelf plank, post, order card, button and level-system link is saved directly into the
-/// scene, so after a build an artist can carry on arranging the hierarchy by hand and this
-/// file could be deleted without the scene noticing.
+/// deliberately no prefab instances inside the gameplay stage and no runtime object
+/// generator: every Royal glass, shelf plank, post, order card, button and level-system
+/// link is saved directly into the scene. The full-screen main menu is the intentional
+/// exception: it remains a linked prefab so its hand-authored UI can evolve independently.
 ///
 /// WHAT THIS FILE IS FOR — and it is not "place things".
 ///
@@ -44,12 +44,22 @@ public static class SortingShelfShowcaseBuilder
     public const string ScenePath = "Assets/LiquidSort/SortingShelfShowcase.unity";
     public const string PortablePrefabPath =
         "Assets/LiquidSort/Prefabs/BartenderShelfRig.prefab";
+    private const string MainMenuPrefabPath =
+        "Assets/LiquidSort/Prefabs/UI/BartenderMainMenuCanvas.prefab";
 
     private const string RequestPath = "Temp/sorting-shelf-showcase.req";
     private const string DonePath = "Temp/sorting-shelf-showcase.done";
     private const string PreviewPath = "Temp/SortingShelfShowcase.png";
+    // The supplied phone reference is 607 x 1280. Keep a render at that exact frame so
+    // visual decisions are made from the physical phone composition, not a 720 x 1280
+    // editor-only preview that has not received the responsive fit.
+    private const string PhonePreviewPath = "Temp/SortingShelfShowcase_iPhone.png";
+    private const int PhonePreviewWidth = 607;
+    private const int PhonePreviewHeight = 1280;
     private const string BackdropMaterialPath =
         "Assets/LiquidSort/RoyalGlassLab/Materials/SortingShelfBackdrop.mat";
+    private const string PortalCutoutMaterialPath =
+        "Assets/LiquidSort/RoyalGlassLab/Materials/GeneratedPortalCutout.mat";
     private const string GlassLightMaterialPath =
         "Assets/LiquidSort/RoyalGlassLab/Materials/RoyalGlassLight.mat";
     private const string PourStreamMaterialPath =
@@ -58,17 +68,38 @@ public static class SortingShelfShowcaseBuilder
         "Assets/LiquidSort/RoyalGlassLab/RoyalGlassLab.unity";
 
     private const string ArtRoot = "Assets/LiquidSort/RoyalGlassLab/Art";
+    private const string LevelBadgeArtPath =
+        ArtRoot + "/Ui/LevelBadge_Cute_Empty_Clean.png";
+    private const string LevelBadgeLabelRoot = ArtRoot + "/Ui/LevelBadge/Labels";
+    private const string ExtractedButtonRoot = ArtRoot + "/Ui/ExtractedButtons";
+    private const string UndoButtonArtPath =
+        ExtractedButtonRoot + "/Ui_ButtonUndo.png";
+    private const string AddTimeButtonArtPath =
+        ExtractedButtonRoot + "/Ui_ButtonAddTime.png";
+    private const string ShuffleButtonArtPath =
+        ExtractedButtonRoot + "/Ui_ButtonShuffle.png";
+    private const string BottomFloorPath =
+        ArtRoot + "/Floor/BottomFloor_TanTiles_v1.png";
+    private const string FloorMedallionPath =
+        ArtRoot + "/Floor/FloorMedallion_Oval_Tan_v1.png";
     private const string ShelfPlankPath = ArtRoot + "/ShelfParts/ShelfPlank_Burgundy_v1.png";
     private const string ShelfPostPath = ArtRoot + "/ShelfParts/ShelfPost_BurgundyGold_v1.png";
     private const string CheckBadgePath = ArtRoot + "/CheckBadge_Clean.png";
     private const string SkyPath = ArtRoot + "/UpperStage/UpperSkyBackdrop_v1.png";
     private const string ArchPath = ArtRoot + "/UpperStage/UpperStoneArch_v1.png";
     private const string CurtainPath = ArtRoot + "/UpperStage/UpperCurtainPair_v1.png";
+    // This is deliberately a baked composition, not a fourth decorative overlay. The
+    // sky, curtains and stone bridge form one immovable piece of stage architecture on
+    // a phone; keeping them as separate responsive sprites was what let their seams and
+    // side crops drift apart.
+    private const string BakedUpperStagePath =
+        ArtRoot + "/UpperStage/UpperStage_SkyArchCurtain_Baked.png";
     private const string ColumnPath = ArtRoot + "/DeliveryTop/DeliveryColumn_Left_v1.png";
     private const string RailBasePath = ArtRoot + "/DeliveryTop/DeliveryRail_Base_v1.png";
-    private const string RailGlowPath = ArtRoot + "/DeliveryTop/DeliveryRail_GuideGlow_v1.png";
     private const string PortalBackPath = ArtRoot + "/DeliveryTop/DeliveryPortal_Back_v4.png";
     private const string PortalFrontPath = ArtRoot + "/DeliveryTop/DeliveryPortal_Front_v4.png";
+    private const string PortalSidePath =
+        ArtRoot + "/DeliveryTop/DeliveryPortal_Side_v1.png";
     private const string PortalOccluderPath =
         ArtRoot + "/DeliveryTop/DeliveryPortal_Occluder_v4.png";
     private const string OrderCardArtRoot = ArtRoot + "/OrderCards/Final";
@@ -78,8 +109,6 @@ public static class SortingShelfShowcaseBuilder
         OrderCardArtRoot + "/OrderCard_Frame_Purple.png";
     private const string OrderCardClipPath =
         OrderCardArtRoot + "/OrderCard_Clip_Gold.png";
-    private const string OrderCardRailPath =
-        OrderCardArtRoot + "/OrderCard_Rail_RedGold.png";
     private const string OrderCardChipFillPath =
         OrderCardArtRoot + "/OrderCard_ColorPip_Fill_Tintable.png";
     private const string OrderCardChipRimPath =
@@ -102,6 +131,22 @@ public static class SortingShelfShowcaseBuilder
         SettingsArtRoot + "/SettingsButton_Icon_Exit.png";
     private const string SettingsMuteSlashPath =
         SettingsArtRoot + "/SettingsButton_Overlay_MuteSlash.png";
+    private const string ExitConfirmationArtRoot =
+        ArtRoot + "/ExitConfirmation/Runtime";
+    private const string ExitConfirmationFramePath =
+        ArtRoot + "/ResultPopup/Runtime/ResultPopup_Frame_UserApproved.png";
+    private const string ExitConfirmationDoorPath =
+        ExitConfirmationArtRoot + "/ExitConfirmation_Icon_Door.png";
+    private const string ExitConfirmationQuestionPath =
+        ExitConfirmationArtRoot + "/ExitConfirmation_Text_Question_TR.png";
+    private const string ExitConfirmationConfirmButtonPath =
+        ExitConfirmationArtRoot + "/ExitConfirmation_Button_Confirm_Red.png";
+    private const string ExitConfirmationConfirmTextPath =
+        ExitConfirmationArtRoot + "/ExitConfirmation_Text_Yes_TR.png";
+    private const string ExitConfirmationCancelButtonPath =
+        ExitConfirmationArtRoot + "/ExitConfirmation_Button_Cancel_Blue.png";
+    private const string ExitConfirmationCancelTextPath =
+        ExitConfirmationArtRoot + "/ExitConfirmation_Text_Cancel_TR.png";
     private const string SettingsClickPath =
         "Assets/Resources/Audio/SFX_ButtonClick.ogg";
 
@@ -132,6 +177,8 @@ public static class SortingShelfShowcaseBuilder
     private const float CameraHalfHeight = 6.00f;
     private const int DesignWidth = 720;
     private const int DesignHeight = 1280;
+    private const int BakedUpperStageWidthPixels = 2048;
+    private const int BakedUpperStageLayer = 31;
     // Exact 2/3 projection of the source 1080x1920 GameplayPauseCanvas:
     // 138 button, 22 right margin, 150 top inset, 156 vertical step, 762 card.
     private const float SettingsButtonSize = 92f;
@@ -149,15 +196,120 @@ public static class SortingShelfShowcaseBuilder
     // Five bands, top to bottom. These are THE authored numbers of this scene; every
     // other vertical value in the file is derived from them.
 
-    private const float TopBarCenterY = 5.42f;
-    private const float TopBarHeight = 0.86f;
+    // ---- Delivery stage, measured off the approved composition ------------------
+    //
+    // The reference is 660 px wide, which is this frame's 6.75 units, so 97.8 px is one
+    // unit. Every number below was read off it at that scale and is written in units, so
+    // it survives a change of screen, of resolution and of reference image.
+    //
+    //   rail top .............. 318 px below the frame top -> 3.25 above the rail line
+    //   arch span ............. 533 px -> 5.45 wide, apex 3.17 above the rail
+    //   post .................. 44 x 227 px -> 0.45 x 2.32, centre 0.31 from the left
+    //   tower ................. 110 x 214 px -> 1.12 x 2.19, right edge 0.10 from the right
+    //   served glass .......... centre 495 px -> world x +1.69
+    //   travel trail guide .... centre 415 px -> world x +0.87
+    //
+    // The post drawing matches its measurement exactly (0.1946 aspect x 2.32 = 0.451).
+    // The TOWER DOES NOT: the reference tower is 0.51 wide per unit of height, the
+    // artwork is 1.01 -- twice as wide. Matching both would mean scaling x and y
+    // differently, which turns the dome into an oval. Height and the right-hand edge are
+    // matched instead, and the size is chosen so the served glass still lands on +1.65,
+    // a pixel and a half from where the reference stands it.
+    /// <summary>
+    /// Visible span of the stone bridge in the approved reference. Its 3.13-unit
+    /// visible height then lands its feet at the delivery rail without stretching the
+    /// stones to fill the whole screen width.
+    /// </summary>
+    private const float ArchSpan = 5.45f;
+    /// <summary>
+    /// Amount of the bridge crown deliberately hidden above the physical phone edge.
+    /// This is a crop, not a scale increase: the reference reaches the wider part of the
+    /// same arch at y=0 while keeping its lower legs their authored size.
+    /// </summary>
+    private const float ArchTopBleed = 0.82f;
+
+    private const float PostHeight = 2.32f;
+    private const float PostSinkIntoRail = 0.17f;
+    private const float TowerHeight = 2.50f;
+    /// <summary>
+    /// The gap the gate and the post each keep from their OWN wall. One number for both
+    /// ends of the service counter: the two used to be nudged separately, so the post
+    /// stood 0.079 from the left wall while the gate stood 0.205 from the right, and the
+    /// stage read as lopsided without anything obviously being wrong.
+    /// </summary>
+    private const float StageWallInset = 0.055f;
+    private const float TowerRightEdgeX = FrameHalfWidth - StageWallInset;
+
+    /// <summary>
+    /// How far the curtain hangs INTO the frame. The art is one full-width pair. Its
+    /// visible silhouette is slightly widened and made taller so the phone's top edge
+    /// samples the same deeper folds as the reference, while the lower drape remains at
+    /// the same y coordinate.
+    /// </summary>
+    private const float CurtainVisibleDrop = 1.03f;
+    private const float CurtainHorizontalScale = 1.06f;
+    // Measured against the physical 607 x 1280 reference: its curtain ends at y=90
+    // while keeping a 137 px side cover at the top, so it is taller than the raw art
+    // but still anchored to the same lower visible edge.
+    private const float CurtainVerticalScale = 1.24f;
+    // These values apply only inside the baked top plate. The bridge is intentionally
+    // larger than the live frame and is clipped by the plate: that is how its sides run
+    // into the rail and tower rather than ending as two loose floating legs.
+    private const float BakedBridgeVisibleSpan = 7.14f;
+    private const float BakedBridgeVerticalScale = 1.434f;
+    private const float BakedBridgeTopBleed = 1.32f;
+    private const float TowerSinkIntoRail = 0.19f;
+    // The doorway, as a share of the tower - MEASURED OFF THE DRAWING, not authored.
+    // The gate art carries no alpha: image generation handed over an opaque neutral
+    // checkerboard, and GeneratedPortalCutout mattes it by CHROMA, so the doorway is
+    // simply the neutral island inside the gold. Reading that island back gives the only
+    // rectangle the purple interior can sit in without leaking past the frame or leaving
+    // a gap inside it. The absolute numbers this replaces described a doorway 34% too
+    // narrow, seated too low - which is why the depth behind the gate never lined up.
+    private const float PortalOpeningWidthRatio = 0.5895f;
+    private const float PortalOpeningHeightRatio = 0.5714f;
+    private static readonly Vector2 PortalOpeningCenterRatio =
+        new Vector2(-0.0158f, -0.1883f);
+
+    // Matches the approved scene's 88 design-pixel top inset. Keeping this authored
+    // value in the builder prevents a rebuild from moving the badge upward by ~20 px.
+    private const float TopBarCenterY = 5.175f;
+    private const float TopBarHeight = 0.59f;
+    private const float LevelBadgeScale = 1.10f;
+    private const float LevelBadgeWidth = 1.73f * LevelBadgeScale;
+    // The clean crown badge is 1632x768. It deliberately overhangs the compact top-bar
+    // root; no mask is used, so the crown can occupy the sky while the purple panel
+    // remains centred on the old interaction-free HUD slot.
+    private const float LevelBadgeArtHeight = LevelBadgeWidth * 768f / 1632f;
+    private const float LevelBadgeArtOffsetY = 0.101f * LevelBadgeScale;
+    private static readonly Vector2 LevelLabelSize =
+        new Vector2(1.50f, 0.375f) * LevelBadgeScale;
+    private const float TopSettingsButtonSize = 72f;
+    private static readonly Vector2 TopSettingsButtonInset = new Vector2(28f, 40f);
     /// <summary>Surface a delivered glass stands on while it waits at the door.</summary>
-    private const float DeliveryRailY = 3.26f;
-    private const float OrderStripCenterY = 1.66f;
+    // The phone reference places the rail 15 physical pixels lower than the canonical
+    // 720-wide mock-up. Keeping it here puts the bridge feet behind the rail's side art
+    // rather than making the bridge itself taller.
+    private const float DeliveryRailY = 2.84f;
+    // The baked plate reaches a little behind the rail. The rail remains a separate
+    // foreground prop and hides this lower edge, so the upper architecture has no seam.
+    private const float BakedUpperStageBottomBleed = 0.30f;
+    private static float BakedUpperStageBottomY =>
+        DeliveryRailY - BakedUpperStageBottomBleed;
+    private const float OrderStripCenterY = 1.15f;
     private const float OrderCardWidth = 1.52f;
     private const float OrderCardHeight = 1.80f;
     private const float OrderCardSpacing = 2.06f;
-    private const float PlayfieldTopY = 0.72f;
+    /// <summary>
+    /// Uniform blow-up of the finished card. Bounded by the gold clip, which overhangs
+    /// the card's own top edge by 0.125 units: at 1.15 the clip stops 0.027 under the
+    /// service rail while the card's bottom stays 0.044 clear of the tallest glass below.
+    /// </summary>
+    private const float OrderCardScale = 1.15f;
+    // The cards finish at y=0.25; starting the playfield just below them keeps the
+    // authored 0.01-unit breathing room instead of making the layout solver reject
+    // the otherwise valid upper-stage composition.
+    private const float PlayfieldTopY = 0.24f;
     private const float PlayfieldBottomY = -4.62f;
     private const float BottomBarCenterY = -5.32f;
     private const float BottomButtonDiameter = 1.24f;
@@ -166,13 +318,34 @@ public static class SortingShelfShowcaseBuilder
     // ---- Playfield solve inputs -------------------------------------------------
 
     private const float ShelfScaleX = 1.55f;
-    private const float ShelfScaleY = 1.10f;
+    /// <summary>
+    /// Plank thickness multiplier. At 1.10 the drawn plank read as a 0.52-unit slab -
+    /// a third of the height of the glasses standing on it. 0.85 brings it to 0.40, the
+    /// proportion the reference shelf keeps, and hands the reclaimed height back to the
+    /// vessels through the same budget every other number here goes through.
+    /// </summary>
+    private const float ShelfScaleY = 0.85f;
     private const float PostScaleX = 0.72f;
+    // Kept independent from the fitted post height. SpriteRenderer's sliced mode grows
+    // only the purple centre, so this remains the authored size of both gold collars.
+    private const float PostCapScaleY = 0.44f;
     private const float PostCenterX = 3.02f;
-    /// <summary>Gap between the top of a glass and the plank hanging above it.</summary>
-    private const float RowClearance = 0.14f;
-    /// <summary>Gap between two neighbouring glasses in the same row.</summary>
-    private const float ColumnClearance = 0.10f;
+    /// <summary>
+    /// When the third shelf appears, furniture, spacing and glasses contract together
+    /// around the fixed bottom-shelf surface. Five percent is visible without making the
+    /// Royal artwork read like a different set of assets.
+    /// </summary>
+    private const float ThreeRowCompositionScale = 0.95f;
+    /// <summary>
+    /// The share of its own cell a vessel is allowed to occupy, on BOTH axes. This
+    /// replaces the two absolute clearances the solve used to carry. Absolute gaps are
+    /// the wrong unit here: a fixed 0.14 above a glass is a tenth of the two-row slot
+    /// but an eighth of the three-row one, so the air around a glass silently changed
+    /// meaning with the row count. A ratio keeps the same optical breathing room at
+    /// every row and column count, and it is the one number to turn when the whole
+    /// shelf should read a touch tighter or a touch airier.
+    /// </summary>
+    private const float GlassCellFill = 0.88f;
     /// <summary>
     /// Ceiling on the derived glass scale. A four-glass level has height to spare and
     /// would otherwise blow the vessels up past the size their artwork was drawn for.
@@ -186,19 +359,47 @@ public static class SortingShelfShowcaseBuilder
     // uses can be checked against each other by reading rather than by running.
 
     private const int BackdropOrder = -100;
+    /// <summary>
+    /// The tan floor is HUD geometry but stage SCENERY - it belongs behind the shelves,
+    /// not in front of them with the buttons. It lives inside the screen canvas, which
+    /// sorts at 200, so it used to cover the bottom plank no matter what order the planks
+    /// took. A sorting override on its own sub-canvas is what lets a UI image sit under a
+    /// SpriteRenderer at all.
+    /// </summary>
+    private const int BottomFloorOrder = -10;
     private const int SkyOrder = -40;
     // The rail is FURNITURE STANDING IN FRONT of the arch, not a stripe painted on the
     // back wall. Drawn behind it, the arch legs ate its gold end-caps and it read as a
     // red line. Everything that stands on the counter is ordered above it in turn.
     private const int RailBaseOrder = 44;
-    private const int RailGlowOrder = 46;
-    private const int PostOrder = 5;
-    private const int PlankOrder = 10;
-    /// <summary>Above every renderer BottleShell publishes (-1 … 8), below the planks' row.</summary>
+    // The shelf furniture is drawn BEHIND the vessels standing on it. It used to be in
+    // front (plank 10, post 5), which read as the glasses being sunk into the plank -
+    // their feet disappeared behind it. Both drop below the -1 floor of BottleShell's own
+    // renderers. Back to front: post, plank shadow, plank. This tucks the posts behind the
+    // board instead of laying their gold collars flat on its face, while the existing
+    // under-board shadow falls across the joint and supplies the reference's depth cue.
+    private const int PostOrder = -5;
+    private const int PlankShadowOrder = -4;
+    private const int PlankOrder = -3;
+    /// <summary>
+    /// The soft dark band the reference keeps under every shelf. It is NOT a new asset:
+    /// the plank's own drawing, tinted black and dropped a little, is the shadow. Doing it
+    /// with a real light was never on the table - this project is Built-in RP and every
+    /// sprite runs the unlit Sprites/Default, so a Light in the scene changes nothing.
+    /// </summary>
+    private const float PlankShadowDrop = -0.14f;
+    private const float PlankShadowAlpha = 0.46f;
+    // The dark copy is deliberately a fraction wider/taller than the board.  It gives
+    // the reference's soft lower lip without drawing a separate painted shadow texture,
+    // and because it is a child it follows every dynamic shelf layout exactly.
+    private static readonly Vector2 PlankShadowScale = new Vector2(1.018f, 1.14f);
+    /// <summary>Above every renderer BottleShell publishes (-1 … 8).</summary>
     private const int CheckBadgeOrder = 12;
-    private const int TravelStreakOrder = 47;
     private const int OrderCardCanvasOrder = 30;
     private const int ArchOrder = 40;
+    // One plate behind the counter, post and portal: the bake is scenery; the tower
+    // remains a real foreground object seated into the right side of that scenery.
+    private const int BakedUpperStageOrder = ArchOrder;
     private const int ColumnOrder = 48;
     private const int CurtainOrder = 50;
     // The portal window has to be wider than the vessel's own 14-order stack, or the
@@ -214,7 +415,7 @@ public static class SortingShelfShowcaseBuilder
     // ---- Animation timing -------------------------------------------------------
 
     private const bool EntranceEnabled = true;
-    private const float EntranceDropHeight = 7.60f;
+    private const float EntranceDropHeight = 8.00f;
     private const float EntranceDropDuration = 0.32f;
     private const float EntranceGlassStagger = 0.055f;
     private const float EntranceRowStagger = 0.12f;
@@ -223,15 +424,17 @@ public static class SortingShelfShowcaseBuilder
     private const float ShelfFadeDuration = 0.22f;
     private const float ReseatDuration = 0.22f;
 
+    private const float PortalAnticipationDuration = 0.08f;
     private const float PortalLiftDuration = 0.32f;
-    private const float PortalApproachDuration = 0.18f;
-    private const float PortalEntryDuration = 0.24f;
-    private const float PortalHideDuration = 0.13f;
-    private const float PortalBounceDuration = 0.16f;
+    private const float PortalApproachDuration = 0.22f;
+    private const float PortalMinimumApproachLead = 0.16f;
+    private const float PortalEntryDuration = 0.25f;
+    private const float PortalHideDuration = 0.14f;
+    private const float PortalBounceDuration = 0.18f;
     private const float PortalEntryDepth = 0.68f;
-    private const float PortalEntryScale = 0.72f;
-    private const float PortalHideScale = 0.35f;
     private const float PortalEntryTilt = 5f;
+    private const float PortalFit = 0.93f;
+    private const float PortalMouthClearance = 0.05f;
 
     // ---- Palette ----------------------------------------------------------------
 
@@ -253,6 +456,8 @@ public static class SortingShelfShowcaseBuilder
     private static bool refreshed;
     private static readonly Dictionary<int, Rect> VisualBoundsCache =
         new Dictionary<int, Rect>();
+    private static readonly Dictionary<int, Rect> ChromaBoundsCache =
+        new Dictionary<int, Rect>();
 
     static SortingShelfShowcaseBuilder() => EditorApplication.update += PollRequest;
 
@@ -272,16 +477,31 @@ public static class SortingShelfShowcaseBuilder
         }
 
         refreshed = false;
+        string request = File.ReadAllText(RequestPath).Trim();
         File.Delete(RequestPath);
         try
         {
+            // A visual-only bake should not rebuild the full playable level. It is used
+            // while matching reference art, and produces the same final sprite the scene
+            // build consumes without making the user wait for glasses, cards and rigs.
+            if (string.Equals(request, "bake-upper-stage-only",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                BakeUpperStageOnly();
+                File.WriteAllText(DonePath,
+                    "ok\nupperStageBake=" + BakedUpperStagePath);
+                return;
+            }
+
             ShelfSolve solve = Build();
             File.WriteAllText(DonePath,
                 "ok\nscene=" + ScenePath
                 + "\npreview=" + PreviewPath
+                + "\nphonePreview=" + PhonePreviewPath
                 + "\nprefab=" + PortablePrefabPath
                 + "\nactivePreviewGlasses=6\nmanualGlassPool=" + ExpectedPoolSize
-                + "\nlayout=3+3\nshelfRows=3\nposts=4\nprefabInstances=0\n"
+                + "\nlayout=3+3\nshelfRows=3\nposts=4\n"
+                + "gameplayPrefabInstances=0\nmainMenuPrefabInstances=1\n"
                 + "levelSystem=connected\npourAnimation=connected\n"
                 + "orderCards=3\nboosters=3\ndeliveryPortal=connected\n"
                 + "checkBadges=" + ExpectedPoolSize + "\n"
@@ -307,6 +527,16 @@ public static class SortingShelfShowcaseBuilder
     /// Unity project copy while the user's live editor remains open.
     /// </summary>
     public static void BuildForAutomation() => Build();
+
+    [MenuItem("Tools/LiquidSort/Bake Upper Stage Background")]
+    public static void BakeUpperStageOnly()
+    {
+        VisualBoundsCache.Clear();
+        Sprite baked = BakeUpperStageBackground(new StageArt());
+        if (baked == null)
+            throw new InvalidOperationException("Upper-stage bake did not produce a sprite.");
+        AssetDatabase.SaveAssets();
+    }
 
     // =================================================================================
     //  Layout solve
@@ -356,8 +586,13 @@ public static class SortingShelfShowcaseBuilder
     private static float SurfaceY(int rows, int row, float plankBand) =>
         PlayfieldTopY - SlotHeight(rows) * (row + 1) + plankBand;
 
+    /// <summary>
+    /// Height a vessel may reach on a plank: the clear air between its own surface and
+    /// the underside of the plank above, taken at <see cref="GlassCellFill"/>. The
+    /// remainder is the visible gap the reference art keeps over every glass.
+    /// </summary>
     private static float GlassHeightBudget(int rows, float plankBand) =>
-        SlotHeight(rows) - plankBand - RowClearance;
+        (SlotHeight(rows) - plankBand) * GlassCellFill;
 
     private static ShelfSolve SolveLayout(
         float plankVisualHeight, float postVisualWidth,
@@ -402,6 +637,14 @@ public static class SortingShelfShowcaseBuilder
         float widthAtThree = WidthFit(solve, 3);
         float widthAtFour = WidthFit(solve, 4);
 
+        // Four scales, but only ever ONE of them per board: the level system reads the
+        // pair (row count, busiest row) and dresses every glass on every plank in the
+        // single scale that lands here. That is why each entry takes the min of a height
+        // budget and a width budget - the board has to survive its tightest row, and the
+        // looser rows then simply carry more air rather than a second glass size.
+        // The up-to-three entries are budgeted at the three-across cell on purpose: a
+        // two-glass row has width to spare, and letting it grow would make the same
+        // vessel a different size from one level to the next.
         solve.ScaleTwoRow = Clamp(Mathf.Min(heightAtTwo, widthAtThree));
         solve.ScaleThreeRow = Clamp(Mathf.Min(heightAtThree, widthAtThree));
         solve.ScaleFourInTwoRows = Clamp(Mathf.Min(heightAtTwo, widthAtFour));
@@ -409,8 +652,14 @@ public static class SortingShelfShowcaseBuilder
         return solve;
     }
 
+    /// <summary>
+    /// Scale at which the widest vessel still fits one cell of an
+    /// <paramref name="across"/>-glass row. The row is seated in equal cells of
+    /// InnerWidth/across, so a cell filled to <see cref="GlassCellFill"/> leaves the
+    /// same proportional gap between neighbours whether the row holds two or four.
+    /// </summary>
     private static float WidthFit(ShelfSolve solve, int across) =>
-        (solve.InnerWidth / across - ColumnClearance) / solve.WidestGlass;
+        solve.InnerWidth / across * GlassCellFill / solve.WidestGlass;
 
     private static float Clamp(float scale) =>
         Mathf.Clamp(scale, 0.15f, MaximumGlassScale);
@@ -422,13 +671,17 @@ public static class SortingShelfShowcaseBuilder
     private static ShelfSolve Build()
     {
         VisualBoundsCache.Clear();
+        ChromaBoundsCache.Clear();
         foreach (string path in new[]
                  {
                      ShelfPlankPath, ShelfPostPath, CheckBadgePath, SkyPath, ArchPath,
-                     CurtainPath, ColumnPath, RailBasePath, RailGlowPath,
-                     PortalBackPath, PortalFrontPath, PortalOccluderPath
+                     CurtainPath, ColumnPath, RailBasePath,
+                     PortalBackPath, PortalFrontPath, PortalOccluderPath, PortalSidePath
                  })
             ConfigureStageSprite(path);
+        ConfigureUiSprite(LevelBadgeArtPath);
+        for (int level = 1; level <= 30; level++)
+            ConfigureUiSprite(LevelBadgeLabelPath(level));
         BartenderUiArtFactory.EnsureUiArt();
 
         Scene previous = SceneManager.GetActiveScene();
@@ -475,6 +728,7 @@ public static class SortingShelfShowcaseBuilder
             BsPalette palette = Load<BsPalette>(PalettePath);
             BsLevel previewLevel = Load<BsLevel>(PreviewLevelPath);
             Material backdropMaterial = EnsureBackdropMaterial();
+            Material portalCutoutMaterial = EnsurePortalCutoutMaterial();
             Material glassLight = Load<Material>(GlassLightMaterialPath);
             Font font = ResolveBuiltinFont();
 
@@ -497,16 +751,19 @@ public static class SortingShelfShowcaseBuilder
             GameObject eventSystem = BuildEventSystem();
             SceneManager.MoveGameObjectToScene(eventSystem, scene);
 
-            var root = new GameObject("Portrait Design Frame 720x1280 - Hand Authored");
+            var root = new GameObject("Bartender Shelf Rig - Responsive Portrait");
+            Transform worldContent = Folder(root.transform,
+                "01 World Composition 720x1280 - Width Fit + Top Aligned");
 
-            Transform environment = Folder(root.transform, "01 Environment - Hand Authored");
+            Transform environment = Folder(worldContent,
+                "01 Environment - Hand Authored");
             BuildBackdrop(environment, backdropMaterial);
             ShelfPieces shelf = BuildShelf(environment, art);
 
-            DeliveryStage delivery = BuildDeliveryStage(
-                Folder(root.transform, "02 Upper Delivery - Hand Authored"), art);
+            Transform deliveryRoot = Folder(worldContent,
+                "02 Upper Delivery - Hand Authored");
 
-            Transform glasses = Folder(root.transform,
+            Transform glasses = Folder(worldContent,
                 $"03 Glasses - Manual Royal Pools ({ExpectedPoolSize})");
             var badges = new List<DeliveryBadgePresenter.BadgeBinding>(ExpectedPoolSize);
             List<BartenderShelfLevelView.GlassBinding> shots = BuildVesselPool(
@@ -534,16 +791,20 @@ public static class SortingShelfShowcaseBuilder
                 SpriteVisualBounds(art.Post).width,
                 new[] { shots, cocktails, lattes, tumblers, biras });
             ApplyMeasuredBadgeScale(badges, solve);
+            // Populated only now: the gate has to know how big a glass it will be asked
+            // to swallow before it can decide how much that glass must shrink on the way.
+            DeliveryStage delivery = BuildDeliveryStage(
+                deliveryRoot, art, solve, portalCutoutMaterial);
 
             List<OrderCardView.GlassIcon> icons = BuildGlassIconTable(
                 shot, cocktail, mug, tall, beer);
-            OrderStrip strip = BuildOrderStrip(root.transform, art, icons, camera);
+            OrderStrip strip = BuildOrderStrip(worldContent, art, icons, camera);
             ScreenControls controls = BuildScreenControls(root.transform, art, font,
                 camera);
 
             Transform systems = Folder(root.transform,
-                "06 Level System - Serialized References");
-            LevelRig rig = BuildLevelRig(systems, root.transform, palette,
+                "03 Level System - Serialized References");
+            LevelRig rig = BuildLevelRig(systems, worldContent, art, palette,
                 shelf, delivery, strip, controls, shots, cocktails, lattes, tumblers,
                 biras, badges, icons, solve);
 
@@ -566,7 +827,7 @@ public static class SortingShelfShowcaseBuilder
             // The safe-area fitter is attached last and its reference pose is written
             // explicitly. Letting it capture on its own would bake whatever aspect the
             // editor's Game View happened to have into the scene.
-            AttachSafeAreaFitter(camera, root.transform);
+            AttachSafeAreaFitter(root.transform, camera, worldContent);
 
             // Reassert both camera-space canvas bindings immediately before saving and
             // previewing. The portable prefab intentionally clears these references
@@ -579,7 +840,11 @@ public static class SortingShelfShowcaseBuilder
 
             if (SystemInfo.graphicsDeviceType
                 != UnityEngine.Rendering.GraphicsDeviceType.Null)
+            {
                 RenderPreview(camera);
+                RenderPreview(camera, root.GetComponent<WorldSpaceSafeAreaFitter>(),
+                    PhonePreviewWidth, PhonePreviewHeight, PhonePreviewPath);
+            }
             else
                 Debug.Log("LiquidSort: sorting preview skipped because no graphics "
                         + "device is available.");
@@ -589,6 +854,16 @@ public static class SortingShelfShowcaseBuilder
             strip.Canvas.worldCamera = null;
             controls.Canvas.worldCamera = null;
             SavePortablePrefab(root);
+
+            // Keep the portable gameplay rig self-starting, then turn off automatic
+            // loading only for the authored menu scene. This preserves the prefab's
+            // standalone contract while making Editor Play land on the main menu.
+            strip.Canvas.worldCamera = camera;
+            controls.Canvas.worldCamera = camera;
+            AttachMainMenu(scene, rig.Controller);
+            if (!EditorSceneManager.SaveScene(scene, ScenePath))
+                throw new IOException("Could not save main-menu wiring to " + ScenePath);
+
             AssetDatabase.SaveAssets();
             Debug.Log("LiquidSort: hand-authored sorting shelf showcase and portable rig "
                     + "created.\n" + solve.Describe());
@@ -605,9 +880,27 @@ public static class SortingShelfShowcaseBuilder
         }
     }
 
+    private static string LevelBadgeLabelPath(int level) =>
+        $"{LevelBadgeLabelRoot}/LevelBadge_Label_{level:000}.png";
+
+    private static Sprite[] LoadLevelLabels()
+    {
+        var sprites = new Sprite[30];
+        for (int level = 1; level <= sprites.Length; level++)
+            sprites[level - 1] = Load<Sprite>(LevelBadgeLabelPath(level));
+        return sprites;
+    }
+
     /// <summary>Every sprite the stage is made of, resolved once.</summary>
     private sealed class StageArt
     {
+        public readonly Sprite BottomFloor = Load<Sprite>(BottomFloorPath);
+        public readonly Sprite FloorMedallion = Load<Sprite>(FloorMedallionPath);
+        public readonly Sprite UndoButton = Load<Sprite>(UndoButtonArtPath);
+        public readonly Sprite AddTimeButton = Load<Sprite>(AddTimeButtonArtPath);
+        public readonly Sprite ShuffleButton = Load<Sprite>(ShuffleButtonArtPath);
+        public readonly Sprite LevelBadge = Load<Sprite>(LevelBadgeArtPath);
+        public readonly Sprite[] LevelLabels = LoadLevelLabels();
         public readonly Sprite Plank = Load<Sprite>(ShelfPlankPath);
         public readonly Sprite Post = Load<Sprite>(ShelfPostPath);
         public readonly Sprite CheckBadge = Load<Sprite>(CheckBadgePath);
@@ -616,15 +909,14 @@ public static class SortingShelfShowcaseBuilder
         public readonly Sprite Curtain = Load<Sprite>(CurtainPath);
         public readonly Sprite Column = Load<Sprite>(ColumnPath);
         public readonly Sprite RailBase = Load<Sprite>(RailBasePath);
-        public readonly Sprite RailGlow = Load<Sprite>(RailGlowPath);
         public readonly Sprite PortalBack = Load<Sprite>(PortalBackPath);
         public readonly Sprite PortalFront = Load<Sprite>(PortalFrontPath);
+        public readonly Sprite PortalSide = Load<Sprite>(PortalSidePath);
         public readonly Sprite PortalOccluder = Load<Sprite>(PortalOccluderPath);
 
         public readonly Sprite OrderCardPanel = Load<Sprite>(OrderCardPanelPath);
         public readonly Sprite OrderCardFrame = Load<Sprite>(OrderCardFramePath);
         public readonly Sprite OrderCardClip = Load<Sprite>(OrderCardClipPath);
-        public readonly Sprite OrderCardRail = Load<Sprite>(OrderCardRailPath);
         public readonly Sprite OrderChipFill = Load<Sprite>(OrderCardChipFillPath);
         public readonly Sprite OrderChipRim = Load<Sprite>(OrderCardChipRimPath);
         public readonly Sprite SettingsPanel = Load<Sprite>(SettingsPanelPath);
@@ -635,6 +927,20 @@ public static class SortingShelfShowcaseBuilder
         public readonly Sprite SettingsVibration = Load<Sprite>(SettingsVibrationPath);
         public readonly Sprite SettingsExit = Load<Sprite>(SettingsExitPath);
         public readonly Sprite SettingsMuteSlash = Load<Sprite>(SettingsMuteSlashPath);
+        public readonly Sprite ExitConfirmationFrame =
+            Load<Sprite>(ExitConfirmationFramePath);
+        public readonly Sprite ExitConfirmationDoor =
+            Load<Sprite>(ExitConfirmationDoorPath);
+        public readonly Sprite ExitConfirmationQuestion =
+            Load<Sprite>(ExitConfirmationQuestionPath);
+        public readonly Sprite ExitConfirmationConfirmButton =
+            Load<Sprite>(ExitConfirmationConfirmButtonPath);
+        public readonly Sprite ExitConfirmationConfirmText =
+            Load<Sprite>(ExitConfirmationConfirmTextPath);
+        public readonly Sprite ExitConfirmationCancelButton =
+            Load<Sprite>(ExitConfirmationCancelButtonPath);
+        public readonly Sprite ExitConfirmationCancelText =
+            Load<Sprite>(ExitConfirmationCancelTextPath);
         public readonly Sprite CardPanel =
             BartenderUiArtFactory.Load(BartenderUiArtFactory.CardPanelPath);
         public readonly Sprite CardEdge =
@@ -643,20 +949,6 @@ public static class SortingShelfShowcaseBuilder
             BartenderUiArtFactory.Load(BartenderUiArtFactory.CardClipPath);
         public readonly Sprite Pill =
             BartenderUiArtFactory.Load(BartenderUiArtFactory.PillPath);
-        public readonly Sprite Disc =
-            BartenderUiArtFactory.Load(BartenderUiArtFactory.DiscPath);
-        public readonly Sprite DiscRing =
-            BartenderUiArtFactory.Load(BartenderUiArtFactory.DiscRingPath);
-        public readonly Sprite Chip =
-            BartenderUiArtFactory.Load(BartenderUiArtFactory.ChipPath);
-        public readonly Sprite GlyphUndo =
-            BartenderUiArtFactory.Load(BartenderUiArtFactory.GlyphUndoPath);
-        public readonly Sprite GlyphShuffle =
-            BartenderUiArtFactory.Load(BartenderUiArtFactory.GlyphShufflePath);
-        public readonly Sprite GlyphPlus =
-            BartenderUiArtFactory.Load(BartenderUiArtFactory.GlyphPlusPath);
-        public readonly Sprite GlyphGear =
-            BartenderUiArtFactory.Load(BartenderUiArtFactory.GlyphGearPath);
     }
 
     private static Camera BuildCamera()
@@ -724,7 +1016,9 @@ public static class SortingShelfShowcaseBuilder
     }
 
     /// <summary>
-    /// Builds three identical planks and four posts. Their heights are not authored here:
+    /// Builds three identical planks and four posts. With two active rows, the spare pair
+    /// becomes the uprights above the top shelf; with three rows both pairs span shelves.
+    /// Their heights are not authored here:
     /// <see cref="BartenderShelfLevelView.ApplyShelfLayout"/> moves each plank so its seat
     /// anchor lands on the solved surface and stretches each post to span the gap. What
     /// this method fixes is only what the level cannot change — the drawing, the width and
@@ -740,7 +1034,7 @@ public static class SortingShelfShowcaseBuilder
         Transform lowerSpan = Folder(spans, "Span 02 - Between Row 2 and Row 3");
 
         var plankScale = new Vector2(ShelfScaleX, ShelfScaleY);
-        var postScale = new Vector2(PostScaleX, 1f);
+        var postScale = new Vector2(PostScaleX, PostCapScaleY);
         var pieces = new ShelfPieces
         {
             TopPlank = BuildSprite(shelves, "Shelf Row 01 - Direct Plank Asset",
@@ -758,6 +1052,14 @@ public static class SortingShelfShowcaseBuilder
             LowerRightPost = BuildSprite(lowerSpan, "Post Span 02 Right - Direct Post Asset",
                 art.Post, new Vector2(PostCenterX, 0f), postScale, PostOrder)
         };
+        ConfigureSlicedPost(pieces.UpperLeftPost);
+        ConfigureSlicedPost(pieces.UpperRightPost);
+        ConfigureSlicedPost(pieces.LowerLeftPost);
+        ConfigureSlicedPost(pieces.LowerRightPost);
+        AttachPlankShadow(pieces.TopPlank, art.Plank);
+        AttachPlankShadow(pieces.MiddlePlank, art.Plank);
+        AttachPlankShadow(pieces.BottomPlank, art.Plank);
+
         pieces.TopSeatAnchor = BuildSeatAnchor(pieces.TopPlank,
             "Glass Seat Anchor Row 01 - Direct Link");
         pieces.MiddleSeatAnchor = BuildSeatAnchor(pieces.MiddlePlank,
@@ -765,6 +1067,30 @@ public static class SortingShelfShowcaseBuilder
         pieces.BottomSeatAnchor = BuildSeatAnchor(pieces.BottomPlank,
             "Glass Seat Anchor Row 03 - Direct Link");
         return pieces;
+    }
+
+    /// <summary>
+    /// The post artwork has fixed gold collars at both ends. Sliced mode honours the
+    /// sprite's top/bottom borders so runtime fitting stretches only its purple shaft.
+    /// </summary>
+    private static void ConfigureSlicedPost(SpriteRenderer post)
+    {
+        post.drawMode = SpriteDrawMode.Sliced;
+        post.size = post.sprite.bounds.size;
+    }
+
+    /// <summary>
+    /// Parents the shadow to the plank ON PURPOSE. ApplyShelfLayout moves a row whenever
+    /// the level changes its shelf count, and a shadow that is a child simply travels
+    /// with it - so nothing in the level system ever has to learn that shadows exist.
+    /// </summary>
+    private static void AttachPlankShadow(SpriteRenderer plank, Sprite sprite)
+    {
+        SpriteRenderer shadow = BuildSprite(plank.transform,
+            plank.gameObject.name.Replace("Direct Plank Asset", "Drop Shadow"),
+            sprite, new Vector2(0f, PlankShadowDrop), Vector2.one, PlankShadowOrder);
+        shadow.transform.localScale = new Vector3(PlankShadowScale.x, PlankShadowScale.y, 1f);
+        shadow.color = new Color(0f, 0f, 0f, PlankShadowAlpha);
     }
 
     private static Transform BuildSeatAnchor(SpriteRenderer plank, string name)
@@ -785,7 +1111,6 @@ public static class SortingShelfShowcaseBuilder
         public SpriteRenderer[] FrontLayers;
         public Transform Pivot;
         public SpriteRenderer Glow;
-        public SpriteRenderer Streak;
         public Transform Mouth;
         public Transform Throat;
     }
@@ -794,95 +1119,120 @@ public static class SortingShelfShowcaseBuilder
     /// The service stage above the shelf: sky, arch, curtains, the rail a served glass
     /// travels along, and the gold gate it disappears into.
     ///
-    /// The four portal sprites share one 1792x1536 canvas, so they are placed as siblings
-    /// with identical transforms under a single pivot; anything else would knock them out
-    /// of register. Where the vessel enters and where it becomes invisible is then read
-    /// back OUT of that artwork — the mouth from the left edge of the interior, the throat
-    /// from the middle of the occluder — rather than being guessed as two more numbers.
+    /// The supplied three-quarter portal is kept at a uniform scale so its dome and side
+    /// silhouette remain intact. The existing depth and occluder sprites are fitted only
+    /// into its doorway, preserving the delivery animation without deforming the visible
+    /// gold frame.
     /// </summary>
-    private static DeliveryStage BuildDeliveryStage(Transform parent, StageArt art)
+    private static DeliveryStage BuildDeliveryStage(Transform parent, StageArt art,
+        ShelfSolve solve, Material portalCutoutMaterial)
     {
         var stage = new DeliveryStage();
 
-        SpriteRenderer sky = BuildSprite(parent, "Upper Sky Backdrop - Manual",
-            art.Sky, Vector2.zero, Vector2.one, SkyOrder);
-        FitWidth(sky, 2f * FrameHalfWidth + 0.15f);
-        PlaceByBottom(sky, 0f, DeliveryRailY - 0.30f);
-
-        // The arch spans the frame exactly and hangs a little below the top edge, so its
-        // keystone reads as the top of a room rather than as a strip cut off by the bezel.
-        // Its legs end under the rail on purpose; the rail is what they stand behind.
-        SpriteRenderer arch = BuildSprite(parent, "Upper Stone Arch - Manual",
-            art.Arch, Vector2.zero, Vector2.one, ArchOrder);
-        FitWidth(arch, 2f * FrameHalfWidth);
-        PlaceByTop(arch, 0f, CameraHalfHeight + 0.34f);
-
-        SpriteRenderer curtain = BuildSprite(parent, "Upper Curtain Pair - Manual",
-            art.Curtain, Vector2.zero, Vector2.one, CurtainOrder);
-        FitWidth(curtain, 2f * FrameHalfWidth + 0.15f);
-        PlaceByTop(curtain, 0f, CameraHalfHeight);
+        // The sky, curtains and bridge are one painted piece of architecture. Bake them
+        // at 2048 px before placing the scene so their top and side crops cannot change
+        // relative to one another on a phone. The counter and tower stay separate and
+        // draw over this plate, which is what seats the tower inside the bridge instead
+        // of leaving a partial arch beside it.
+        Sprite bakedUpperStage = BakeUpperStageBackground(art);
+        SpriteRenderer upperStage = BuildSprite(parent,
+            "Upper Stage - Baked Sky + Bridge + Curtains", bakedUpperStage,
+            Vector2.zero, Vector2.one, BakedUpperStageOrder);
+        FitWidth(upperStage, 2f * FrameHalfWidth);
+        PlaceByTop(upperStage, 0f, CameraHalfHeight);
 
         // The post STANDS ON the rail: it is a piece of furniture on the service counter,
         // not a pillar holding the building up. Sizing it from the frame height instead
         // of from its own drawing is what made it tower over the arch.
         SpriteRenderer column = BuildSprite(parent, "Delivery Column Left - Manual",
             art.Column, Vector2.zero, Vector2.one, ColumnOrder);
-        FitHeight(column, 2.35f);
-        PlaceByBottom(column, -FrameHalfWidth + 0.92f, DeliveryRailY - 0.16f);
+        FitHeight(column, PostHeight);
+        // Pinned to the LEFT WALL by the same inset the gate keeps from the right one.
+        // Authoring its CENTRE was the bug: how far the post stood from the wall then
+        // depended on how wide its drawing happened to be, which is not a decision
+        // anybody made.
+        float columnWidth = SpriteVisualBounds(art.Column).width
+                          * column.transform.localScale.x;
+        PlaceByBottom(column, -FrameHalfWidth + StageWallInset + columnWidth * 0.5f,
+            DeliveryRailY - PostSinkIntoRail);
 
         SpriteRenderer rail = BuildSprite(parent, "Delivery Rail Base - Manual",
             art.RailBase, Vector2.zero, Vector2.one, RailBaseOrder);
-        FitWidth(rail, 2f * FrameHalfWidth - 0.30f);
+        FitWidth(rail, 2f * FrameHalfWidth);
         PlaceByTop(rail, 0f, DeliveryRailY);
 
-        SpriteRenderer glow = BuildSprite(parent, "Delivery Rail Guide Idle - Manual",
-            art.RailGlow, Vector2.zero, Vector2.one, RailGlowOrder);
-        FitWidth(glow, 2f * FrameHalfWidth - 0.90f);
-        PlaceByBottom(glow, -0.15f, DeliveryRailY - 0.02f);
-
-        stage.Streak = BuildSprite(parent, "Travel Streak - Manual",
-            art.RailGlow, Vector2.zero, Vector2.one, TravelStreakOrder);
-        FitWidth(stage.Streak, 2.40f);
-        PlaceByBottom(stage.Streak, 0.20f, DeliveryRailY + 0.28f);
-        SetAlpha(stage.Streak, 0f);
-
-        // The gate. Fitting is done on the FRONT sprite because that is the drawing the
-        // player reads as "the door"; the other three ride along on the shared canvas.
-        Transform pivot = Folder(parent, "Portal Pivot - Manual");
-        // Height, then seat: the gate is measured from its own drawing and then placed so
-        // its foot lands on the rail, which is also where a delivered glass is standing.
-        // The gate drawing is square, so its height IS its width: 2.45 units tall made it
-        // 2.45 wide as well, which is a third of the screen and leaves the served glass
-        // nowhere to stand. Sized to sit in the right quarter with its dome touching the
-        // frame edge, the way the reference composition has it.
-        const float portalHeight = 2.05f;
-        float portalScale = FitScaleForHeight(art.PortalFront, portalHeight);
-        var portalCenter = new Vector2(2.34f,
-            DeliveryRailY - SpriteVisualBounds(art.PortalFront).yMin * portalScale);
+        // The reference gate is a compact three-quarter drawing, not the former square
+        // front view squeezed to half width. The new art is therefore scaled UNIFORMLY:
+        // its dome stays round and its narrow right side remains readable.
+        Transform pivot = Folder(parent, "04 Portal - Three Quarter Side View");
+        Rect towerVisual = SpriteChromaBounds(art.PortalSide);
+        float towerScale = TowerHeight / towerVisual.height;
+        float towerWidth = towerVisual.width * towerScale;
+        // The doorway follows the tower instead of being authored beside it, so resizing
+        // the gate can never again leave the purple interior floating at its old size.
+        float openingWidth = towerWidth * PortalOpeningWidthRatio;
+        float openingHeight = TowerHeight * PortalOpeningHeightRatio;
+        var openingCenter = new Vector2(
+            towerWidth * PortalOpeningCenterRatio.x,
+            TowerHeight * PortalOpeningCenterRatio.y);
+        var portalCenter = new Vector2(
+            TowerRightEdgeX - towerWidth * 0.5f,
+            DeliveryRailY - TowerSinkIntoRail + TowerHeight * 0.5f);
         pivot.localPosition = new Vector3(portalCenter.x, portalCenter.y, 0f);
-        pivot.localScale = new Vector3(portalScale, portalScale, 1f);
         stage.Pivot = pivot;
 
-        SpriteRenderer back = BuildSprite(pivot, "Portal Back - Manual",
+        SpriteRenderer front = BuildSprite(pivot,
+            "03 Portal Gold Frame - Supplied Side Art", art.PortalSide,
+            Vector2.zero, Vector2.one, PortalFrontOrder);
+        front.transform.localScale = Vector3.one * towerScale;
+        front.transform.localPosition = new Vector3(
+            -towerVisual.center.x * towerScale,
+            -towerVisual.center.y * towerScale, 0f);
+        front.sharedMaterial = portalCutoutMaterial;
+
+        // The established purple depth/occluder art remains as the animation sandwich,
+        // but is fitted only inside the new doorway. Its deformation is invisible chrome;
+        // the player-facing gold frame above is never distorted.
+        Rect interiorVisual = SpriteVisualBounds(art.PortalBack);
+        Rect occluderVisual = SpriteVisualBounds(art.PortalOccluder);
+        SpriteRenderer back = BuildSprite(pivot, "01 Portal Interior - Behind Glass",
             art.PortalBack, Vector2.zero, Vector2.one, PortalBackOrder);
-        stage.Glow = BuildSprite(pivot, "Portal Glow - Manual",
+        FitVisibleRect(back, interiorVisual, openingCenter,
+            new Vector2(openingWidth, openingHeight));
+        stage.Glow = BuildSprite(pivot, "02 Portal Glow - Behind Glass",
             art.PortalBack, Vector2.zero, Vector2.one, PortalGlowOrder);
+        FitVisibleRect(stage.Glow, interiorVisual, openingCenter,
+            new Vector2(openingWidth, openingHeight));
         stage.Glow.color = new Color(0.42f, 0.92f, 1f, 0f);
-        SpriteRenderer occluder = BuildSprite(pivot, "Portal Occluder - Manual",
-            art.PortalOccluder, Vector2.zero, Vector2.one, PortalOccluderOrder);
-        SpriteRenderer front = BuildSprite(pivot, "Portal Front - Manual",
-            art.PortalFront, Vector2.zero, Vector2.one, PortalFrontOrder);
+
+        float occluderWidth = openingWidth * 0.58f;
+        var occluderCenter = new Vector2(
+            openingCenter.x + (openingWidth - occluderWidth) * 0.5f,
+            openingCenter.y);
+        SpriteRenderer occluder = BuildSprite(pivot,
+            "04 Portal Right Occluder - In Front Of Glass", art.PortalOccluder,
+            Vector2.zero, Vector2.one, PortalOccluderOrder);
+        FitVisibleRect(occluder, occluderVisual, occluderCenter,
+            new Vector2(occluderWidth, openingHeight));
 
         stage.BackLayers = new[] { back, stage.Glow };
         stage.FrontLayers = new[] { occluder, front };
 
-        // Read the path out of the drawing. The interior's left edge is the last place a
-        // vessel is still completely visible; the middle of the occluder is the first
-        // place it is completely gone.
-        Rect interior = SpriteVisualBounds(art.PortalBack);
-        Rect hidden = SpriteVisualBounds(art.PortalOccluder);
-        float mouthX = portalCenter.x + (interior.xMin + 0.12f) * portalScale;
-        float throatX = portalCenter.x + hidden.center.x * portalScale;
+        float servedWidth = solve.WidestGlass * solve.ScaleTwoRow;
+        float servedHeight = solve.TallestGlass * solve.ScaleTwoRow;
+        float liftScale = Mathf.Clamp(PortalFit * Mathf.Min(
+            openingWidth / servedWidth,
+            openingHeight / servedHeight), 0.30f, 1f);
+        float entryScale = Mathf.Clamp(liftScale * 0.85f, 0.05f, 1f);
+        float occluderReach = occluderWidth * 0.5f;
+        float hideScale = Mathf.Clamp(Mathf.Min(entryScale * 0.55f,
+            0.95f * 2f * occluderReach / servedWidth), 0.01f, entryScale);
+
+        float towerLeftEdge = portalCenter.x - towerWidth * 0.5f;
+        float mouthX = towerLeftEdge - servedWidth * liftScale * 0.5f
+                     - PortalMouthClearance;
+        float throatX = portalCenter.x + openingCenter.x
+                      + openingWidth * 0.22f;
 
         stage.Mouth = Anchor(parent, "Mouth Anchor - Manual",
             new Vector2(mouthX, DeliveryRailY));
@@ -891,14 +1241,220 @@ public static class SortingShelfShowcaseBuilder
 
         stage.Portal = parent.gameObject.AddComponent<PortalDeliveryAnimator>();
         stage.Portal.ConfigureSceneBindings(stage.BackLayers, stage.FrontLayers,
-            pivot, stage.Glow, stage.Streak, null, null, stage.Mouth, stage.Throat);
+            pivot, stage.Glow, null, null, stage.Mouth, stage.Throat);
+        stage.Portal.ConfigureGeometry(
+            new Vector2(openingWidth, openingHeight),
+            Mathf.Abs(towerLeftEdge - mouthX), PortalMouthClearance, PortalFit);
+        var portalSerialized = new SerializedObject(stage.Portal);
+        SetFloat(portalSerialized, "liftScale", liftScale);
+        portalSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+        if (openingWidth < servedWidth * 0.30f)
+            throw new InvalidOperationException(
+                $"The delivery gate opening is only {openingWidth:0.###} wide against a "
+              + $"{servedWidth:0.###} glass; the vessel would have to shrink past the "
+              + "point where it still reads as the glass that was served.");
+
+        Debug.Log($"LiquidSort: side-view delivery gate {towerWidth:0.##}x"
+                + $"{TowerHeight:0.##} (uniform scale), opening "
+                + $"{openingWidth:0.###}x{openingHeight:0.###}; served glass "
+                + $"{servedWidth:0.###}x{servedHeight:0.###} steps down "
+                + $"{liftScale:0.###} -> {entryScale:0.###} -> {hideScale:0.###}; "
+                + $"stands at x={mouthX:0.###}, vanishes at x={throatX:0.###}.");
+
         stage.Portal.ConfigureTiming(PortalLiftDuration,
             // Lift timing scales with distance; a full height is bottom shelf to rail.
             DeliveryRailY - SurfaceY(3, 2, SpriteVisualBounds(art.Plank).height * ShelfScaleY),
             PortalApproachDuration, PortalEntryDuration, PortalHideDuration,
-            PortalBounceDuration, PortalEntryDepth, PortalEntryScale, PortalHideScale,
-            PortalEntryTilt);
+            PortalBounceDuration, PortalEntryDepth, entryScale, hideScale,
+            PortalEntryTilt, PortalAnticipationDuration, PortalMinimumApproachLead);
+
+        ValidateStageFraming(parent);
         return stage;
+    }
+
+    /// <summary>
+    /// Renders the immovable top architecture into one high-resolution sprite. This is
+    /// intentionally an editor-time bake: the game receives one plate, so the bridge's
+    /// crop and the two curtain edges cannot move independently on a narrow phone.
+    /// </summary>
+    private static Sprite BakeUpperStageBackground(StageArt art)
+    {
+        Sprite existing = AssetDatabase.LoadAssetAtPath<Sprite>(BakedUpperStagePath);
+        if (SystemInfo.graphicsDeviceType
+            == UnityEngine.Rendering.GraphicsDeviceType.Null)
+        {
+            if (existing != null) return existing;
+            throw new InvalidOperationException(
+                "Upper-stage bake needs a graphics device the first time it is generated.");
+        }
+
+        float bakeHeight = CameraHalfHeight - BakedUpperStageBottomY;
+        int bakeHeightPixels = Mathf.CeilToInt(BakedUpperStageWidthPixels
+            * bakeHeight / (2f * FrameHalfWidth));
+        var root = new GameObject("TEMP - Bake Sky Bridge Curtains")
+        {
+            hideFlags = HideFlags.HideAndDontSave
+        };
+        GameObject cameraObject = null;
+        RenderTexture target = null;
+        Texture2D pixels = null;
+        RenderTexture previousActive = RenderTexture.active;
+        try
+        {
+            BuildBakedUpperStageSource(root.transform, art);
+            SetLayerRecursively(root.transform, BakedUpperStageLayer);
+
+            cameraObject = new GameObject("TEMP - Upper Stage Bake Camera")
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                layer = BakedUpperStageLayer
+            };
+            var camera = cameraObject.AddComponent<Camera>();
+            camera.orthographic = true;
+            camera.orthographicSize = bakeHeight * 0.5f;
+            camera.aspect = (float)BakedUpperStageWidthPixels / bakeHeightPixels;
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = Color.clear;
+            camera.cullingMask = 1 << BakedUpperStageLayer;
+            camera.transform.position = new Vector3(0f,
+                (CameraHalfHeight + BakedUpperStageBottomY) * 0.5f, -10f);
+
+            target = new RenderTexture(BakedUpperStageWidthPixels, bakeHeightPixels, 24,
+                RenderTextureFormat.ARGB32)
+            {
+                name = "UpperStageSkyBridgeCurtainsBake",
+                antiAliasing = 1,
+                filterMode = FilterMode.Bilinear
+            };
+            target.Create();
+            pixels = new Texture2D(BakedUpperStageWidthPixels, bakeHeightPixels,
+                TextureFormat.RGBA32, false, false);
+            camera.targetTexture = target;
+            camera.Render();
+            RenderTexture.active = target;
+            pixels.ReadPixels(new Rect(0, 0, BakedUpperStageWidthPixels,
+                bakeHeightPixels), 0, 0, false);
+            pixels.Apply(false, false);
+
+            string directory = Path.GetDirectoryName(BakedUpperStagePath)?.Replace('\\', '/');
+            if (!string.IsNullOrEmpty(directory)) EnsureAssetFolder(directory);
+            string projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
+            if (string.IsNullOrEmpty(projectRoot))
+                throw new DirectoryNotFoundException("Could not resolve the Unity project root.");
+            File.WriteAllBytes(Path.Combine(projectRoot, BakedUpperStagePath),
+                pixels.EncodeToPNG());
+        }
+        finally
+        {
+            RenderTexture.active = previousActive;
+            if (pixels != null) UnityEngine.Object.DestroyImmediate(pixels);
+            if (target != null)
+            {
+                target.Release();
+                UnityEngine.Object.DestroyImmediate(target);
+            }
+            if (cameraObject != null) UnityEngine.Object.DestroyImmediate(cameraObject);
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+
+        AssetDatabase.ImportAsset(BakedUpperStagePath,
+            ImportAssetOptions.ForceSynchronousImport);
+        ConfigureStageSprite(BakedUpperStagePath);
+        return Load<Sprite>(BakedUpperStagePath);
+    }
+
+    /// <summary>
+    /// The only three drawings that belong to the baked plate. The cloud sky is the
+    /// back layer, the curtain reaches the physical top edge, and the enlarged bridge
+    /// sits in front of the fabric. The right-side tower is deliberately absent: it is
+    /// a foreground portal that is seated into this architecture by the live scene.
+    /// </summary>
+    private static void BuildBakedUpperStageSource(Transform parent, StageArt art)
+    {
+        SpriteRenderer sky = BuildSprite(parent, "Bake - Cloud Sky", art.Sky,
+            Vector2.zero, Vector2.one, 0);
+        FitWidth(sky, 2f * FrameHalfWidth + 0.15f);
+        PlaceByBottom(sky, 0f, BakedUpperStageBottomY);
+
+        SpriteRenderer bridge = BuildSprite(parent, "Bake - Stone Bridge", art.Arch,
+            Vector2.zero, Vector2.one, 10);
+        FitWidth(bridge, BakedBridgeVisibleSpan);
+        Vector3 bridgeScale = bridge.transform.localScale;
+        bridgeScale.y *= BakedBridgeVerticalScale;
+        bridge.transform.localScale = bridgeScale;
+        PlaceByTop(bridge, 0f, CameraHalfHeight + BakedBridgeTopBleed);
+
+        // The fabric is the final edge mask: it wraps over the enlarged bridge at the
+        // two top corners, exactly as the reference hides the bridge under the purple
+        // folds rather than leaving a seam at either screen edge.
+        SpriteRenderer curtain = BuildSprite(parent, "Bake - Purple Curtains",
+            art.Curtain, Vector2.zero, Vector2.one, 20);
+        FitWidth(curtain, 2f * FrameHalfWidth + 0.15f);
+        Vector3 curtainScale = curtain.transform.localScale;
+        curtainScale.x *= CurtainHorizontalScale;
+        curtainScale.y *= CurtainVerticalScale;
+        curtain.transform.localScale = curtainScale;
+        float curtainDrape = SpriteVisualBounds(art.Curtain).height
+                           * curtain.transform.localScale.y;
+        PlaceByTop(curtain, 0f,
+            CameraHalfHeight + curtainDrape - CurtainVisibleDrop);
+    }
+
+    /// <summary>
+    /// Nothing on the service stage may leave the frame, except the backdrop and the
+    /// curtain which bleed off the edges by design. This measures the REAL renderers
+    /// after they are placed rather than re-deriving where they should have gone, which
+    /// is the only way it could have caught what it was written for: the arch was held
+    /// by its span above the rail, its own aspect decided where the crown landed, and
+    /// the crown landed 0.71 units above the frame with no number anywhere saying so.
+    ///
+    /// Measured in <paramref name="stageRoot"/>'s local space, not in world space. The
+    /// safe-area fitter scales the whole composition and runs in edit mode, so world
+    /// coordinates here would be whatever the current Game View aspect happens to make
+    /// them; the stage folder sits unrotated at the composition origin, so its local
+    /// space IS the authored 720x1280 design space.
+    /// </summary>
+    private static void ValidateStageFraming(Transform stageRoot)
+    {
+        foreach (SpriteRenderer renderer in
+                 stageRoot.GetComponentsInChildren<SpriteRenderer>(true))
+        {
+            string name = renderer.gameObject.name;
+            // These two are drawn oversized on purpose so no seam can appear at the edge.
+            if (name == "Upper Sky Backdrop - Manual"
+                || name == "Upper Curtain Pair - Manual") continue;
+            if (renderer.sprite == null) continue;
+
+            // The gate art carries no alpha at all - it is matted by chroma in the
+            // shader - so measuring it by alpha would return the whole opaque neutral
+            // sheet it was generated on and fail this check on a tower that is nowhere
+            // near the frame edge. Measure whatever the shader will actually draw.
+            bool chromaMatted = renderer.sharedMaterial != null
+                && renderer.sharedMaterial.shader != null
+                && renderer.sharedMaterial.shader.name
+                    == "LiquidSort/GeneratedPortalCutout";
+            Rect visual = chromaMatted
+                ? SpriteChromaBounds(renderer.sprite)
+                : SpriteVisualBounds(renderer.sprite);
+            Transform t = renderer.transform;
+            Vector3 min = stageRoot.InverseTransformPoint(
+                t.TransformPoint(new Vector3(visual.xMin, visual.yMin, 0f)));
+            Vector3 max = stageRoot.InverseTransformPoint(
+                t.TransformPoint(new Vector3(visual.xMax, visual.yMax, 0f)));
+
+            float allowedTop = name == "Upper Stone Arch - Manual"
+                ? CameraHalfHeight + ArchTopBleed
+                : CameraHalfHeight;
+            if (max.y > allowedTop + 0.001f)
+                throw new InvalidOperationException(
+                    $"'{name}' reaches y={max.y:0.###}, past its allowed top at "
+                  + $"{allowedTop:0.###}. The bezel would cut it off.");
+            if (min.x < -FrameHalfWidth - 0.001f || max.x > FrameHalfWidth + 0.001f)
+                throw new InvalidOperationException(
+                    $"'{name}' spans x=[{min.x:0.###}, {max.x:0.###}], outside the "
+                  + $"frame's [{-FrameHalfWidth:0.###}, {FrameHalfWidth:0.###}].");
+        }
     }
 
     // ---- Glass pools ------------------------------------------------------------
@@ -1054,11 +1610,9 @@ public static class SortingShelfShowcaseBuilder
         strip.Canvas = BuildWorldCanvas(parent, "04 Order Cards - Level Controlled",
             OrderCardCanvasOrder, false, camera);
 
-        float railY = OrderStripCenterY + OrderCardHeight * 0.5f + 0.10f;
-        Image rail = BuildImage(strip.Canvas.transform, "Order Rail - Red Gold",
-            art.OrderCardRail, Color.white, PxPoint(new Vector2(0f, railY)),
-            new Vector2(Px(6.36f), Px(0.38f)), Image.Type.Simple);
-        rail.transform.SetAsFirstSibling();
+        // No rail over the cards. The strip used to hang from a red-and-gold bar, but a
+        // card is pinned to the back wall by its own gold clip - it is not suspended from
+        // anything, so the bar was drawing a support that the art does not need.
 
         for (int i = 0; i < 3; i++)
         {
@@ -1067,7 +1621,13 @@ public static class SortingShelfShowcaseBuilder
                 $"Order Card Slot {i + 1:00}", new Vector2(x, OrderStripCenterY), art));
         }
 
-        for (int i = 0; i < strip.Cards.Count; i++) strip.Cards[i].SetGlassIcons(icons);
+        for (int i = 0; i < strip.Cards.Count; i++)
+        {
+            strip.Cards[i].SetGlassIcons(icons);
+            // Read back by OrderCardView as its authored scale, so the pop animations
+            // return to this size instead of snapping the card back to 1.
+            strip.Cards[i].transform.localScale = Vector3.one * OrderCardScale;
+        }
         return strip;
     }
 
@@ -1164,11 +1724,12 @@ public static class SortingShelfShowcaseBuilder
     private sealed class ScreenControls
     {
         public Canvas Canvas;
-        public Text LevelLabel;
+        public Image LevelLabelSprite;
+        public Text LevelLabelFallback;
         public GameObject LevelBadgeRoot;
         public Button SettingsButton;
         public Button UndoButton;
-        public Button ExtraGlassButton;
+        public Button AddTimeButton;
         public Button ShuffleButton;
         public GameObject PauseOverlay;
         public GameObject SettingsCard;
@@ -1204,33 +1765,69 @@ public static class SortingShelfShowcaseBuilder
         Transform topBar = BuildEdgeBar(safeArea, "01 Top Bar", true,
             Px(CameraHalfHeight - TopBarCenterY), Px(TopBarHeight));
         RectTransform badge = BuildRect(topBar, "Level Badge - Level Controlled",
-            Vector2.zero, new Vector2(Px(2.90f), Px(TopBarHeight)));
-        BuildImage(badge, "Badge Panel", art.Pill, BadgeFace, Vector2.zero,
-            badge.sizeDelta, Image.Type.Sliced);
-        BuildImage(badge, "Badge Rim", art.Pill, ButtonRim, Vector2.zero,
-            badge.sizeDelta + new Vector2(Px(0.09f), Px(0.09f)), Image.Type.Sliced)
-            .transform.SetAsFirstSibling();
-        controls.LevelLabel = BuildText(badge, "Badge Label", font, "SEVİYE 1",
-            Vector2.zero, badge.sizeDelta, Mathf.RoundToInt(Px(0.44f)), BadgeText);
+            Vector2.zero, new Vector2(Px(LevelBadgeWidth), Px(TopBarHeight)));
+        Image badgeArtwork = BuildImage(badge, "Badge Artwork - Clean",
+            art.LevelBadge, Color.white,
+            new Vector2(0f, Px(LevelBadgeArtOffsetY)),
+            new Vector2(Px(LevelBadgeWidth), Px(LevelBadgeArtHeight)), Image.Type.Simple);
+        badgeArtwork.preserveAspect = true;
+        controls.LevelLabelSprite = BuildImage(badge, "Badge Label Sprite - Atlas",
+            art.LevelLabels[0], Color.white, Vector2.zero,
+            new Vector2(Px(LevelLabelSize.x), Px(LevelLabelSize.y)), Image.Type.Simple);
+        controls.LevelLabelSprite.preserveAspect = true;
+        controls.LevelLabelFallback = BuildText(badge, "Badge Label Fallback", font,
+            "BARTENDER", Vector2.zero,
+            new Vector2(Px(LevelLabelSize.x), Px(LevelLabelSize.y)),
+            Mathf.RoundToInt(Px(0.22f * LevelBadgeScale)), BadgeText);
+        controls.LevelLabelFallback.enabled = false;
         controls.LevelBadgeRoot = badge.gameObject;
 
-        controls.SettingsButton = BuildSettingsArtButton(screenCanvas, "PauseButton", art,
-            art.SettingsIcon,
-            new Vector2(-SettingsRightInset, -SettingsTopInset),
-            false, 1.06f, 0.92f, out _);
+        controls.SettingsButton = BuildSettingsArtButtonSized(screenCanvas,
+            "PauseButton", art, art.SettingsIcon, -TopSettingsButtonInset,
+            TopSettingsButtonSize, false, 1.06f, 0.92f, out _);
+
+        // The lower stage is deliberately a separate, non-interactive art group. Its
+        // centre is pinned to the safe-area bottom: the 300 px tile base therefore
+        // reaches 150 px upward to meet the lowest shelf and 150 px downward underneath
+        // the iPhone gesture inset. The oval sits above it while the buttons remain in
+        // their own bar, so draw order and input can never become coupled.
+        RectTransform bottomFloorArt = BuildRect(safeArea, "00 Bottom Floor Artwork",
+            Vector2.zero, new Vector2(760f, 300f));
+        Canvas bottomFloorSorting = bottomFloorArt.gameObject.AddComponent<Canvas>();
+        bottomFloorSorting.overrideSorting = true;
+        bottomFloorSorting.sortingOrder = BottomFloorOrder;
+        bottomFloorArt.anchorMin = new Vector2(0.5f, 0f);
+        bottomFloorArt.anchorMax = new Vector2(0.5f, 0f);
+        bottomFloorArt.pivot = new Vector2(0.5f, 0.5f);
+        bottomFloorArt.anchoredPosition = Vector2.zero;
+
+        Image bottomFloor = BuildImage(bottomFloorArt, "00 Bottom Floor - Tan Tiles",
+            art.BottomFloor, Color.white, Vector2.zero, bottomFloorArt.sizeDelta,
+            Image.Type.Simple);
+        bottomFloor.preserveAspect = false;
+
+        Image floorMedallion = BuildImage(bottomFloorArt,
+            "01 Floor Medallion - Oval", art.FloorMedallion,
+            new Color(0.84f, 0.76f, 0.70f, 0.92f),
+            new Vector2(0f, 25f), new Vector2(760f, 396f), Image.Type.Simple);
+        floorMedallion.preserveAspect = true;
 
         Transform bottomBar = BuildEdgeBar(safeArea, "02 Bottom Controls", false,
             Px(BottomBarCenterY + CameraHalfHeight), Px(BottomButtonDiameter));
-        controls.UndoButton = BuildRoundButton(bottomBar, "Undo Button", art, art.GlyphUndo,
+        controls.UndoButton = BuildArtworkButton(bottomBar, "Undo Button", art.UndoButton,
             Vector2.zero, BottomButtonDiameter,
             new Vector2(-Px(BottomButtonSpacing), 0f));
-        controls.ExtraGlassButton = BuildRoundButton(bottomBar, "Add Glass Button", art,
-            art.GlyphPlus, Vector2.zero, BottomButtonDiameter, Vector2.zero);
-        controls.ShuffleButton = BuildRoundButton(bottomBar, "Shuffle Button", art,
-            art.GlyphShuffle, Vector2.zero, BottomButtonDiameter,
+        controls.AddTimeButton = BuildArtworkButton(bottomBar, "Add Time Button",
+            art.AddTimeButton, Vector2.zero, BottomButtonDiameter, Vector2.zero);
+        controls.ShuffleButton = BuildArtworkButton(bottomBar, "Shuffle Button",
+            art.ShuffleButton, Vector2.zero, BottomButtonDiameter,
             new Vector2(Px(BottomButtonSpacing), 0f));
 
-        BuildPauseOverlay(screenCanvas, art, font, controls);
+        ValidateArtworkButton(controls.UndoButton, art.UndoButton);
+        ValidateArtworkButton(controls.AddTimeButton, art.AddTimeButton);
+        ValidateArtworkButton(controls.ShuffleButton, art.ShuffleButton);
+
+        BuildPauseOverlay(screenCanvas, art, controls);
         return controls;
     }
 
@@ -1283,9 +1880,15 @@ public static class SortingShelfShowcaseBuilder
     /// A full-width bar pinned to the top or the bottom of the safe area. Children are
     /// placed by their x offset alone, so the same numbers used for the world composition
     /// keep working.
+    ///
+    /// <paramref name="centreInsetFromEdge"/> is the distance from the screen edge to the
+    /// bar's CENTRE LINE, because that is what the callers hand over: the same
+    /// TopBarCenterY / BottomBarCenterY the vertical budget is written in. Adding half the
+    /// height on top of it pushed both bars a third of a unit inboard, which is what put
+    /// the boosters on the lowest shelf.
     /// </summary>
     private static Transform BuildEdgeBar(Transform parent, string name, bool top,
-                                          float insetFromEdge, float height)
+                                          float centreInsetFromEdge, float height)
     {
         var go = new GameObject(name, typeof(RectTransform));
         go.transform.SetParent(parent, false);
@@ -1295,7 +1898,7 @@ public static class SortingShelfShowcaseBuilder
         rect.pivot = new Vector2(0.5f, 0.5f);
         rect.sizeDelta = new Vector2(0f, height);
         rect.anchoredPosition = new Vector2(0f,
-            top ? -(insetFromEdge + height * 0.5f) : insetFromEdge + height * 0.5f);
+            top ? -centreInsetFromEdge : centreInsetFromEdge);
         rect.localScale = Vector3.one;
         return rect;
     }
@@ -1317,7 +1920,7 @@ public static class SortingShelfShowcaseBuilder
     /// Close and four 92 px options descend at a 104 px step.  There is deliberately no
     /// visible card or dim behind the stack in the source design.
     /// </summary>
-    private static void BuildPauseOverlay(Transform canvas, StageArt art, Font font,
+    private static void BuildPauseOverlay(Transform canvas, StageArt art,
                                           ScreenControls controls)
     {
         RectTransform overlay = Stretch(BuildRect(canvas,
@@ -1350,23 +1953,32 @@ public static class SortingShelfShowcaseBuilder
             art.SettingsExit, new Vector2(0f, -SettingsButtonStep * 4f), false,
             1.05f, 0.90f, out _);
 
-        var confirmSize = new Vector2(Px(4.80f), Px(2.60f));
+        var confirmSize = new Vector2(600f, 900f);
         RectTransform confirm = BuildRect(overlay, "Exit Confirmation Card", Vector2.zero,
             confirmSize);
         controls.ExitCard = confirm.gameObject;
-        BuildImage(confirm, "Card Rim", art.CardPanel, ButtonRim, Vector2.zero,
-            confirmSize + new Vector2(Px(0.14f), Px(0.14f)), Image.Type.Sliced);
-        BuildImage(confirm, "Card Panel", art.CardPanel, BadgeFace, Vector2.zero,
-            confirmSize, Image.Type.Sliced);
-        BuildText(confirm, "Question", font, "Ana menüye dönülsün mü?",
-            new Vector2(0f, confirmSize.y * 0.26f), new Vector2(confirmSize.x, Px(0.70f)),
-            Mathf.RoundToInt(Px(0.34f)), BadgeText);
-        controls.ConfirmExitButton = BuildPillButton(confirm, "Confirm Exit", art, font,
-            "EVET", new Vector2(-confirmSize.x * 0.24f, -confirmSize.y * 0.22f),
-            new Vector2(Px(1.90f), Px(0.80f)));
-        controls.CancelExitButton = BuildPillButton(confirm, "Cancel Exit", art, font,
-            "VAZGEÇ", new Vector2(confirmSize.x * 0.24f, -confirmSize.y * 0.22f),
-            new Vector2(Px(1.90f), Px(0.80f)));
+        Image frame = BuildImage(confirm, "Card Rim", art.ExitConfirmationFrame,
+            Color.white, Vector2.zero, confirmSize, Image.Type.Simple);
+        frame.preserveAspect = true;
+
+        Image door = BuildImage(confirm, "Door Icon", art.ExitConfirmationDoor,
+            Color.white, new Vector2(0f, 25f), new Vector2(190f, 180f),
+            Image.Type.Simple);
+        door.preserveAspect = true;
+
+        Image question = BuildImage(confirm, "Question", art.ExitConfirmationQuestion,
+            Color.white, new Vector2(0f, 270f), new Vector2(480f, 270f),
+            Image.Type.Simple);
+        question.preserveAspect = true;
+
+        controls.ConfirmExitButton = BuildExitConfirmationButton(confirm, "Confirm Exit",
+            art.ExitConfirmationConfirmButton, art.ExitConfirmationConfirmText,
+            new Vector2(0f, -165f), new Vector2(480f, 135f),
+            new Vector2(180f, 75f));
+        controls.CancelExitButton = BuildExitConfirmationButton(confirm, "Cancel Exit",
+            art.ExitConfirmationCancelButton, art.ExitConfirmationCancelText,
+            new Vector2(0f, -325f), new Vector2(480f, 135f),
+            new Vector2(275f, 90f));
 
         // Closed at rest. BartenderPausePresenter is the only thing that opens them, and
         // it opens them from the flow state, never from the button press.
@@ -1377,12 +1989,24 @@ public static class SortingShelfShowcaseBuilder
     private static Button BuildSettingsArtButton(Transform parent, string name,
         StageArt art, Sprite icon, Vector2 anchoredPosition, bool includeMuteSlash,
         float hoverScale, float pressedScale, out GameObject muteSlash)
+        => BuildSettingsArtButtonSized(parent, name, art, icon, anchoredPosition,
+            SettingsButtonSize, includeMuteSlash, hoverScale, pressedScale,
+            out muteSlash);
+
+    private static Button BuildSettingsArtButtonSized(Transform parent, string name,
+        StageArt art, Sprite icon, Vector2 anchoredPosition, float buttonSize,
+        bool includeMuteSlash, float hoverScale, float pressedScale,
+        out GameObject muteSlash)
     {
-        var size = new Vector2(SettingsButtonSize, SettingsButtonSize);
+        var size = new Vector2(buttonSize, buttonSize);
         RectTransform rect = BuildRect(parent, name, anchoredPosition, size);
         rect.anchorMin = Vector2.one;
         rect.anchorMax = Vector2.one;
         rect.pivot = Vector2.one;
+        // Changing anchors/pivot can preserve the old world rectangle by rewriting the
+        // anchored position. Reapply the approved top-right geometry afterwards.
+        rect.anchoredPosition = anchoredPosition;
+        rect.sizeDelta = size;
 
         var hitTarget = rect.gameObject.AddComponent<Image>();
         hitTarget.color = Color.clear;
@@ -1443,7 +2067,7 @@ public static class SortingShelfShowcaseBuilder
     }
 
     private static LevelRig BuildLevelRig(Transform systems, Transform layoutSpace,
-        BsPalette palette, ShelfPieces shelf, DeliveryStage delivery,
+        StageArt art, BsPalette palette, ShelfPieces shelf, DeliveryStage delivery,
         OrderStrip strip, ScreenControls controls,
         List<BartenderShelfLevelView.GlassBinding> shots,
         List<BartenderShelfLevelView.GlassBinding> cocktails,
@@ -1468,8 +2092,6 @@ public static class SortingShelfShowcaseBuilder
         rig.Controller = host.AddComponent<BartenderLevelController>();
         SerializedObject controllerSerialized = new SerializedObject(rig.Controller);
         SetRef(controllerSerialized, "palette", palette);
-        SetInt(controllerSerialized, "maxActiveGlasses",
-            BartenderShelfLevelView.MaximumActiveGlasses);
         controllerSerialized.ApplyModifiedPropertiesWithoutUndo();
 
         rig.Session = host.AddComponent<BartenderSession>();
@@ -1487,7 +2109,7 @@ public static class SortingShelfShowcaseBuilder
             solve.SpacingTwo, solve.SpacingThree, solve.SpacingFour,
             solve.ScaleTwoRow, solve.ScaleThreeRow,
             solve.ScaleFourInTwoRows, solve.ScaleFourInThreeRows,
-            OpticalSeatInset);
+            OpticalSeatInset, ThreeRowCompositionScale);
         rig.ShelfView.ConfigureEntrance(
             EntranceEnabled, EntranceDropHeight, EntranceDropDuration,
             EntranceGlassStagger, EntranceRowStagger, EntranceSortingBoost,
@@ -1509,12 +2131,12 @@ public static class SortingShelfShowcaseBuilder
         rig.Strip.ConfigureSceneBindings(rig.Controller, rig.ShelfView, strip.Cards, icons);
 
         rig.LevelBadge = host.AddComponent<LevelBadgePresenter>();
-        rig.LevelBadge.ConfigureSceneBindings(rig.Controller, controls.LevelLabel,
-            controls.LevelBadgeRoot);
+        rig.LevelBadge.ConfigureSceneBindings(rig.Controller, controls.LevelLabelSprite,
+            art.LevelLabels, controls.LevelLabelFallback, controls.LevelBadgeRoot);
 
         rig.Boosters = host.AddComponent<BoosterBarPresenter>();
         rig.Boosters.ConfigureSceneBindings(rig.Controller, rig.ShelfView, rig.Interaction,
-            controls.UndoButton, controls.ExtraGlassButton, controls.ShuffleButton);
+            controls.UndoButton, controls.AddTimeButton, controls.ShuffleButton);
 
         rig.SettingsAudio = host.AddComponent<AudioSource>();
         rig.SettingsAudio.playOnAwake = false;
@@ -1552,6 +2174,34 @@ public static class SortingShelfShowcaseBuilder
         return rig;
     }
 
+    private static void AttachMainMenu(Scene scene,
+                                       BartenderLevelController controller)
+    {
+        if (!scene.IsValid() || !scene.isLoaded)
+            throw new InvalidOperationException(
+                "Main menu requires a loaded destination scene.");
+        if (controller == null)
+            throw new ArgumentNullException(nameof(controller));
+
+        var controllerSerialized = new SerializedObject(controller);
+        Find(controllerSerialized, "loadOnStart").boolValue = false;
+        Find(controllerSerialized, "resumeSavedProgress").boolValue = true;
+        controllerSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+        GameObject prefab = Load<GameObject>(MainMenuPrefabPath);
+        GameObject instance = PrefabUtility.InstantiatePrefab(prefab, scene) as GameObject;
+        if (instance == null)
+            throw new InvalidOperationException(
+                "Bartender main-menu prefab could not be instantiated.");
+
+        BartenderMainMenuPresenter presenter =
+            instance.GetComponent<BartenderMainMenuPresenter>();
+        if (presenter == null)
+            throw new InvalidOperationException(
+                "Bartender main-menu prefab is missing its presenter.");
+        SetRefAndApply(presenter, "controller", controller);
+    }
+
     /// <summary>
     /// Fills the HUD with the same level the shelf is previewing.
     ///
@@ -1572,19 +2222,39 @@ public static class SortingShelfShowcaseBuilder
             card.SetOrder(filled ? level.Orders[i] : null, level.AllowTimedOrders);
             card.SetVisible(filled, false);
         }
-        controls.LevelLabel.text = "SEVİYE " + level.Index;
+        int labelSlot = level.Index - 1;
+        if (labelSlot >= 0 && labelSlot < 30)
+        {
+            controls.LevelLabelSprite.sprite =
+                Load<Sprite>(LevelBadgeLabelPath(level.Index));
+            controls.LevelLabelSprite.enabled = true;
+            controls.LevelLabelFallback.enabled = false;
+        }
+        else
+        {
+            controls.LevelLabelSprite.enabled = false;
+            controls.LevelLabelFallback.text = "SEVİYE " + level.Index;
+            controls.LevelLabelFallback.enabled = true;
+        }
     }
 
-    private static void AttachSafeAreaFitter(Camera camera, Transform root)
+    private static void AttachSafeAreaFitter(Transform host, Camera camera,
+                                             Transform compositionRoot)
     {
-        var fitter = camera.gameObject.AddComponent<WorldSpaceSafeAreaFitter>();
+        var fitter = host.gameObject.AddComponent<WorldSpaceSafeAreaFitter>();
         SerializedObject serialized = new SerializedObject(fitter);
         SetRef(serialized, "targetCamera", camera);
-        SetRef(serialized, "compositionRoot", root);
+        serialized.FindProperty("autoResolveMainCamera").boolValue = true;
+        SetRef(serialized, "compositionRoot", compositionRoot);
         SerializedProperty resolution = serialized.FindProperty("referenceResolution");
         resolution.vector2IntValue = new Vector2Int(DesignWidth, DesignHeight);
         SetFloat(serialized, "referenceOrthographicSize", CameraHalfHeight);
-        serialized.FindProperty("respectSafeArea").boolValue = true;
+        // Decorative world art bleeds under the notch; only the interactive HUD uses
+        // BsSafeArea. Width-fit + top alignment keeps the approved upper stage at the
+        // physical top on iPhone 13 instead of centring it 200+ pixels down the screen.
+        serialized.FindProperty("respectSafeArea").boolValue = false;
+        serialized.FindProperty("contentAlignment").vector2Value =
+            new Vector2(0.5f, 1f);
         serialized.FindProperty("referencePoseCaptured").boolValue = true;
         serialized.FindProperty("referenceCameraLocalPosition").vector3Value =
             camera.transform.InverseTransformPoint(Vector3.zero);
@@ -1596,8 +2266,8 @@ public static class SortingShelfShowcaseBuilder
         // OnEnable already ran once and may have fitted the root to whatever aspect the
         // editor happens to show. The authored pose is identity and that is what the file
         // must contain; the fitter derives everything else from it at run time.
-        root.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-        root.localScale = Vector3.one;
+        compositionRoot.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+        compositionRoot.localScale = Vector3.one;
     }
 
     // =================================================================================
@@ -1652,6 +2322,17 @@ public static class SortingShelfShowcaseBuilder
     {
         float scale = FitScaleForHeight(renderer.sprite, worldHeight);
         renderer.transform.localScale = new Vector3(scale, scale, 1f);
+    }
+
+    private static void FitVisibleRect(SpriteRenderer renderer, Rect visual,
+                                       Vector2 targetCenter, Vector2 targetSize)
+    {
+        float scaleX = targetSize.x / Mathf.Max(0.0001f, visual.width);
+        float scaleY = targetSize.y / Mathf.Max(0.0001f, visual.height);
+        renderer.transform.localScale = new Vector3(scaleX, scaleY, 1f);
+        renderer.transform.localPosition = new Vector3(
+            targetCenter.x - visual.center.x * scaleX,
+            targetCenter.y - visual.center.y * scaleY, 0f);
     }
 
     /// <summary>
@@ -1763,31 +2444,43 @@ public static class SortingShelfShowcaseBuilder
         return text;
     }
 
-    private static Button BuildRoundButton(Transform parent, string name, StageArt art,
-                                           Sprite glyph, Vector2 worldCenter,
-                                           float worldDiameter,
-                                           Vector2? explicitAnchoredPosition = null)
+    /// <summary>
+    /// Artist-authored booster art already contains its face, rim, glyph and shadow.
+    /// Keeping the old generated layers would double every edge and tint the supplied
+    /// colours purple, so these three controls intentionally contain one Image only.
+    /// </summary>
+    private static Button BuildArtworkButton(Transform parent, string name, Sprite artwork,
+                                             Vector2 worldCenter, float worldDiameter,
+                                             Vector2? explicitAnchoredPosition = null)
     {
+        if (artwork == null)
+            throw new ArgumentNullException(nameof(artwork), name + " artwork is missing.");
+
         float diameter = Px(worldDiameter);
         RectTransform rect = BuildRect(parent, name,
             explicitAnchoredPosition ?? PxPoint(worldCenter),
             new Vector2(diameter, diameter));
 
         Image face = rect.gameObject.AddComponent<Image>();
-        face.sprite = art.Disc;
-        face.color = ButtonFace;
+        face.sprite = artwork;
+        face.color = Color.white;
+        face.preserveAspect = true;
         face.raycastTarget = true;
-
-        BuildImage(rect, "Rim", art.DiscRing, ButtonRim, Vector2.zero,
-            new Vector2(diameter, diameter), Image.Type.Simple);
-        if (glyph != null)
-            BuildImage(rect, "Glyph", glyph, ButtonGlyph, Vector2.zero,
-                new Vector2(diameter * 0.62f, diameter * 0.62f), Image.Type.Simple);
 
         var button = rect.gameObject.AddComponent<Button>();
         button.targetGraphic = face;
         ApplyButtonColors(button);
         return button;
+    }
+
+    private static void ValidateArtworkButton(Button button, Sprite expected)
+    {
+        Image face = button != null ? button.targetGraphic as Image : null;
+        if (face == null || face.sprite != expected || face.color != Color.white
+            || button.transform.childCount != 0)
+            throw new InvalidOperationException(
+                (button != null ? button.name : "Booster button")
+                + " must use one untinted composite artwork Image with no placeholder layers.");
     }
 
     private static Button BuildPillButton(Transform parent, string name, StageArt art,
@@ -1805,6 +2498,24 @@ public static class SortingShelfShowcaseBuilder
             Mathf.RoundToInt(size.y * 0.46f), ButtonGlyph);
 
         var button = rect.gameObject.AddComponent<Button>();
+        button.targetGraphic = face;
+        ApplyButtonColors(button);
+        return button;
+    }
+
+    private static Button BuildExitConfirmationButton(Transform parent, string name,
+        Sprite buttonSprite, Sprite labelSprite, Vector2 anchoredPosition, Vector2 size,
+        Vector2 labelSize)
+    {
+        Image face = BuildImage(parent, name, buttonSprite, Color.white,
+            anchoredPosition, size, Image.Type.Simple);
+        face.raycastTarget = true;
+
+        Image label = BuildImage(face.rectTransform, "Label", labelSprite, Color.white,
+            Vector2.zero, labelSize, Image.Type.Simple);
+        label.preserveAspect = true;
+
+        var button = face.gameObject.AddComponent<Button>();
         button.targetGraphic = face;
         ApplyButtonColors(button);
         return button;
@@ -1902,6 +2613,73 @@ public static class SortingShelfShowcaseBuilder
         if (fallback != null) return fallback;
         throw new InvalidOperationException(vessel.name
             + " has no direct SpriteRenderer for its Royal front artwork.");
+    }
+
+    /// <summary>
+    /// Visible bounds for generated art whose neutral preview field arrived opaque.
+    /// Gold and purple are chromatic; the white/grey outside and doorway are not.
+    /// </summary>
+    private static Rect SpriteChromaBounds(Sprite sprite)
+    {
+        int key = sprite.GetInstanceID();
+        if (ChromaBoundsCache.TryGetValue(key, out Rect cached)) return cached;
+
+        Bounds fallback = sprite.bounds;
+        Rect result = Rect.MinMaxRect(
+            fallback.min.x, fallback.min.y, fallback.max.x, fallback.max.y);
+        string assetPath = AssetDatabase.GetAssetPath(sprite.texture);
+        string projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
+        if (string.IsNullOrEmpty(assetPath) || string.IsNullOrEmpty(projectRoot))
+            return result;
+
+        string absolutePath = Path.Combine(projectRoot, assetPath);
+        var readable = new Texture2D(2, 2, TextureFormat.RGBA32, false, false);
+        try
+        {
+            if (!File.Exists(absolutePath)
+                || !readable.LoadImage(File.ReadAllBytes(absolutePath), false))
+                return result;
+
+            Rect rect = sprite.rect;
+            int xStart = Mathf.Clamp(Mathf.FloorToInt(rect.xMin), 0, readable.width - 1);
+            int xEnd = Mathf.Clamp(Mathf.CeilToInt(rect.xMax), 1, readable.width);
+            int yStart = Mathf.Clamp(Mathf.FloorToInt(rect.yMin), 0, readable.height - 1);
+            int yEnd = Mathf.Clamp(Mathf.CeilToInt(rect.yMax), 1, readable.height);
+            Color32[] pixels = readable.GetPixels32();
+            int minX = xEnd, minY = yEnd, maxX = xStart - 1, maxY = yStart - 1;
+            for (int y = yStart; y < yEnd; y++)
+            {
+                int row = y * readable.width;
+                for (int x = xStart; x < xEnd; x++)
+                {
+                    Color32 pixel = pixels[row + x];
+                    int maximum = Mathf.Max(pixel.r, Mathf.Max(pixel.g, pixel.b));
+                    int minimum = Mathf.Min(pixel.r, Mathf.Min(pixel.g, pixel.b));
+                    if (maximum - minimum < 16) continue;
+                    minX = Mathf.Min(minX, x);
+                    minY = Mathf.Min(minY, y);
+                    maxX = Mathf.Max(maxX, x);
+                    maxY = Mathf.Max(maxY, y);
+                }
+            }
+
+            if (maxX >= minX && maxY >= minY)
+            {
+                float ppu = Mathf.Max(1f, sprite.pixelsPerUnit);
+                result = Rect.MinMaxRect(
+                    (minX - rect.xMin - sprite.pivot.x) / ppu,
+                    (minY - rect.yMin - sprite.pivot.y) / ppu,
+                    (maxX + 1f - rect.xMin - sprite.pivot.x) / ppu,
+                    (maxY + 1f - rect.yMin - sprite.pivot.y) / ppu);
+            }
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(readable);
+        }
+
+        ChromaBoundsCache[key] = result;
+        return result;
     }
 
     /// <summary>
@@ -2029,6 +2807,31 @@ public static class SortingShelfShowcaseBuilder
         return material;
     }
 
+    private static Material EnsurePortalCutoutMaterial()
+    {
+        Shader shader = Shader.Find("LiquidSort/GeneratedPortalCutout");
+        if (shader == null)
+            throw new InvalidOperationException(
+                "GeneratedPortalCutout shader is unavailable.");
+
+        Material material =
+            AssetDatabase.LoadAssetAtPath<Material>(PortalCutoutMaterialPath);
+        if (material == null)
+        {
+            material = new Material(shader) { name = "Generated Portal Cutout" };
+            AssetDatabase.CreateAsset(material, PortalCutoutMaterialPath);
+        }
+        else if (material.shader != shader)
+        {
+            material.shader = shader;
+        }
+
+        material.SetFloat("_ChromaLow", 0.025f);
+        material.SetFloat("_ChromaHigh", 0.085f);
+        EditorUtility.SetDirty(material);
+        return material;
+    }
+
     /// <summary>
     /// One import recipe for every stage drawing. 384 pixels per unit is what the shelf
     /// parts were authored at; sharing it means the measured world sizes in this file are
@@ -2054,6 +2857,41 @@ public static class SortingShelfShowcaseBuilder
         importer.textureType = TextureImporterType.Sprite;
         importer.spriteImportMode = SpriteImportMode.Single;
         importer.spritePixelsPerUnit = 384f;
+        var settings = new TextureImporterSettings();
+        importer.ReadTextureSettings(settings);
+        settings.spriteAlignment = (int)SpriteAlignment.Center;
+        settings.spritePivot = new Vector2(0.5f, 0.5f);
+        settings.spriteMeshType = SpriteMeshType.FullRect;
+        importer.SetTextureSettings(settings);
+        importer.mipmapEnabled = false;
+        importer.alphaIsTransparency = true;
+        importer.isReadable = false;
+        importer.textureCompression = TextureImporterCompression.Uncompressed;
+        importer.wrapMode = TextureWrapMode.Clamp;
+        importer.filterMode = FilterMode.Bilinear;
+        importer.maxTextureSize = 2048;
+        importer.SaveAndReimport();
+    }
+
+    /// <summary>Lossless import recipe for the clean badge and its bitmap label set.</summary>
+    private static void ConfigureUiSprite(string path)
+    {
+        TextureImporter importer = AssetImporter.GetAtPath(path) as TextureImporter;
+        if (importer == null) throw new FileNotFoundException("Missing badge artwork", path);
+
+        bool needsImport = importer.textureType != TextureImporterType.Sprite
+                           || importer.spriteImportMode != SpriteImportMode.Single
+                           || importer.mipmapEnabled
+                           || !importer.alphaIsTransparency
+                           || importer.isReadable
+                           || importer.textureCompression != TextureImporterCompression.Uncompressed
+                           || importer.wrapMode != TextureWrapMode.Clamp
+                           || importer.filterMode != FilterMode.Bilinear;
+        if (!needsImport) return;
+
+        importer.textureType = TextureImporterType.Sprite;
+        importer.spriteImportMode = SpriteImportMode.Single;
+        importer.spritePixelsPerUnit = 100f;
         var settings = new TextureImporterSettings();
         importer.ReadTextureSettings(settings);
         settings.spriteAlignment = (int)SpriteAlignment.Center;
@@ -2105,6 +2943,13 @@ public static class SortingShelfShowcaseBuilder
             throw new InvalidOperationException(stripError);
         if (!rig.LevelBadge.ValidateBindings(out string levelBadgeError))
             throw new InvalidOperationException(levelBadgeError);
+        if (rig.Controls.LevelLabelSprite == null
+            || rig.Controls.LevelLabelSprite.sprite != art.LevelLabels[3]
+            || !rig.Controls.LevelLabelSprite.enabled
+            || (rig.Controls.LevelLabelFallback != null
+                && rig.Controls.LevelLabelFallback.enabled))
+            throw new InvalidOperationException(
+                "The saved Level 4 preview must use atlas label slot 4, not live text.");
         if (!rig.Boosters.ValidateBindings(out string boosterError))
             throw new InvalidOperationException(boosterError);
         if (rig.SettingsAudio == null || rig.SettingsAudio.playOnAwake
@@ -2120,6 +2965,7 @@ public static class SortingShelfShowcaseBuilder
                 "The saved authoring preview must be Level 4's six-glass 3+3 layout.");
 
         ValidateVerticalBudget(solve);
+        ValidateHorizontalBudget(solve);
 
         // The service rail is a solid shelf roughly two thirds of a unit thick, and the
         // order strip sits directly under it. Nothing in the budget above knows that, so
@@ -2127,7 +2973,7 @@ public static class SortingShelfShowcaseBuilder
         // finials swallowed. Measured here, from the drawing, for the same reason every
         // other number in this file is measured.
         float railBand = SpriteVisualBounds(art.RailBase).height
-                         * (2f * FrameHalfWidth - 0.30f)
+                         * (2f * FrameHalfWidth)
                          / SpriteVisualBounds(art.RailBase).width;
         float railBottom = DeliveryRailY - railBand;
         float cardTop = OrderStripCenterY + OrderCardHeight * 0.5f;
@@ -2181,8 +3027,13 @@ public static class SortingShelfShowcaseBuilder
                         "Prefab instance found in hand-authored scene: " + item.name);
                 SpriteRenderer renderer = item.GetComponent<SpriteRenderer>();
                 if (renderer == null) continue;
-                if (renderer.sprite == art.Plank) linkedPlanks++;
-                if (renderer.sprite == art.Post) linkedPosts++;
+                // The soft under-board shadow deliberately reuses the plank sprite as
+                // a child renderer.  Count only the authored direct furniture links;
+                // otherwise an entirely valid three-row shelf reads as six planks.
+                if (renderer.sprite == art.Plank
+                    && item.name.Contains("Direct Plank Asset")) linkedPlanks++;
+                if (renderer.sprite == art.Post
+                    && item.name.Contains("Direct Post Asset")) linkedPosts++;
                 if (renderer.sprite == art.CheckBadge
                     && item.GetComponentInParent<LiquidBottle>(true) != null) checkBadges++;
             }
@@ -2220,8 +3071,8 @@ public static class SortingShelfShowcaseBuilder
                 "The Bartender settings stack is missing a required control.");
 
         AssertTopRightRect((RectTransform)controls.SettingsButton.transform,
-            new Vector2(-SettingsRightInset, -SettingsTopInset),
-            new Vector2(SettingsButtonSize, SettingsButtonSize), "PauseButton");
+            -TopSettingsButtonInset,
+            new Vector2(TopSettingsButtonSize, TopSettingsButtonSize), "PauseButton");
         AssertTopRightRect((RectTransform)controls.SettingsCard.transform,
             new Vector2(-SettingsRightInset, -SettingsTopInset),
             new Vector2(SettingsButtonSize, SettingsCardHeight), "SettingsCard");
@@ -2336,6 +3187,34 @@ public static class SortingShelfShowcaseBuilder
             throw new InvalidOperationException(
                 $"The booster bar reaches y={bottomBarTop:0.###} and overlaps the "
               + $"playfield floor y={PlayfieldBottomY:0.###}.");
+    }
+
+    /// <summary>
+    /// The horizontal half of the budget, which the vertical pass above never had a
+    /// counterpart for. Width used to be safe only by construction; now every row the
+    /// level system can actually ask for is measured at the exact scale that row would
+    /// wear, so widening a vessel or moving a post fails the build instead of quietly
+    /// hanging a glass over the end of the plank.
+    /// </summary>
+    private static void ValidateHorizontalBudget(ShelfSolve solve)
+    {
+        void Check(int rows, int across, float scale)
+        {
+            float span = (across - 1) * (solve.InnerWidth / across)
+                       + solve.WidestGlass * scale;
+            if (span > solve.InnerWidth + 0.001f)
+                throw new InvalidOperationException(
+                    $"Solved layout overflows: {rows}-row {across}-across spans "
+                  + $"{span:0.###} inside an inner shelf of {solve.InnerWidth:0.###}. "
+                  + "Move the posts apart or lower GlassCellFill.");
+        }
+
+        for (int across = 1; across <= BartenderShelfLevelView.MaximumColumnsPerRow; across++)
+        {
+            bool compact = across >= 4;
+            Check(2, across, compact ? solve.ScaleFourInTwoRows : solve.ScaleTwoRow);
+            Check(3, across, compact ? solve.ScaleFourInThreeRows : solve.ScaleThreeRow);
+        }
     }
 
     // =================================================================================
@@ -2513,7 +3392,18 @@ public static class SortingShelfShowcaseBuilder
 
     private static void RenderPreview(Camera camera)
     {
-        var target = new RenderTexture(DesignWidth, DesignHeight, 24,
+        RenderPreview(camera, null, DesignWidth, DesignHeight, PreviewPath);
+    }
+
+    /// <summary>
+    /// Renders a preview at an explicit device frame. When a responsive fitter is
+    /// supplied, it is applied after the target texture is assigned, which makes its
+    /// width-fit/top-align math use this device rather than the editor Game View.
+    /// </summary>
+    private static void RenderPreview(Camera camera, WorldSpaceSafeAreaFitter fitter,
+                                      int width, int height, string previewPath)
+    {
+        var target = new RenderTexture(width, height, 24,
             RenderTextureFormat.ARGB32)
         {
             name = "SortingShelfShowcasePreview",
@@ -2524,19 +3414,30 @@ public static class SortingShelfShowcaseBuilder
 
         RenderTexture previousActive = RenderTexture.active;
         RenderTexture previousTarget = camera.targetTexture;
-        var texture = new Texture2D(DesignWidth, DesignHeight, TextureFormat.RGBA32,
+        Transform compositionRoot = fitter != null ? fitter.CompositionRoot : null;
+        Vector3 previousRootPosition = compositionRoot != null
+            ? compositionRoot.position : Vector3.zero;
+        Quaternion previousRootRotation = compositionRoot != null
+            ? compositionRoot.rotation : Quaternion.identity;
+        Vector3 previousRootScale = compositionRoot != null
+            ? compositionRoot.localScale : Vector3.one;
+        var texture = new Texture2D(width, height, TextureFormat.RGBA32,
             false, false);
         try
         {
             camera.targetTexture = target;
+            if (fitter != null && !fitter.ApplyNow())
+                throw new InvalidOperationException(
+                    "Could not apply the phone preview's responsive composition.");
+            Canvas.ForceUpdateCanvases();
             camera.Render();
             RenderTexture.active = target;
-            texture.ReadPixels(new Rect(0, 0, DesignWidth, DesignHeight), 0, 0, false);
+            texture.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
             texture.Apply(false, false);
             string projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
             if (string.IsNullOrEmpty(projectRoot))
                 throw new DirectoryNotFoundException("Could not resolve the Unity project root.");
-            string absolutePreview = Path.Combine(projectRoot, PreviewPath);
+            string absolutePreview = Path.Combine(projectRoot, previewPath);
             string previewDirectory = Path.GetDirectoryName(absolutePreview);
             if (!string.IsNullOrEmpty(previewDirectory))
                 Directory.CreateDirectory(previewDirectory);
@@ -2546,6 +3447,14 @@ public static class SortingShelfShowcaseBuilder
         {
             camera.targetTexture = previousTarget;
             RenderTexture.active = previousActive;
+            // The responsive pose is only for this render. The builder persists the
+            // neutral authored pose so the fitter can resolve the real device at run time.
+            if (compositionRoot != null)
+            {
+                compositionRoot.SetPositionAndRotation(previousRootPosition,
+                    previousRootRotation);
+                compositionRoot.localScale = previousRootScale;
+            }
             UnityEngine.Object.DestroyImmediate(texture);
             target.Release();
             UnityEngine.Object.DestroyImmediate(target);

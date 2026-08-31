@@ -35,13 +35,6 @@ public static class BartenderUiArtFactory
     public const string CardEdgePath = UiArtFolder + "/Ui_CardEdge.png";
     public const string CardClipPath = UiArtFolder + "/Ui_CardClip.png";
     public const string PillPath = UiArtFolder + "/Ui_Pill.png";
-    public const string DiscPath = UiArtFolder + "/Ui_Disc.png";
-    public const string DiscRingPath = UiArtFolder + "/Ui_DiscRing.png";
-    public const string ChipPath = UiArtFolder + "/Ui_Chip.png";
-    public const string GlyphUndoPath = UiArtFolder + "/Ui_GlyphUndo.png";
-    public const string GlyphShufflePath = UiArtFolder + "/Ui_GlyphShuffle.png";
-    public const string GlyphPlusPath = UiArtFolder + "/Ui_GlyphPlus.png";
-    public const string GlyphGearPath = UiArtFolder + "/Ui_GlyphGear.png";
 
     /// <summary>9-slice kenar payları, piksel. Sahne bu sayıları okumaz; importer yazar.</summary>
     private const int CardCorner = 30;
@@ -79,28 +72,11 @@ public static class BartenderUiArtFactory
         Write(PillPath, stale, 128, 72, (p, half) =>
             RoundedRect(p, half - new Vector2(2f, 2f), PillCorner));
 
-        Write(DiscPath, stale, 192, 192, (p, half) => Circle(p, half.x - 3f));
-        Write(DiscRingPath, stale, 192, 192, (p, half) =>
-            Ring(Circle(p, half.x - 9f), 13f));
-        Write(ChipPath, stale, 64, 64, (p, half) => Circle(p, half.x - 2f));
-
-        Write(GlyphUndoPath, stale, 192, 192, UndoGlyph);
-        Write(GlyphShufflePath, stale, 192, 192, ShuffleGlyph);
-        Write(GlyphPlusPath, stale, 192, 192, PlusGlyph);
-        Write(GlyphGearPath, stale, 192, 192, GearGlyph);
-
         AssetDatabase.Refresh();
         ConfigureSliced(CardPanelPath, CardCorner);
         ConfigureSliced(CardEdgePath, CardCorner);
         ConfigureSliced(CardClipPath, CardCorner);
         ConfigureSliced(PillPath, PillCorner);
-        ConfigureSimple(DiscPath);
-        ConfigureSimple(DiscRingPath);
-        ConfigureSimple(ChipPath);
-        ConfigureSimple(GlyphUndoPath);
-        ConfigureSimple(GlyphShufflePath);
-        ConfigureSimple(GlyphPlusPath);
-        ConfigureSimple(GlyphGearPath);
         EditorPrefs.SetInt(VersionKey, ArtVersion);
     }
 
@@ -238,8 +214,6 @@ public static class BartenderUiArtFactory
 
     // ---- Şekiller ---------------------------------------------------------------
 
-    private static float Circle(Vector2 p, float radius) => p.magnitude - radius;
-
     private static float RoundedRect(Vector2 p, Vector2 half, float radius)
     {
         radius = Mathf.Min(radius, Mathf.Min(half.x, half.y));
@@ -252,139 +226,6 @@ public static class BartenderUiArtFactory
     /// <summary>Turns any filled field into a band of the given thickness around its edge.</summary>
     private static float Ring(float filled, float thickness) =>
         Mathf.Abs(filled) - thickness * 0.5f;
-
-    private static float Segment(Vector2 p, Vector2 a, Vector2 b, float radius)
-    {
-        Vector2 pa = p - a;
-        Vector2 ba = b - a;
-        float h = Mathf.Clamp01(Vector2.Dot(pa, ba) / Mathf.Max(1e-5f, Vector2.Dot(ba, ba)));
-        return (pa - ba * h).magnitude - radius;
-    }
-
-    private static float Triangle(Vector2 p, Vector2 a, Vector2 b, Vector2 c)
-    {
-        float d = Mathf.Min(
-            Mathf.Min(Segment(p, a, b, 0f), Segment(p, b, c, 0f)),
-            Segment(p, c, a, 0f));
-        float sign = Cross(b - a, p - a);
-        bool inside = sign >= 0f == Cross(c - b, p - b) >= 0f
-                      && sign >= 0f == Cross(a - c, p - c) >= 0f;
-        return inside ? -d : d;
-    }
-
-    private static float Cross(Vector2 a, Vector2 b) => a.x * b.y - a.y * b.x;
-
-    /// <summary>
-    /// Ring segment between two angles, in degrees, measured counter-clockwise from
-    /// the positive x axis. Outside the sweep the distance falls back to the nearer
-    /// end cap, so the arc reads as a stroke with round ends.
-    /// </summary>
-    private static float Arc(Vector2 p, float fromDegrees, float toDegrees,
-                             float radius, float thickness)
-    {
-        float angle = Mathf.Repeat(Mathf.Atan2(p.y, p.x) * Mathf.Rad2Deg, 360f);
-        float from = Mathf.Repeat(fromDegrees, 360f);
-        float sweep = Mathf.Repeat(toDegrees - fromDegrees, 360f);
-        float local = Mathf.Repeat(angle - from, 360f);
-        if (local <= sweep) return Ring(Circle(p, radius), thickness);
-
-        Vector2 start = OnCircle(fromDegrees, radius);
-        Vector2 end = OnCircle(toDegrees, radius);
-        return Mathf.Min(Circle(p - start, thickness * 0.5f),
-                         Circle(p - end, thickness * 0.5f));
-    }
-
-    private static Vector2 OnCircle(float degrees, float radius) =>
-        new Vector2(Mathf.Cos(degrees * Mathf.Deg2Rad),
-                    Mathf.Sin(degrees * Mathf.Deg2Rad)) * radius;
-
-    private static float Union(float a, float b) => Mathf.Min(a, b);
-
-    // ---- Glyph'ler --------------------------------------------------------------
-
-    /// <summary>Geri al: saat yönünün tersine açık bir halka ve ucunda ok başı.</summary>
-    private static float UndoGlyph(Vector2 p, Vector2 half)
-    {
-        float radius = half.x * 0.46f;
-        float stroke = half.x * 0.20f;
-        float arc = Arc(p, 300f, 200f, radius, stroke);
-
-        Vector2 tip = OnCircle(200f, radius);
-        Vector2 direction = new Vector2(-Mathf.Sin(200f * Mathf.Deg2Rad),
-                                         Mathf.Cos(200f * Mathf.Deg2Rad));
-        Vector2 normal = new Vector2(-direction.y, direction.x);
-        float headLength = stroke * 1.8f;
-        float headHalfWidth = stroke * 1.35f;
-        float head = Triangle(p,
-            tip + direction * headLength,
-            tip - direction * headLength * 0.15f + normal * headHalfWidth,
-            tip - direction * headLength * 0.15f - normal * headHalfWidth);
-
-        return Union(arc, head);
-    }
-
-    /// <summary>Karıştır: birbirini kesen iki ok.</summary>
-    private static float ShuffleGlyph(Vector2 p, Vector2 half)
-    {
-        float stroke = half.x * 0.17f;
-        float reach = half.x * 0.56f;
-        float head = stroke * 1.5f;
-
-        float shafts = Union(
-            Segment(p, new Vector2(-reach, -reach * 0.62f),
-                       new Vector2(reach * 0.55f, reach * 0.62f), stroke * 0.5f),
-            Segment(p, new Vector2(-reach, reach * 0.62f),
-                       new Vector2(reach * 0.55f, -reach * 0.62f), stroke * 0.5f));
-
-        float upper = Triangle(p,
-            new Vector2(reach, reach * 0.62f),
-            new Vector2(reach - head * 1.6f, reach * 0.62f + head),
-            new Vector2(reach - head * 1.6f, reach * 0.62f - head));
-        float lower = Triangle(p,
-            new Vector2(reach, -reach * 0.62f),
-            new Vector2(reach - head * 1.6f, -reach * 0.62f + head),
-            new Vector2(reach - head * 1.6f, -reach * 0.62f - head));
-
-        return Union(shafts, Union(upper, lower));
-    }
-
-    /// <summary>+bardak rozetindeki artı. Bardak çizimi asset'ten gelir, buradan değil.</summary>
-    private static float PlusGlyph(Vector2 p, Vector2 half)
-    {
-        float arm = half.x * 0.58f;
-        float stroke = half.x * 0.24f;
-        return Union(
-            RoundedRect(p, new Vector2(arm, stroke * 0.5f), stroke * 0.35f),
-            RoundedRect(p, new Vector2(stroke * 0.5f, arm), stroke * 0.35f));
-    }
-
-    /// <summary>Ayarlar dişlisi: sekiz diş, ortada delik.</summary>
-    private static float GearGlyph(Vector2 p, Vector2 half)
-    {
-        const int teeth = 8;
-        float bodyRadius = half.x * 0.50f;
-        float toothReach = half.x * 0.76f;
-        float toothHalfWidth = half.x * 0.15f;
-
-        float body = Circle(p, bodyRadius);
-        for (int i = 0; i < teeth; i++)
-        {
-            float degrees = i * (360f / teeth);
-            float radians = degrees * Mathf.Deg2Rad;
-            Vector2 axis = new Vector2(Mathf.Cos(radians), Mathf.Sin(radians));
-            Vector2 side = new Vector2(-axis.y, axis.x);
-            // Rotate the sample point into the tooth's own frame instead of building a
-            // rotated rectangle field: the tooth stays one rounded box at every angle.
-            Vector2 local = new Vector2(Vector2.Dot(p, axis), Vector2.Dot(p, side));
-            float tooth = RoundedRect(local - new Vector2(bodyRadius * 0.72f, 0f),
-                new Vector2(toothReach - bodyRadius * 0.72f, toothHalfWidth),
-                toothHalfWidth * 0.55f);
-            body = Union(body, tooth);
-        }
-
-        float hole = Circle(p, half.x * 0.21f);
-        return Mathf.Max(body, -hole);
-    }
 
     // ---- Import -----------------------------------------------------------------
 

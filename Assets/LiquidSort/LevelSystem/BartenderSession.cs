@@ -5,12 +5,13 @@ using UnityEngine;
 namespace LiquidSort.Levels
 {
     /// <summary>
-    /// Tur akışının sahibi — ama bu ilk sürümde bilerek YETKİSİZ.
+    /// Tur FSM'inin ve terminal navigation kapısının sahibi.
     ///
-    /// FSM'i tutar ve <see cref="BartenderLevelController"/>'ı AYNALAR: level yüklemez,
-    /// terminal karar vermez, ilerleme kaydetmez, pause etmez. Controller ne yaparsa
-    /// akış onu izler. Sebebi şu: bu projede o dört işin sahibi zaten controller ve
-    /// ikisine birden yetki vermek dört ayrı "çift otorite" dikişi açardı —
+    /// FSM controller'ı aynalar; terminal kararını, progress yazımını ve board'u hâlâ
+    /// controller sahiplenir. Session'ın yazabildiği tek şey kullanıcıdan gelen açık
+    /// "devam / yeniden dene / ana menü" niyetidir. Bu niyet terminal frame'inde çalıştırılmaz:
+    /// sebep olan dökme/teslim sunumu bitip token hâlâ güncel kaldıktan sonra controller'ın
+    /// state-guarded navigation komutuna aktarılır. Böylece iki ayrı level otoritesi oluşmaz.
     ///
     ///   level yükleme   : Start() loadOnStart ile kendi kendine yüklüyor
     ///   terminal karar  : EvaluateTerminalState Won/Failed'ı kendisi yazıyor
@@ -22,15 +23,27 @@ namespace LiquidSort.Levels
     /// gecikmeli callback artık bayat token'ından tanınabiliyor. Sunum köprüsü bu token'ı
     /// tüketir; bayat callback yalnız kendi kilidini bırakır, yeni turu yenileyemez.
     ///
-    /// Yetki devri sonraki adım ve tek tek yapılmalı; her biri controller tarafında bir
-    /// şeyin kapatılmasını gerektiriyor, hiçbiri bu dosyadan tek başına çözülemez.
+    /// Diğer yetkiler devredilmez: controller tek load/terminal/progress/pause sahibidir.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class BartenderSession : MonoBehaviour
     {
+        private enum TerminalIntent
+        {
+            None,
+            ContinueAfterWin,
+            RetryAfterFailure,
+            PaidRetryAfterFailure,
+            ReturnToMainMenu,
+        }
+
         [Header("Level source")]
         [Tooltip("Boşsa aynı GameObject üzerinde aranır.")]
         [SerializeField] private BartenderLevelController controller;
+        [Tooltip("Terminal presentation bariyeri. Boşsa aynı GameObject üzerinde aranır.")]
+        [SerializeField] private BartenderPourInteraction pourInteraction;
+        [Tooltip("Seat/portal/deferral bariyeri. Boşsa aynı GameObject üzerinde aranır.")]
+        [SerializeField] private BartenderShelfLevelView shelfView;
 
         [Tooltip("Kabul edilen her akış geçişini konsola yazar. Yalnız teşhis içindir.")]
         [SerializeField] private bool logTransitions = false;
@@ -40,6 +53,13 @@ namespace LiquidSort.Levels
 
         private BartenderLevelController subscribedController;
         private BartenderLevelState mirroredState = BartenderLevelState.Unloaded;
+        private TerminalIntent pendingTerminalIntent;
+        private int pendingTerminalCoinCost;
+        private BsRoundOutcome? terminalOutcome;
+        private BsRoundToken terminalToken;
+        private int terminalEnteredFrame = -1;
+        private bool terminalReady;
+        private bool terminalCommandInProgress;
 
         public BartenderLevelController Controller => controller;
 
@@ -56,6 +76,10 @@ namespace LiquidSort.Levels
         public bool TimersRun => BsFlowRules.TimersRun(machine.State);
         public bool IsLevelOver => BsFlowRules.IsLevelOver(machine.State);
         public bool CanPause => BsFlowRules.CanPause(machine.State);
+        public bool CanContinueAfterWin => CanRequestTerminal(BsRoundOutcome.Won);
+        public bool CanRetryAfterFailure => CanRequestTerminal(BsRoundOutcome.Failed);
+        public bool CanReturnToMainMenuFromTerminal =>
+            terminalOutcome.HasValue && CanRequestTerminal(terminalOutcome.Value);
 
         public bool IsGameplayTokenValid(BsRoundToken token) =>
             machine.IsGameplayTokenValid(token);
@@ -72,7 +96,22 @@ namespace LiquidSort.Levels
         /// </summary>
         public event Action<BsTransitionResult> FlowChanged;
 
-        private void Awake() => ResolveDependencies();
+        /// <summary>
+        /// Terminal state'in sebep sunumu tamamen bittiğinde bir kez yayımlanır. Gerçek
+        /// sonuç paneli ileride butonlarını bu fact'e göre açabilir.
+        /// </summary>
+        public event Action<BsRoundOutcome> TerminalReady;
+
+        /// <summary>Queued terminal navigation tamamlandığında sonucu yayımlar.</summary>
+        public event Action<BartenderTerminalCommandResult> TerminalCommandCompleted;
+
+        private void Awake()
+        {
+            ResolveDependencies();
+            BsAudio.Ensure()?.StartBgm();
+            if (GetComponent<BartenderAudioBridge>() == null)
+                gameObject.AddComponent<BartenderAudioBridge>();
+        }
 
         private void OnEnable()
         {
@@ -83,11 +122,29 @@ namespace LiquidSort.Levels
             SyncFromController();
         }
 
-        private void OnDisable() => Unsubscribe();
+        private void OnDisable()
+        {
+            Unsubscribe();
+            ResetTerminalNavigation();
+            mirroredState = BartenderLevelState.Unloaded;
+            if (machine.State != BsFlowState.Menu)
+                Dispatch(BsFlowTrigger.ReturnToMenu);
+        }
+
+        private void LateUpdate()
+        {
+            // Readiness'in açıldığı frame'de komut çalıştırılmaz. Bu, TerminalReady
+            // dinleyicisinden gelen reentrant navigation'ı da bir sonraki frame'e iter.
+            if (TryOpenTerminalGate()) return;
+            PumpTerminalIntent();
+        }
 
         private void ResolveDependencies()
         {
             if (controller == null) controller = GetComponent<BartenderLevelController>();
+            if (pourInteraction == null)
+                pourInteraction = GetComponent<BartenderPourInteraction>();
+            if (shelfView == null) shelfView = GetComponent<BartenderShelfLevelView>();
         }
 
         private void Subscribe()
@@ -118,6 +175,7 @@ namespace LiquidSort.Levels
         /// </summary>
         private void HandleLevelLoaded(BsLevel level)
         {
+            ResetTerminalNavigation();
             // Menu -> Loading -> Playing. Controller yüklemeyi zaten bitirdiği için iki
             // geçiş arka arkaya gider; Loading burada bir bekleme değil, sadece FSM'in
             // yeni tur kimliğini (RoundId) ürettiği kapı.
@@ -146,10 +204,12 @@ namespace LiquidSort.Levels
 
                 case BartenderLevelState.Won:
                     Finish(BsRoundOutcome.Won);
+                    ArmTerminalNavigation(BsRoundOutcome.Won);
                     break;
 
                 case BartenderLevelState.Failed:
                     Finish(BsRoundOutcome.Failed);
+                    ArmTerminalNavigation(BsRoundOutcome.Failed);
                     break;
 
                 case BartenderLevelState.Unloaded:
@@ -157,6 +217,7 @@ namespace LiquidSort.Levels
                     // CampaignComplete'in FSM karşılığı yok; ikisi de menüye düşer.
                     // Çeviri kayıplı, bilerek: kampanya bitişi akışın değil üst
                     // katmanın bilgisi.
+                    ResetTerminalNavigation();
                     Dispatch(BsFlowTrigger.ReturnToMenu);
                     break;
             }
@@ -197,7 +258,237 @@ namespace LiquidSort.Levels
             if (logTransitions)
                 Debug.Log($"Akış: {transition.From} -> {transition.To} "
                         + $"({transition.Trigger}), {transition.Token}.", this);
-            FlowChanged?.Invoke(transition);
+            InvokeSafely(FlowChanged, transition);
+        }
+
+        /// <summary>
+        /// Sonuç paneli veya code-only terminal input için explicit win niyeti. Token'lı
+        /// overload, eski bir panel callback'inin yeni round'u ilerletmesini engeller.
+        /// </summary>
+        public bool RequestContinueAfterWin() =>
+            RequestContinueAfterWin(machine.CurrentToken);
+
+        public bool RequestContinueAfterWin(BsRoundToken expectedTerminalToken)
+        {
+            if (expectedTerminalToken != terminalToken
+                || !CanRequestTerminal(BsRoundOutcome.Won)) return false;
+            pendingTerminalIntent = TerminalIntent.ContinueAfterWin;
+            return true;
+        }
+
+        /// <summary>Explicit failure retry intent; stale terminal token'ları reddeder.</summary>
+        public bool RequestRetryAfterFailure() =>
+            RequestRetryAfterFailure(machine.CurrentToken);
+
+        public bool RequestRetryAfterFailure(BsRoundToken expectedTerminalToken)
+        {
+            if (expectedTerminalToken != terminalToken
+                || !CanRequestTerminal(BsRoundOutcome.Failed)) return false;
+            pendingTerminalIntent = TerminalIntent.RetryAfterFailure;
+            return true;
+        }
+
+        /// <summary>
+        /// Jetonla bir canı geri alıp aynı bölümü yeniden başlatma niyeti. Harcama bu
+        /// çağrıda değil, token ve terminal state hâlâ geçerliyken controller komutunda
+        /// atomik olarak yapılır.
+        /// </summary>
+        public bool RequestPaidRetryAfterFailure(
+            BsRoundToken expectedTerminalToken, int coinCost)
+        {
+            if (expectedTerminalToken != terminalToken || coinCost <= 0
+                || BartenderProgressService.Lives >= BartenderProgressService.MaxLives
+                || !BartenderProgressService.CanAfford(coinCost)
+                || !CanRequestTerminal(BsRoundOutcome.Failed)) return false;
+            pendingTerminalCoinCost = coinCost;
+            pendingTerminalIntent = TerminalIntent.PaidRetryAfterFailure;
+            return true;
+        }
+
+        /// <summary>
+        /// Won veya Failed sonuç kartını kapatıp ana menüye döner. Token'lı overload,
+        /// eski bir kartın yeni turu kapatmasını; intent kapısı da çift tıklamayı önler.
+        /// Terminal settlement controller tarafında daha önce tamamlandığı için bu komut
+        /// başarı/başarısızlık makbuzunu veya can eksiltmeyi tekrarlamaz.
+        /// </summary>
+        public bool RequestReturnToMainMenuFromTerminal() =>
+            RequestReturnToMainMenuFromTerminal(machine.CurrentToken);
+
+        public bool RequestReturnToMainMenuFromTerminal(
+            BsRoundToken expectedTerminalToken)
+        {
+            if (expectedTerminalToken != terminalToken || !terminalOutcome.HasValue
+                || !CanRequestTerminal(terminalOutcome.Value)) return false;
+            pendingTerminalIntent = TerminalIntent.ReturnToMainMenu;
+            return true;
+        }
+
+        private void ArmTerminalNavigation(BsRoundOutcome outcome)
+        {
+            BsFlowState expected = outcome == BsRoundOutcome.Won
+                ? BsFlowState.Won
+                : BsFlowState.Failed;
+            if (machine.State != expected) return;
+
+            pendingTerminalIntent = TerminalIntent.None;
+            pendingTerminalCoinCost = 0;
+            terminalOutcome = outcome;
+            terminalToken = machine.CurrentToken;
+            terminalEnteredFrame = Time.frameCount;
+            terminalReady = false;
+            terminalCommandInProgress = false;
+        }
+
+        private bool TryOpenTerminalGate()
+        {
+            if (terminalReady || !terminalOutcome.HasValue
+                || terminalCommandInProgress || controller == null)
+                return false;
+            if (Time.frameCount <= terminalEnteredFrame
+                || !machine.IsTokenCurrent(terminalToken)
+                || !PresentationBarrierClear())
+                return false;
+
+            BsRoundOutcome outcome = terminalOutcome.Value;
+            if (!TerminalStatesMatch(outcome)) return false;
+
+            terminalReady = true;
+            InvokeTerminalReadySafely(outcome);
+            return true;
+        }
+
+        private bool CanRequestTerminal(BsRoundOutcome outcome)
+        {
+            return terminalReady && terminalOutcome == outcome
+                && pendingTerminalIntent == TerminalIntent.None
+                && !terminalCommandInProgress
+                && Time.frameCount > terminalEnteredFrame
+                && machine.IsTokenCurrent(terminalToken)
+                && PresentationBarrierClear()
+                && TerminalStatesMatch(outcome);
+        }
+
+        private bool TerminalStatesMatch(BsRoundOutcome outcome)
+        {
+            if (controller == null) return false;
+            return outcome == BsRoundOutcome.Won
+                ? machine.State == BsFlowState.Won
+                    && controller.State == BartenderLevelState.Won
+                : machine.State == BsFlowState.Failed
+                    && controller.State == BartenderLevelState.Failed;
+        }
+
+        private void PumpTerminalIntent()
+        {
+            TerminalIntent intent = pendingTerminalIntent;
+            if (intent == TerminalIntent.None || terminalCommandInProgress
+                || controller == null || !terminalOutcome.HasValue)
+                return;
+
+            BsRoundOutcome outcome = intent == TerminalIntent.ContinueAfterWin
+                ? BsRoundOutcome.Won
+                : intent == TerminalIntent.RetryAfterFailure
+                    || intent == TerminalIntent.PaidRetryAfterFailure
+                    ? BsRoundOutcome.Failed
+                    : terminalOutcome.Value;
+            if (!CanExecuteQueuedIntent(outcome))
+            {
+                pendingTerminalIntent = TerminalIntent.None;
+                pendingTerminalCoinCost = 0;
+                return;
+            }
+
+            BsRoundToken requestedToken = terminalToken;
+            int requestedCoinCost = pendingTerminalCoinCost;
+            pendingTerminalIntent = TerminalIntent.None;
+            pendingTerminalCoinCost = 0;
+            terminalReady = false;
+            terminalCommandInProgress = true;
+
+            BartenderTerminalCommandResult result;
+            switch (intent)
+            {
+                case TerminalIntent.ContinueAfterWin:
+                    result = controller.TryContinueAfterWin();
+                    break;
+                case TerminalIntent.RetryAfterFailure:
+                    result = controller.TryRetryAfterFailure();
+                    break;
+                case TerminalIntent.PaidRetryAfterFailure:
+                    result = controller.TryPaidRetryAfterFailure(requestedCoinCost);
+                    break;
+                case TerminalIntent.ReturnToMainMenu:
+                    result = controller.TryReturnToMainMenuFromTerminal();
+                    break;
+                default:
+                    result = BartenderTerminalCommandResult.Rejected;
+                    break;
+            }
+
+            terminalCommandInProgress = false;
+            if (result == BartenderTerminalCommandResult.Rejected
+                && machine.IsTokenCurrent(requestedToken)
+                && TerminalStatesMatch(outcome))
+                terminalReady = true;
+
+            InvokeTerminalCommandCompletedSafely(result);
+        }
+
+        private bool CanExecuteQueuedIntent(BsRoundOutcome outcome)
+        {
+            return terminalOutcome == outcome
+                && Time.frameCount > terminalEnteredFrame
+                && machine.IsTokenCurrent(terminalToken)
+                && PresentationBarrierClear()
+                && TerminalStatesMatch(outcome);
+        }
+
+        private bool PresentationBarrierClear()
+        {
+            if (controller == null || controller.PresentationLocked) return false;
+            if (pourInteraction != null && pourInteraction.Busy) return false;
+            BartenderTutorialDirector tutorial = pourInteraction != null
+                ? pourInteraction.GetComponent<BartenderTutorialDirector>()
+                : null;
+            if (tutorial == null) tutorial = GetComponent<BartenderTutorialDirector>();
+            if (tutorial != null && tutorial.BlocksTerminalPresentation) return false;
+            return shelfView == null
+                || (!shelfView.SeatAnimationPlaying
+                    && !shelfView.DeliveryPlaying
+                    && !shelfView.SynchronizationDeferred);
+        }
+
+        private void ResetTerminalNavigation()
+        {
+            pendingTerminalIntent = TerminalIntent.None;
+            pendingTerminalCoinCost = 0;
+            terminalOutcome = null;
+            terminalToken = default;
+            terminalEnteredFrame = -1;
+            terminalReady = false;
+            terminalCommandInProgress = false;
+        }
+
+        private void InvokeTerminalReadySafely(BsRoundOutcome outcome)
+        {
+            InvokeSafely(TerminalReady, outcome);
+        }
+
+        private void InvokeTerminalCommandCompletedSafely(
+            BartenderTerminalCommandResult result)
+        {
+            InvokeSafely(TerminalCommandCompleted, result);
+        }
+
+        private void InvokeSafely<T>(Action<T> handlers, T value)
+        {
+            if (handlers == null) return;
+            Delegate[] invocationList = handlers.GetInvocationList();
+            for (int i = 0; i < invocationList.Length; i++)
+            {
+                try { ((Action<T>)invocationList[i])(value); }
+                catch (Exception exception) { Debug.LogException(exception, this); }
+            }
         }
 
         /// <summary>
@@ -212,7 +503,12 @@ namespace LiquidSort.Levels
 
             if (state == BartenderLevelState.Unloaded
                 || state == BartenderLevelState.CampaignComplete)
+            {
+                ResetTerminalNavigation();
+                if (machine.State != BsFlowState.Menu)
+                    Dispatch(BsFlowTrigger.ReturnToMenu);
                 return;
+            }
 
             if (machine.State == BsFlowState.Menu && controller.CurrentLevel != null)
             {
@@ -223,8 +519,14 @@ namespace LiquidSort.Levels
             switch (state)
             {
                 case BartenderLevelState.Paused: Dispatch(BsFlowTrigger.PauseRequested); break;
-                case BartenderLevelState.Won: Finish(BsRoundOutcome.Won); break;
-                case BartenderLevelState.Failed: Finish(BsRoundOutcome.Failed); break;
+                case BartenderLevelState.Won:
+                    Finish(BsRoundOutcome.Won);
+                    ArmTerminalNavigation(BsRoundOutcome.Won);
+                    break;
+                case BartenderLevelState.Failed:
+                    Finish(BsRoundOutcome.Failed);
+                    ArmTerminalNavigation(BsRoundOutcome.Failed);
+                    break;
             }
         }
     }

@@ -32,7 +32,7 @@ Material:
     - _Alpha: 1
     - _BodySettle: 0.97
     - _BodyShade: 0
-    - _BoundaryShade: 0.16
+    - _BoundaryShade: 0.07
     - _Bulge: 0.135
     - _BulgeMax: 0.16
     - _CapDesat: 0.1
@@ -52,6 +52,7 @@ Material:
     - _InnerBulge: 0.098
     - _InnerCurve: 1
     - _InnerMax: 0.36
+    - _OverheadStrength: 0.12
     - _Overbright: 1.35
     - _RoundShade: 0.04
     - _Shine: 0.3
@@ -68,6 +69,7 @@ Material:
     - _WaveFreq: 9
     - _WaveSpeed: 7
     m_Colors:
+    - _OverheadColor: {r: 1, g: 0.97, b: 0.91, a: 1}
     - _QuadSize: {r: 1, g: 1, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

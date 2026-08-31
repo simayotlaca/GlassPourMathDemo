@@ -134,7 +134,12 @@ namespace BartenderSort.Core
                     rt.Layers.Add(g.Layers[i]);
                 b.Glasses.Add(rt);
             }
-            foreach (var o in level.Orders) b._deck.Add(o.Clone());
+            for (int orderIndex = 0; orderIndex < level.Orders.Count; orderIndex++)
+            {
+                OrderDef order = level.Orders[orderIndex].Clone();
+                order.RuntimeOrderIndex = orderIndex;
+                b._deck.Add(order);
+            }
             b.RefillSlots();
             b.RevealAllTops();
             return b;
@@ -228,12 +233,9 @@ namespace BartenderSort.Core
                 return PourResult.Fail($"Hedef zincirli — {dst.ChainRemaining(Delivered)} teslim kaldı");
             if (src.IsEmpty) return PourResult.Fail("Kaynak boş");
             if (dst.Free <= 0) return PourResult.Fail("Hedefte yer yok");
-            // MVP: tamamlanmış (✓) bardağa dökmek SERBEST — kasıtlı olarak.
-            // Teslim artık sürükle-bırak ile ve oyuncunun seçtiği anda oluyor; hazır
-            // bir bardak teslim edilene kadar sahnede kalıyor ve çalışma tamponu
-            // olarak kullanılabiliyor. İçine dökmek ✓'i bozar; bu bir kayıp değil,
-            // oyunun yeni derinlik kaynağı: "şimdi servis et" ile "tampon olarak
-            // kullan" arasındaki gerçek bir risk kararı.
+            // Domain tamamlanmış (✓) bardağı ayrıca dondurmaz. Mevcut pointer sunumu
+            // hazır bardağa dokunmayı doğrudan teslim niyeti olarak yorumlasa da solver,
+            // test veya başka bir input adapter'ı aynı serbest-dökme kuralını kullanır.
 
             int chain = src.TopChainLength(Delivered);
             if (chain <= 0)
@@ -333,8 +335,10 @@ namespace BartenderSort.Core
         public int MatchedSlot(RtGlass g)
         {
             if (g == null) return -1;
-            // Zincirli bardak servis edilemez — zinciri çözülene kadar sahnede kalır.
-            if (g.IsChained(Delivered)) return -1;
+            // Bardak ve katman kilitleri teslimi de engeller. Yalnız dökmeyi
+            // engellemek yeterli değildir: içerik bir siparişle zaten eşleşiyorsa
+            // kilit eşiği gelmeden bardak doğrudan servis edilebilirdi.
+            if (g.IsChained(Delivered) || g.HasLocked(Delivered)) return -1;
             for (int i = 0; i < Slots.Length; i++)
                 if (Slots[i] != null && Matches(g, Slots[i])) return i;
             return -1;

@@ -47,6 +47,12 @@ namespace LiquidSort.Levels
         public const int FullCampaignBiraPoolSize = 11;
         public const int MaximumActiveGlasses = 12;
         public const int MaximumColumnsPerRow = 4;
+        // Current portrait framing needs this much clearance above the two-row top shelf
+        // for the complete Royal glass art (including its shadow) to start off-camera.
+        private const float MinimumEntranceDropHeight = 8.00f;
+        // A presentation animation is cosmetic. If Unity drops its coroutine or a single
+        // frame stalls, the canonical seated board must win and release the input lease.
+        private const double SeatAnimationWatchdogGrace = 0.75d;
 
         [Serializable]
         public sealed class ShelfRowBinding
@@ -60,7 +66,7 @@ namespace LiquidSort.Levels
         [Serializable]
         public sealed class ShelfSpanBinding
         {
-            [Tooltip("The two hand-authored posts between two adjacent shelf planks.")]
+            [Tooltip("A hand-authored post pair, used between shelves or as the top-row guards.")]
             public SpriteRenderer leftPost;
             public SpriteRenderer rightPost;
         }
@@ -141,8 +147,17 @@ namespace LiquidSort.Levels
         [Header("Hand-authored shelf references")]
         [Tooltip("Exactly three possible plank rows, ordered top to bottom.")]
         [SerializeField] private ShelfRowBinding[] shelfRows = new ShelfRowBinding[3];
-        [Tooltip("Exactly two possible spans: row 1-2, then row 2-3. Four post renderers total.")]
+        [Tooltip("Two post pairs. With two rows the second pair frames the top row; "
+               + "with three rows the pairs span row 1-2 and row 2-3.")]
         [SerializeField] private ShelfSpanBinding[] shelfSpans = new ShelfSpanBinding[2];
+        // These are captured by ConfigureSceneBindings before any level layout runs.
+        // Keeping the authored furniture pose serialized prevents repeated level changes
+        // from multiplying scale into the already-scaled transforms.
+        [SerializeField, HideInInspector]
+        private Vector3 authoredPlankLocalScale = new Vector3(1.55f, 0.85f, 1f);
+        [SerializeField, HideInInspector]
+        private Vector3 authoredPostLocalScale = new Vector3(0.72f, 0.44f, 1f);
+        [SerializeField, HideInInspector] private float authoredPostCenterX = 3.02f;
 
         [Header("Balanced layout")]
         [Tooltip("Top/bottom shelf-surface heights while two rows are visible.")]
@@ -159,22 +174,33 @@ namespace LiquidSort.Levels
         // (genişlik bütçesi). Tek bir "dört sütunlu" değeri iki satırlık bir levelı da
         // üç satırlık bir levelın dar yüksekliğine mahkûm ediyordu; 30 levelin 7'si tam
         // olarak o durumda (iki satır, dörderli diziliş) ve bardakları gereksiz küçüktü.
-        [Tooltip("Royal scale multiplier for rows of up to three glasses in the two-row layout.")]
-        [SerializeField, Min(0.1f)] private float twoRowSpaciousGlassScale = 1.27f;
-        [Tooltip("Royal scale multiplier for rows of up to three glasses in the three-row layout.")]
-        [SerializeField, Min(0.1f)] private float threeRowSpaciousGlassScale = 1.00f;
-        [Tooltip("Royal scale multiplier for a four-across row inside the two-row layout.")]
-        [SerializeField, Min(0.1f)] private float fourAcrossGlassScale = 0.90f;
-        [Tooltip("Royal scale multiplier for a four-across row inside the three-row layout.")]
-        [SerializeField, Min(0.1f)] private float fourAcrossThreeRowGlassScale = 0.80f;
+        //
+        // Tablo BOARD başına bir kez okunur, satır başına değil: sütun ekseni levelın EN
+        // KALABALIK satırından alınır ve çıkan tek ölçeği bütün raflar giyer. Satır başına
+        // okunduğu sürece 4+3 dağılan yedi bardaklı bir board (L10, L13) aynı bardağı iki
+        // ayrı boyda gösteriyordu. Aralık hâlâ satır başınadır; seyrek satır aynı rafı
+        // aynı bardakla, sadece daha geniş boşluklarla doldurur.
+        [Tooltip("Board scale while two rows are visible and no row holds four glasses. "
+               + "Solved by the editor builder; every glass on the board wears it.")]
+        [SerializeField, Min(0.1f)] private float twoRowSpaciousGlassScale = 0.7438862f;
+        [Tooltip("Board scale while three rows are visible and no row holds four glasses.")]
+        [SerializeField, Min(0.1f)] private float threeRowSpaciousGlassScale = 0.4335593f;
+        [Tooltip("Board scale once any row holds four glasses, inside the two-row layout.")]
+        [SerializeField, Min(0.1f)] private float fourAcrossGlassScale = 0.6721417f;
+        [Tooltip("Board scale once any row holds four glasses, inside the three-row layout.")]
+        [SerializeField, Min(0.1f)] private float fourAcrossThreeRowGlassScale = 0.4335593f;
         [Tooltip("Small optical overlap that seats the vessel artwork into the plank.")]
         [SerializeField, Min(0f)] private float opticalSeatInset = 0.02f;
         [SerializeField] private float glassPlaneZ;
+        [Tooltip("Uniform furniture-and-glass scale used when a third shelf is visible. "
+               + "The bottom shelf surface remains anchored while the composition contracts.")]
+        [SerializeField, Range(0.80f, 1f)]
+        private float threeRowCompositionScale = 0.95f;
 
         [Header("Post fitting")]
         [Tooltip("Share of the upper plank height hidden behind a vertical post.")]
         [SerializeField, Range(0f, 1.5f)] private float postUpperPlankOverlap = 0.92f;
-        [Tooltip("Small overlap above the lower shelf surface.")]
+        [Tooltip("Small amount each post sinks behind the shelf at its lower end.")]
         [SerializeField, Min(0f)] private float postLowerShelfInset = 0.02f;
 
         [Header("Level entrance animation")]
@@ -184,7 +210,8 @@ namespace LiquidSort.Levels
         [Tooltip("Bardakların bırakıldığı çizgi: en üst raf yüzeyinin kaç layout birimi "
                + "üstü. Kameranın üst kenarını aşacak kadar büyük olmalı, yoksa bardaklar "
                + "ekranın ortasında yoktan var olur.")]
-        [SerializeField, Min(0.1f)] private float entranceDropHeight = 6.00f;
+        [SerializeField, Min(MinimumEntranceDropHeight)]
+        private float entranceDropHeight = MinimumEntranceDropHeight;
         [Tooltip("Tam bir düşüş yüksekliği kadar düşen bardağın süresi. Alt raftaki "
                + "bardaklar daha uzun yol gittiği için aynı ivmeyle biraz daha uzun düşer.")]
         [SerializeField, Min(0.01f)] private float entranceDropDuration = 0.32f;
@@ -233,6 +260,7 @@ namespace LiquidSort.Levels
         private readonly List<Actor> deliveringActors = new List<Actor>(2);
         private readonly List<Actor> deliveryScratch = new List<Actor>(2);
         private Coroutine seatAnimation;
+        private double seatAnimationDeadlineRealtime = -1d;
         private object synchronizationDeferralOwner;
         private bool deferredSynchronizationPending;
         private int entranceLockRevision = -1;
@@ -243,6 +271,8 @@ namespace LiquidSort.Levels
         /// from one that left the board for any other reason.
         /// </summary>
         private int pendingDeliveryGlassId = -1;
+        private BartenderDeliveryReceipt pendingDeliveryReceipt;
+        private BartenderDeliveryReceipt activeDeliveryReceipt;
 
         private BartenderLevelController subscribedController;
         private BsLevel presentedLevel;
@@ -273,7 +303,7 @@ namespace LiquidSort.Levels
         public event Action PresentationChanged;
         public event Action<string> PresentationRejected;
         /// <summary>Raised after the glass is hidden and the portal's final bounce settles.</summary>
-        public event Action DeliveryPresentationFinished;
+        public event Action<BartenderDeliveryReceipt> DeliveryPresentationFinished;
 
         private Transform LayoutSpace => layoutSpace != null ? layoutSpace : transform;
 
@@ -300,6 +330,18 @@ namespace LiquidSort.Levels
             if (Application.isPlaying) ClearPresentation();
         }
 
+        private void LateUpdate()
+        {
+            if (seatAnimation == null || seatAnimationDeadlineRealtime < 0d
+                || Time.realtimeSinceStartupAsDouble < seatAnimationDeadlineRealtime)
+                return;
+
+            Debug.LogWarning(
+                "Shelf seat animation exceeded its realtime deadline; snapping to the canonical layout.",
+                this);
+            StopSeatAnimation();
+        }
+
         private void OnValidate()
         {
             twoAcrossColumnSpacing = Mathf.Max(0.1f, twoAcrossColumnSpacing);
@@ -309,9 +351,11 @@ namespace LiquidSort.Levels
             threeRowSpaciousGlassScale = Mathf.Max(0.1f, threeRowSpaciousGlassScale);
             fourAcrossGlassScale = Mathf.Max(0.1f, fourAcrossGlassScale);
             fourAcrossThreeRowGlassScale = Mathf.Max(0.1f, fourAcrossThreeRowGlassScale);
+            threeRowCompositionScale = Mathf.Clamp(threeRowCompositionScale, 0.80f, 1f);
             opticalSeatInset = Mathf.Max(0f, opticalSeatInset);
             postLowerShelfInset = Mathf.Max(0f, postLowerShelfInset);
-            entranceDropHeight = Mathf.Max(0.1f, entranceDropHeight);
+            entranceDropHeight = Mathf.Max(MinimumEntranceDropHeight,
+                                           entranceDropHeight);
             entranceDropDuration = Mathf.Max(0.01f, entranceDropDuration);
             entranceGlassStagger = Mathf.Max(0f, entranceGlassStagger);
             entranceRowStagger = Mathf.Max(0f, entranceRowStagger);
@@ -419,6 +463,13 @@ namespace LiquidSort.Levels
                     rightPost = lowerRightPost
                 }
             };
+            if (topPlank != null)
+                authoredPlankLocalScale = topPlank.transform.localScale;
+            if (upperLeftPost != null)
+            {
+                authoredPostLocalScale = upperLeftPost.transform.localScale;
+                authoredPostCenterX = Mathf.Abs(upperLeftPost.transform.localPosition.x);
+            }
 
             ResetActorCache();
             if (Application.isPlaying && isActiveAndEnabled)
@@ -456,6 +507,7 @@ namespace LiquidSort.Levels
             float scaleAtFourInTwoRows,
             float scaleAtFourInThreeRows,
             float seatInset,
+            float collectiveThreeRowScale,
             float planeZ = 0f)
         {
             twoRowSurfaceY = twoRowSurfaces;
@@ -467,6 +519,7 @@ namespace LiquidSort.Levels
             threeRowSpaciousGlassScale = Mathf.Max(0.1f, threeRowScaleUpToThree);
             fourAcrossGlassScale = Mathf.Max(0.1f, scaleAtFourInTwoRows);
             fourAcrossThreeRowGlassScale = Mathf.Max(0.1f, scaleAtFourInThreeRows);
+            threeRowCompositionScale = Mathf.Clamp(collectiveThreeRowScale, 0.80f, 1f);
             opticalSeatInset = Mathf.Max(0f, seatInset);
             glassPlaneZ = planeZ;
         }
@@ -488,7 +541,7 @@ namespace LiquidSort.Levels
             float reseat)
         {
             animateEntrance = animate;
-            entranceDropHeight = Mathf.Max(0.1f, dropHeight);
+            entranceDropHeight = Mathf.Max(MinimumEntranceDropHeight, dropHeight);
             entranceDropDuration = Mathf.Max(0.01f, dropDuration);
             entranceGlassStagger = Mathf.Max(0f, glassStagger);
             entranceRowStagger = Mathf.Max(0f, rowStagger);
@@ -794,6 +847,7 @@ namespace LiquidSort.Levels
         /// </summary>
         private void HandleDelivered(BartenderDeliveryReceipt receipt)
         {
+            pendingDeliveryReceipt = receipt;
             pendingDeliveryGlassId = receipt != null && receipt.DeliveredGlass != null
                 ? receipt.DeliveredGlass.Id
                 : -1;
@@ -834,9 +888,15 @@ namespace LiquidSort.Levels
 
             // Consumed here rather than left standing: a rejected or repeated synchronise
             // must not be able to fly a second glass through the arch.
+            BartenderDeliveryReceipt deliveryReceipt = pendingDeliveryReceipt;
+            pendingDeliveryReceipt = null;
             int deliveredGlassId = pendingDeliveryGlassId;
             pendingDeliveryGlassId = -1;
-            if (!allowDeliveryPresentation) deliveredGlassId = -1;
+            if (!allowDeliveryPresentation)
+            {
+                deliveredGlassId = -1;
+                deliveryReceipt = null;
+            }
 
             activeActors.Clear();
             for (int i = 0; i < snapshot.Glasses.Count; i++)
@@ -868,7 +928,8 @@ namespace LiquidSort.Levels
                 Actor actor = actors[i];
                 if (!actor.Assigned || actor.Delivering
                     || ContainsActor(activeActors, actor)) continue;
-                if (!TryBeginPortalDelivery(actor, deliveredGlassId)) Release(actor);
+                if (!TryBeginPortalDelivery(actor, deliveredGlassId, deliveryReceipt))
+                    Release(actor);
             }
 
             int neededRows = RowCountFor(activeActors.Count, configuredColumns);
@@ -1145,7 +1206,9 @@ namespace LiquidSort.Levels
                 }
             }
 
-            int spanCount = Mathf.Max(0, rowCount - 1);
+            // Two-row layouts still show both pairs: one between the shelves and one
+            // above the top shelf. Three-row layouts use the same two pairs as spans.
+            int spanCount = rowCount >= 2 ? 2 : 0;
             if (shelfSpans == null || shelfSpans.Length < spanCount)
             {
                 reason = $"{rowCount} satır için yeterli post-span binding yok.";
@@ -1205,21 +1268,21 @@ namespace LiquidSort.Levels
             int basePerRow = count / configuredRowCount;
             int remainder = count % configuredRowCount;
 
+            // ONE board, ONE glass size. The scale is decided once, up here, from the
+            // busiest row - never per row inside the loop. A seven-glass board splits
+            // 4+3, and reading the scale per row used to dress those two planks in two
+            // different sizes of the same vessel, which is the one thing the reference
+            // shelf never does. Spacing stays per row: the lighter row spreads the same
+            // glasses over the same shelf width and carries the slack as air.
+            int busiestRow = basePerRow + (remainder > 0 ? 1 : 0);
+            float compositionScale = CompositionScale(configuredRowCount);
+            float scale = BoardGlassScale(configuredRowCount, busiestRow);
+
             int actorIndex = 0;
             for (int row = 0; row < configuredRowCount; row++)
             {
                 int rowCount = basePerRow + (row < remainder ? 1 : 0);
-                float spacing = rowCount <= 1
-                    ? 0f
-                    : rowCount == 2
-                        ? twoAcrossColumnSpacing
-                        : rowCount == 3
-                            ? threeAcrossColumnSpacing
-                            : compactColumnSpacing;
-                bool tallLayout = configuredRowCount >= 3;
-                float scale = rowCount >= 4
-                    ? (tallLayout ? fourAcrossThreeRowGlassScale : fourAcrossGlassScale)
-                    : (tallLayout ? threeRowSpaciousGlassScale : twoRowSpaciousGlassScale);
+                float spacing = ColumnSpacing(rowCount) * compositionScale;
                 Vector2 shelfSeat = ShelfSeatInLayout(row);
                 float firstX = shelfSeat.x - 0.5f * spacing * (rowCount - 1);
                 int rowActorStart = actorIndex;
@@ -1230,12 +1293,42 @@ namespace LiquidSort.Levels
                     actor.Row = row;
                     actor.Column = column;
                     SeatActor(actor, firstX + column * spacing,
-                        shelfSeat.y - opticalSeatInset, scale);
+                        shelfSeat.y - opticalSeatInset * compositionScale, scale);
                 }
                 CenterRowSilhouette(rowActorStart, rowCount, shelfSeat.x);
             }
 
             RecordSeatPoses();
+        }
+
+        /// <summary>
+        /// The single size every vessel on this board wears. Two budgets meet here and
+        /// the tighter one wins: <paramref name="rowCount"/> fixes how much clear height
+        /// a glass has under the plank above it, and <paramref name="busiestRowColumns"/>
+        /// fixes how narrow its column cell gets. Both are read at the board's worst row,
+        /// so no plank can end up with a size the next plank does not share.
+        /// </summary>
+        private float BoardGlassScale(int rowCount, int busiestRowColumns)
+        {
+            bool compactRow = busiestRowColumns >= 4;
+            bool tallLayout = rowCount >= 3;
+            float solvedScale = compactRow
+                ? (tallLayout ? fourAcrossThreeRowGlassScale : fourAcrossGlassScale)
+                : (tallLayout ? threeRowSpaciousGlassScale : twoRowSpaciousGlassScale);
+            return solvedScale * CompositionScale(rowCount);
+        }
+
+        /// <summary>
+        /// Centre-to-centre step for a row of <paramref name="columns"/> glasses. The
+        /// builder solves each of these as the shelf's inner width divided by the column
+        /// count, so a row is always seated in equal cells and its leftover width falls
+        /// as an equal half-cell margin at either end.
+        /// </summary>
+        private float ColumnSpacing(int columns)
+        {
+            if (columns <= 1) return 0f;
+            if (columns == 2) return twoAcrossColumnSpacing;
+            return columns == 3 ? threeAcrossColumnSpacing : compactColumnSpacing;
         }
 
         /// <summary>
@@ -1350,11 +1443,20 @@ namespace LiquidSort.Levels
             if (!CanAnimate || !animateEntrance || activeActors.Count == 0) return;
 
             OrderActorsForEntrance();
+            Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
+            float total = MeasureEntranceFalls();
+            if (!(total > 0f) || float.IsNaN(total) || float.IsInfinity(total))
+            {
+                SnapActorsToSeat();
+                ReleaseEntrancePresentationLock();
+                return;
+            }
+
             BeginShelfFade();
-            // Held off-stage rather than hovering above the plank while waiting their turn.
-            for (int i = 0; i < activeActors.Count; i++)
-                activeActors[i].Bottle.gameObject.SetActive(false);
-            seatAnimation = StartCoroutine(EntranceRoutine());
+            PrepareEntranceActors(layoutUp);
+            seatAnimationDeadlineRealtime = Time.realtimeSinceStartupAsDouble
+                                          + total + SeatAnimationWatchdogGrace;
+            seatAnimation = StartCoroutine(EntranceRoutine(layoutUp, total));
         }
 
         /// <summary>
@@ -1377,16 +1479,15 @@ namespace LiquidSort.Levels
             }
             if (!moved) return;
 
+            seatAnimationDeadlineRealtime = Time.realtimeSinceStartupAsDouble
+                                          + reseatDuration + SeatAnimationWatchdogGrace;
             seatAnimation = StartCoroutine(ReseatRoutine());
         }
 
-        private IEnumerator EntranceRoutine()
+        private IEnumerator EntranceRoutine(Vector3 layoutUp, float total)
         {
             try
             {
-                Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
-                float total = MeasureEntranceFalls();
-
                 float elapsed = 0f;
                 while (elapsed < total)
                 {
@@ -1404,6 +1505,7 @@ namespace LiquidSort.Levels
             }
             finally
             {
+                seatAnimationDeadlineRealtime = -1d;
                 seatAnimation = null;
                 try
                 {
@@ -1427,7 +1529,11 @@ namespace LiquidSort.Levels
         /// </summary>
         private float MeasureEntranceFalls()
         {
-            float releaseY = SurfaceY(configuredRowCount, 0) + entranceDropHeight;
+            // Keep old serialized scenes safe too: an open Editor may still write a
+            // pre-fix value back before OnValidate has a chance to persist the clamp.
+            float effectiveDropHeight = Mathf.Max(MinimumEntranceDropHeight,
+                                                  entranceDropHeight);
+            float releaseY = SurfaceY(configuredRowCount, 0) + effectiveDropHeight;
             float total = 0f;
             for (int i = 0; i < entranceOrder.Count; i++)
             {
@@ -1438,11 +1544,37 @@ namespace LiquidSort.Levels
                 float footY = LayoutSpace.InverseTransformPoint(actor.FootAnchor.position).y;
                 actor.EntranceFallDistance = Mathf.Max(0.01f, releaseY - footY);
                 actor.EntranceFallDuration = entranceDropDuration
-                    * Mathf.Sqrt(actor.EntranceFallDistance / entranceDropHeight);
+                    * Mathf.Sqrt(actor.EntranceFallDistance / effectiveDropHeight);
                 total = Mathf.Max(total, actor.EntranceDelay + actor.EntranceFallDuration
                                        + entranceSettleDuration);
             }
             return total;
+        }
+
+        /// <summary>
+        /// Moves active vessels to their common off-stage release line without disabling
+        /// them. Pool deactivation owns resource disposal; an entrance pose must not throw
+        /// away generated glass art only to rebuild it a few frames later.
+        /// </summary>
+        private void PrepareEntranceActors(Vector3 layoutUp)
+        {
+            for (int i = 0; i < entranceOrder.Count; i++)
+            {
+                Actor actor = entranceOrder[i];
+                GameObject actorObject = actor.Bottle.gameObject;
+                if (!actorObject.activeSelf)
+                {
+                    actorObject.SetActive(true);
+                    actor.Bottle.Refresh();
+                }
+
+                DropEntranceSorting(actor);
+                Transform actorTransform = actor.Bottle.transform;
+                actorTransform.position = actor.SeatPosition
+                    + layoutUp * actor.EntranceFallDistance;
+                actorTransform.rotation = actor.SeatRotation;
+                actorTransform.localScale = actor.SeatScale;
+            }
         }
 
         private void StepEntranceActor(Actor actor, float time, Vector3 layoutUp)
@@ -1452,17 +1584,17 @@ namespace LiquidSort.Levels
 
             if (time < 0f)
             {
-                // Held off-stage while it waits its turn, so an idle glass is never left
-                // hanging over the shelf.
-                if (actorObject.activeSelf) actorObject.SetActive(false);
+                // Kept active at the shared release line. Disabling here would dispose the
+                // generated shell and make the next release rebuild its CPU distance field.
+                actorTransform.position = actor.SeatPosition
+                    + layoutUp * actor.EntranceFallDistance;
                 actorTransform.rotation = actor.SeatRotation;
                 actorTransform.localScale = actor.SeatScale;
                 return;
             }
             if (!actorObject.activeSelf)
             {
-                // Coming back from off-stage the vessel has dropped its generated art, so it
-                // is refreshed on the spot rather than left to the next LateUpdate.
+                // Defensive recovery if another system hid this actor during the entrance.
                 actorObject.SetActive(true);
                 actor.Bottle.Refresh();
             }
@@ -1524,28 +1656,35 @@ namespace LiquidSort.Levels
 
         private IEnumerator ReseatRoutine()
         {
-            float elapsed = 0f;
-            while (elapsed < reseatDuration)
+            try
             {
-                float k = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / reseatDuration));
-                for (int i = 0; i < activeActors.Count; i++)
+                float elapsed = 0f;
+                while (elapsed < reseatDuration)
                 {
-                    Actor actor = activeActors[i];
-                    if (!actor.HasPreviousSeat) continue;
-                    Transform actorTransform = actor.Bottle.transform;
-                    actorTransform.position = Vector3.Lerp(
-                        actor.PreviousSeatPosition, actor.SeatPosition, k);
-                    actorTransform.rotation = Quaternion.Slerp(
-                        actor.PreviousSeatRotation, actor.SeatRotation, k);
-                    actorTransform.localScale = Vector3.Lerp(
-                        actor.PreviousSeatScale, actor.SeatScale, k);
+                    float k = Mathf.SmoothStep(
+                        0f, 1f, Mathf.Clamp01(elapsed / reseatDuration));
+                    for (int i = 0; i < activeActors.Count; i++)
+                    {
+                        Actor actor = activeActors[i];
+                        if (!actor.HasPreviousSeat) continue;
+                        Transform actorTransform = actor.Bottle.transform;
+                        actorTransform.position = Vector3.Lerp(
+                            actor.PreviousSeatPosition, actor.SeatPosition, k);
+                        actorTransform.rotation = Quaternion.Slerp(
+                            actor.PreviousSeatRotation, actor.SeatRotation, k);
+                        actorTransform.localScale = Vector3.Lerp(
+                            actor.PreviousSeatScale, actor.SeatScale, k);
+                    }
+                    yield return null;
+                    elapsed += Time.unscaledDeltaTime;
                 }
-                yield return null;
-                elapsed += Time.unscaledDeltaTime;
             }
-
-            seatAnimation = null;
-            SnapActorsToSeat();
+            finally
+            {
+                seatAnimationDeadlineRealtime = -1d;
+                seatAnimation = null;
+                SnapActorsToSeat();
+            }
         }
 
         /// <summary>
@@ -1570,14 +1709,17 @@ namespace LiquidSort.Levels
 
         private void StopSeatAnimation()
         {
-            if (seatAnimation != null)
+            Coroutine running = seatAnimation;
+            seatAnimation = null;
+            seatAnimationDeadlineRealtime = -1d;
+            if (running != null)
             {
-                StopCoroutine(seatAnimation);
-                seatAnimation = null;
+                StopCoroutine(running);
             }
             for (int i = 0; i < activeActors.Count; i++)
                 DropEntranceSorting(activeActors[i]);
             FinishShelfFade();
+            SnapActorsToSeat();
             ReleaseEntrancePresentationLock();
         }
 
@@ -1621,7 +1763,13 @@ namespace LiquidSort.Levels
 
             for (int row = 0; row < configuredRowCount; row++)
                 AddShelfFadeRenderer(shelfRows[row] != null ? shelfRows[row].plank : null);
-            for (int span = 0; span < configuredRowCount - 1; span++)
+            // Both authored post pairs are visible in every supported layout. In a
+            // two-row board the otherwise unused second pair becomes the two upright
+            // guards above the top shelf, matching the supplied furniture reference.
+            int visiblePostPairs = configuredRowCount >= 2
+                ? Mathf.Min(2, shelfSpans != null ? shelfSpans.Length : 0)
+                : 0;
+            for (int span = 0; span < visiblePostPairs; span++)
             {
                 ShelfSpanBinding binding = shelfSpans[span];
                 if (binding == null) continue;
@@ -1633,9 +1781,19 @@ namespace LiquidSort.Levels
 
         private void AddShelfFadeRenderer(SpriteRenderer renderer)
         {
-            if (renderer == null || !renderer.enabled) return;
-            shelfFadeRenderers.Add(renderer);
-            shelfFadeColors.Add(renderer.color);
+            if (renderer == null) return;
+
+            // A shelf board owns its visual companions (currently the soft under-board
+            // shadow, and deliberately any later glint layer).  Fading only the primary
+            // renderer made the shadow pop at full opacity during a level entrance and
+            // made a hidden third shelf leave a ghost band on two-row boards.
+            foreach (SpriteRenderer part in
+                     renderer.GetComponentsInChildren<SpriteRenderer>(true))
+            {
+                if (!part.enabled) continue;
+                shelfFadeRenderers.Add(part);
+                shelfFadeColors.Add(part.color);
+            }
         }
 
         private void StepShelfFade(float elapsed)
@@ -1668,24 +1826,91 @@ namespace LiquidSort.Levels
         private void ApplyShelfLayout(int rowCount)
         {
             DisableAllShelves();
+            ApplyShelfCompositionScale(rowCount);
             for (int row = 0; row < rowCount; row++)
             {
                 ShelfRowBinding binding = shelfRows[row];
                 SpriteRenderer plank = binding.plank;
                 MovePlankSurfaceTo(binding, SurfaceY(rowCount, row));
-                plank.enabled = true;
+                SetShelfPieceEnabled(plank, true);
             }
 
             for (int span = 0; span < rowCount - 1; span++)
             {
+                float postInset = postLowerShelfInset * CompositionScale(rowCount);
                 float upperSurface = SurfaceY(rowCount, span);
                 float lowerSurface = SurfaceY(rowCount, span + 1);
                 float upperPlankHeight = SpriteHeightInLayout(shelfRows[span].plank);
                 float top = upperSurface - upperPlankHeight * postUpperPlankOverlap;
-                float bottom = lowerSurface + postLowerShelfInset;
+                float bottom = lowerSurface - postInset;
                 FitPost(shelfSpans[span].leftPost, top, bottom);
                 FitPost(shelfSpans[span].rightPost, top, bottom);
             }
+
+            if (rowCount == 2 && shelfSpans != null && shelfSpans.Length > 1)
+            {
+                // Two rows consume only the first between-shelf pair. Reuse the second
+                // pair as the free uprights that frame the glasses on the top shelf.
+                // Their height mirrors the fitted support below, so both tiers read as
+                // one coherent piece of furniture instead of unrelated magic numbers.
+                float upperSurface = SurfaceY(rowCount, 0);
+                float lowerSurface = SurfaceY(rowCount, 1);
+                float upperPlankHeight = SpriteHeightInLayout(shelfRows[0].plank);
+                float postInset = postLowerShelfInset * CompositionScale(rowCount);
+                float supportTop = upperSurface
+                                 - upperPlankHeight * postUpperPlankOverlap;
+                float supportBottom = lowerSurface - postInset;
+                float guardBottom = upperSurface - postInset;
+                float guardTop = guardBottom + supportTop - supportBottom;
+                FitPost(shelfSpans[1].leftPost, guardTop, guardBottom);
+                FitPost(shelfSpans[1].rightPost, guardTop, guardBottom);
+            }
+        }
+
+        /// <summary>
+        /// Applies the third-row contraction from the immutable authored furniture pose.
+        /// Assigning absolute values on every pass makes level changes idempotent: 2→3→2
+        /// restores the exact starting artwork and can never accumulate scale drift.
+        /// </summary>
+        private void ApplyShelfCompositionScale(int rowCount)
+        {
+            float factor = CompositionScale(rowCount);
+            Vector3 plankScale = authoredPlankLocalScale;
+            plankScale.x *= factor;
+            plankScale.y *= factor;
+            if (shelfRows != null)
+            {
+                for (int row = 0; row < shelfRows.Length; row++)
+                {
+                    SpriteRenderer plank = shelfRows[row] != null
+                        ? shelfRows[row].plank
+                        : null;
+                    if (plank != null) plank.transform.localScale = plankScale;
+                }
+            }
+
+            Vector3 postScale = authoredPostLocalScale;
+            postScale.x *= factor;
+            postScale.y *= factor;
+            if (shelfSpans == null) return;
+            for (int span = 0; span < shelfSpans.Length; span++)
+            {
+                ShelfSpanBinding binding = shelfSpans[span];
+                if (binding == null) continue;
+                ApplyPostCompositionScale(binding.leftPost, -1f, postScale, factor);
+                ApplyPostCompositionScale(binding.rightPost, 1f, postScale, factor);
+            }
+        }
+
+        private void ApplyPostCompositionScale(SpriteRenderer post, float side,
+                                               Vector3 scale, float factor)
+        {
+            if (post == null) return;
+            Transform postTransform = post.transform;
+            postTransform.localScale = scale;
+            Vector3 local = postTransform.localPosition;
+            local.x = side * authoredPostCenterX * factor;
+            postTransform.localPosition = local;
         }
 
         private void MovePlankSurfaceTo(ShelfRowBinding binding, float surfaceY)
@@ -1730,21 +1955,46 @@ namespace LiquidSort.Levels
                 : localUp.magnitude;
             float layoutWorldUnit = LayoutSpace.TransformVector(Vector3.up).magnitude;
             float wantedWorldHeight = (top - bottom) * layoutWorldUnit;
-            float scaleY = wantedWorldHeight
-                         / Mathf.Max(0.0001f,
-                             post.sprite.bounds.size.y * parentWorldPerUnit);
-            Vector3 scale = postTransform.localScale;
-            scale.y = Mathf.Sign(Mathf.Approximately(scale.y, 0f) ? 1f : scale.y) * scaleY;
-            postTransform.localScale = scale;
-            post.enabled = true;
+            if (post.drawMode == SpriteDrawMode.Sliced)
+            {
+                // Keep the authored transform scale: it is the fixed visual size of the
+                // gold collars. Changing SpriteRenderer.size stretches only the centre
+                // region declared by the sprite border, so short rows no longer squash
+                // the collars into thin horizontal lines.
+                float authoredScaleY = Mathf.Abs(postTransform.localScale.y);
+                Vector2 size = post.size;
+                size.y = wantedWorldHeight
+                       / Mathf.Max(0.0001f, parentWorldPerUnit * authoredScaleY);
+                post.size = size;
+            }
+            else
+            {
+                float scaleY = wantedWorldHeight
+                             / Mathf.Max(0.0001f,
+                                 post.sprite.bounds.size.y * parentWorldPerUnit);
+                Vector3 scale = postTransform.localScale;
+                scale.y = Mathf.Sign(Mathf.Approximately(scale.y, 0f) ? 1f : scale.y)
+                        * scaleY;
+                postTransform.localScale = scale;
+            }
+            SetShelfPieceEnabled(post, true);
         }
 
         private float SurfaceY(int rowCount, int row)
         {
             if (rowCount <= 2) return row == 0 ? twoRowSurfaceY.x : twoRowSurfaceY.y;
-            if (row == 0) return threeRowSurfaceY.x;
-            return row == 1 ? threeRowSurfaceY.y : threeRowSurfaceY.z;
+            float authored = row == 0
+                ? threeRowSurfaceY.x
+                : (row == 1 ? threeRowSurfaceY.y : threeRowSurfaceY.z);
+            // The bottom shelf is the visual floor. Contract every higher surface toward
+            // it so the complete three-row composition moves away from the order cards.
+            return threeRowSurfaceY.z
+                 + (authored - threeRowSurfaceY.z) * CompositionScale(rowCount);
         }
+
+        private float CompositionScale(int rowCount) => rowCount >= 3
+            ? Mathf.Clamp(threeRowCompositionScale, 0.80f, 1f)
+            : 1f;
 
         private static int RowCountFor(int glassCount, int columnsPerRow)
         {
@@ -1787,9 +2037,10 @@ namespace LiquidSort.Levels
         // reports the vessel as hidden, so a delivery in flight can never be switched off,
         // reseated or handed to a new level.
 
-        private bool TryBeginPortalDelivery(Actor actor, int deliveredGlassId)
+        private bool TryBeginPortalDelivery(Actor actor, int deliveredGlassId,
+                                            BartenderDeliveryReceipt receipt)
         {
-            if (deliveryPortal == null || deliveredGlassId < 0
+            if (deliveryPortal == null || receipt == null || deliveredGlassId < 0
                 || actor.GlassId != deliveredGlassId || actor.Bottle == null)
                 return false;
 
@@ -1799,7 +2050,7 @@ namespace LiquidSort.Levels
                     actor.FootAnchor,
                     null,
                     () => FinishPortalDelivery(actor),
-                    NotifyDeliveryPresentationFinished))
+                    () => NotifyDeliveryPresentationFinished(receipt)))
                 return false;
 
             actorByGlassId.Remove(actor.GlassId);
@@ -1810,6 +2061,7 @@ namespace LiquidSort.Levels
             // Still Assigned on purpose: the pool slot belongs to this flight until it lands.
             actor.Delivering = true;
             deliveringActors.Add(actor);
+            activeDeliveryReceipt = receipt;
             return true;
         }
 
@@ -1821,9 +2073,11 @@ namespace LiquidSort.Levels
             Release(actor);
         }
 
-        private void NotifyDeliveryPresentationFinished()
+        private void NotifyDeliveryPresentationFinished(BartenderDeliveryReceipt receipt)
         {
-            DeliveryPresentationFinished?.Invoke();
+            if (ReferenceEquals(activeDeliveryReceipt, receipt))
+                activeDeliveryReceipt = null;
+            DeliveryPresentationFinished?.Invoke(receipt);
         }
 
         /// <summary>
@@ -1837,6 +2091,7 @@ namespace LiquidSort.Levels
             if (deliveringActors.Count == 0) return;
 
             // Only reachable if the portal reference was lost mid-flight.
+            BartenderDeliveryReceipt receipt = activeDeliveryReceipt;
             deliveryScratch.Clear();
             deliveryScratch.AddRange(deliveringActors);
             deliveringActors.Clear();
@@ -1850,7 +2105,7 @@ namespace LiquidSort.Levels
             // A lost/replaced portal cannot invoke its onFinished callback. The fallback
             // release above is still a terminal presentation beat, so lock owners need the
             // same completion signal exactly once.
-            NotifyDeliveryPresentationFinished();
+            NotifyDeliveryPresentationFinished(receipt);
         }
 
         private void ClearAssignments()
@@ -1895,6 +2150,9 @@ namespace LiquidSort.Levels
         {
             StopSeatAnimation();
             ClearAssignments();
+            pendingDeliveryGlassId = -1;
+            pendingDeliveryReceipt = null;
+            activeDeliveryReceipt = null;
             DisableAllShelves();
             configuredRowCount = 0;
             configuredColumns = 1;
@@ -1909,16 +2167,29 @@ namespace LiquidSort.Levels
             {
                 for (int i = 0; i < shelfRows.Length; i++)
                     if (shelfRows[i] != null && shelfRows[i].plank != null)
-                        shelfRows[i].plank.enabled = false;
+                        SetShelfPieceEnabled(shelfRows[i].plank, false);
             }
             if (shelfSpans == null) return;
             for (int i = 0; i < shelfSpans.Length; i++)
             {
                 ShelfSpanBinding span = shelfSpans[i];
                 if (span == null) continue;
-                if (span.leftPost != null) span.leftPost.enabled = false;
-                if (span.rightPost != null) span.rightPost.enabled = false;
+                SetShelfPieceEnabled(span.leftPost, false);
+                SetShelfPieceEnabled(span.rightPost, false);
             }
+        }
+
+        /// <summary>
+        /// Enables/disables a shelf's primary art and every renderer parented to it as
+        /// one visual unit.  Child companions inherit transform motion but not a
+        /// SpriteRenderer's <c>enabled</c> flag, so this must be explicit.
+        /// </summary>
+        private static void SetShelfPieceEnabled(SpriteRenderer renderer, bool enabled)
+        {
+            if (renderer == null) return;
+            foreach (SpriteRenderer part in
+                     renderer.GetComponentsInChildren<SpriteRenderer>(true))
+                part.enabled = enabled;
         }
 
         private bool Reject(string reason)

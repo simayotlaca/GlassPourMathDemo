@@ -1,0 +1,43 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0de5d8ecae7d46c58b14beac2af63287, type: 3}
+  m_Name: RoyalFirstPour
+  m_EditorClassIdentifier: Assembly-CSharp::LiquidSort.Levels.BartenderTutorialSequence
+  TutorialId: royal_first_pour
+  Version: 2
+  CampaignSlot: 0
+  LevelNumber: 1
+  CompletionEyebrow:
+  CompletionTitle: HAZIRSIN!
+  CompletionDetail:
+  Steps:
+  - StepId: select_red_coupe
+    Action: 0
+    PrimaryGlassId: 3
+    SecondaryGlassId: -1
+    Eyebrow: KRALİYET DERSİ
+    Title: DOLU KADEHE DOKUN
+    Detail: Üstteki kırmızıyı servis için ayıralım.
+  - StepId: pour_into_shot
+    Action: 1
+    PrimaryGlassId: 3
+    SecondaryGlassId: 1
+    Eyebrow: USTA DÖKÜŞÜ
+    Title: BOŞ SHOT'A DÖK
+    Detail: Seçili kadehten parlayan shot bardağına dokun.
+  - StepId: deliver_shot
+    Action: 2
+    PrimaryGlassId: 1
+    SecondaryGlassId: -1
+    Eyebrow: KRALİYET SERVİSİ
+    Title: SİPARİŞİ GÖNDER
+    Detail: Hazır shot'a tekrar dokun ve servisi tamamla!

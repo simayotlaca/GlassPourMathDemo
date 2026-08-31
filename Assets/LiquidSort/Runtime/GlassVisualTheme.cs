@@ -28,7 +28,7 @@ namespace LiquidSort
             [Header("Authored glass art")]
             [Tooltip("Draws a profiled vessel's Front sprite with its original RGB/alpha instead of recolouring it through the contour shader.")]
             public bool preserveAuthoredFront;
-            [Tooltip("Serialized Sprites/Default material used by the untouched authored-front path.")]
+            [Tooltip("Serialized pass-through sprite material used by the authored-front path. It may add restrained scene lighting without repainting the source art.")]
             public Material authoredFrontMaterial;
 
             [Header("Contour")]

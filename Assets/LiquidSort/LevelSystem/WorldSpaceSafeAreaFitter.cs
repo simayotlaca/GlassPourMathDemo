@@ -8,8 +8,9 @@ namespace LiquidSort.Levels
     /// full-screen background while the complete gameplay hierarchy is uniformly scaled
     /// and centred as one indivisible 720x1280 design.
     ///
-    /// This component deliberately never searches for or creates scene objects. Both the
-    /// camera and the composition root must be assigned explicitly in the Inspector.
+    /// This component never creates scene objects. The composition root is assigned in the
+    /// Inspector; the camera can either be assigned explicitly or resolved from Camera.main
+    /// at run time so the same authored hierarchy can be moved between host scenes.
     /// </summary>
     [ExecuteAlways]
     [DisallowMultipleComponent]
@@ -18,8 +19,13 @@ namespace LiquidSort.Levels
     {
         [Header("Required scene references")]
         [Tooltip("The orthographic camera that renders the portrait game. Its viewport, "
-               + "orthographic size and transform are never modified by this component.")]
+               + "orthographic size and transform are never modified by this component. "
+               + "When assigned, this always takes precedence over automatic resolution.")]
         [SerializeField] private Camera targetCamera;
+
+        [Tooltip("When Target Camera is empty, resolve a tagged Camera.main and keep "
+               + "following it if the host scene replaces its main camera.")]
+        [SerializeField] private bool autoResolveMainCamera = true;
 
         [Tooltip("The single world-space parent containing every foreground gameplay "
                + "element that must keep the authored composition.")]
@@ -37,6 +43,10 @@ namespace LiquidSort.Levels
         [Tooltip("Use Screen.safeArea. Disable only for controlled screenshots that need "
                + "the entire camera viewport.")]
         [SerializeField] private bool respectSafeArea = true;
+
+        [Tooltip("Placement inside unused fitted space: (0.5,0.5) centres; (0.5,1) "
+               + "keeps a width-fitted portrait composition against the top edge.")]
+        [SerializeField] private Vector2 contentAlignment = new Vector2(0.5f, 0.5f);
 
         [Tooltip("Apply while Unity is not in Play Mode, so Game View device/aspect changes "
                + "can be inspected without entering the game.")]
@@ -65,8 +75,10 @@ namespace LiquidSort.Levels
         private float appliedUniformScale = 1f;
         private Vector3 appliedWorldPosition;
         private string status = "Not applied";
+        private Camera autoResolvedCamera;
 
-        public Camera TargetCamera => targetCamera;
+        public Camera TargetCamera => ResolveTargetCamera();
+        public bool AutoResolveMainCamera => autoResolveMainCamera;
         public Transform CompositionRoot => compositionRoot;
         public Vector2Int ReferenceResolution => referenceResolution;
         public float ReferenceOrthographicSize => referenceOrthographicSize;
@@ -84,7 +96,7 @@ namespace LiquidSort.Levels
 
         public Vector3 AppliedWorldPosition => appliedWorldPosition;
         public string Status => status;
-        public bool IsConfigured => ValidateConfiguration(out _);
+        public bool IsConfigured => ValidateConfiguration(out _, out _);
 
         private void OnEnable()
         {
@@ -102,6 +114,8 @@ namespace LiquidSort.Levels
             referenceResolution.x = Mathf.Max(1, referenceResolution.x);
             referenceResolution.y = Mathf.Max(1, referenceResolution.y);
             referenceOrthographicSize = Mathf.Max(0.01f, referenceOrthographicSize);
+            contentAlignment.x = Mathf.Clamp01(contentAlignment.x);
+            contentAlignment.y = Mathf.Clamp01(contentAlignment.y);
 
             if (!isActiveAndEnabled)
                 return;
@@ -116,13 +130,15 @@ namespace LiquidSort.Levels
         [ContextMenu("Capture Current Pose As Reference")]
         public void CaptureCurrentPoseAsReference()
         {
-            if (targetCamera == null || compositionRoot == null)
+            Camera camera = ResolveTargetCamera();
+            if (camera == null || compositionRoot == null)
             {
-                ReportError("Assign Target Camera and Composition Root before capturing the reference pose.");
+                ReportError("Assign Composition Root and either assign Target Camera or "
+                          + "provide a tagged Camera.main before capturing the reference pose.");
                 return;
             }
 
-            if (!targetCamera.orthographic)
+            if (!camera.orthographic)
             {
                 ReportError("WorldSpaceSafeAreaFitter requires an orthographic camera.");
                 return;
@@ -134,11 +150,11 @@ namespace LiquidSort.Levels
 #endif
 
             referenceCameraLocalPosition =
-                targetCamera.transform.InverseTransformPoint(compositionRoot.position);
+                camera.transform.InverseTransformPoint(compositionRoot.position);
             referenceCameraRelativeRotation =
-                Quaternion.Inverse(targetCamera.transform.rotation) * compositionRoot.rotation;
+                Quaternion.Inverse(camera.transform.rotation) * compositionRoot.rotation;
             referenceLocalScale = compositionRoot.localScale;
-            referenceOrthographicSize = Mathf.Max(0.01f, targetCamera.orthographicSize);
+            referenceOrthographicSize = Mathf.Max(0.01f, camera.orthographicSize);
             referencePoseCaptured = true;
             lastLoggedError = null;
 
@@ -178,15 +194,21 @@ namespace LiquidSort.Levels
         [ContextMenu("Apply Safe Area Layout Now")]
         public bool ApplyNow()
         {
-            if (!ValidateConfiguration(out string error))
+            if (!ValidateConfiguration(out Camera camera, out string error))
             {
-                ReportError(error);
+                // A portable hierarchy can enable before its host camera is created or
+                // tagged. That is a normal transient state, especially in edit mode, so
+                // keep retrying without filling the Console with configuration errors.
+                if (camera == null && targetCamera == null && autoResolveMainCamera)
+                    status = "Waiting for Camera.main";
+                else
+                    ReportError(error);
                 return false;
             }
 
-            CaptureReferencePoseIfRequired();
+            CaptureReferencePoseIfRequired(camera);
 
-            Rect cameraPixels = targetCamera.pixelRect;
+            Rect cameraPixels = camera.pixelRect;
             if (cameraPixels.width <= 0f || cameraPixels.height <= 0f)
             {
                 // Game View / Device Simulator changes report a transient 0x0 pixel rect
@@ -196,8 +218,11 @@ namespace LiquidSort.Levels
                 return false;
             }
 
-            Rect screenPixels = new Rect(0f, 0f, Screen.width, Screen.height);
-            Rect requestedSafeArea = respectSafeArea ? Screen.safeArea : screenPixels;
+            // An off-screen camera can have a render target whose dimensions differ from
+            // Screen. With safe-area handling disabled, the camera viewport itself is the
+            // complete usable frame; using Screen here would silently crop a device-sized
+            // preview back to the editor Game View's pixels.
+            Rect requestedSafeArea = respectSafeArea ? Screen.safeArea : cameraPixels;
             Rect usablePixels = Intersect(cameraPixels, requestedSafeArea);
 
             // Device Simulator and the first editor frame can briefly report an empty safe
@@ -205,8 +230,8 @@ namespace LiquidSort.Levels
             if (usablePixels.width <= 0f || usablePixels.height <= 0f)
                 usablePixels = cameraPixels;
 
-            float cameraWorldHeight = 2f * targetCamera.orthographicSize;
-            float cameraWorldWidth = cameraWorldHeight * targetCamera.aspect;
+            float cameraWorldHeight = 2f * camera.orthographicSize;
+            float cameraWorldWidth = cameraWorldHeight * camera.aspect;
             float safeWorldWidth = cameraWorldWidth * (usablePixels.width / cameraPixels.width);
             float safeWorldHeight = cameraWorldHeight * (usablePixels.height / cameraPixels.height);
 
@@ -226,17 +251,27 @@ namespace LiquidSort.Levels
             Vector3 cameraLocalPosition = referenceCameraLocalPosition;
             cameraLocalPosition.x += (safeCentreViewportX - 0.5f) * cameraWorldWidth;
             cameraLocalPosition.y += (safeCentreViewportY - 0.5f) * cameraWorldHeight;
+            float unusedWorldWidth = safeWorldWidth - referenceWorldWidth * uniformScale;
+            float unusedWorldHeight = safeWorldHeight - referenceWorldHeight * uniformScale;
+            cameraLocalPosition.x += (contentAlignment.x - 0.5f) * unusedWorldWidth;
+            cameraLocalPosition.y += (contentAlignment.y - 0.5f) * unusedWorldHeight;
 
             Vector3 targetWorldPosition =
-                targetCamera.transform.TransformPoint(cameraLocalPosition);
+                camera.transform.TransformPoint(cameraLocalPosition);
             Quaternion targetWorldRotation =
-                targetCamera.transform.rotation * referenceCameraRelativeRotation;
+                camera.transform.rotation * referenceCameraRelativeRotation;
             Vector3 targetLocalScale = referenceLocalScale * uniformScale;
 
-            // Assigning the absolute reference-derived values prevents rounding drift and
-            // avoids multiplying the previous frame's scale again.
-            compositionRoot.SetPositionAndRotation(targetWorldPosition, targetWorldRotation);
-            compositionRoot.localScale = targetLocalScale;
+            // In edit-mode preview LateUpdate runs continuously. Reassigning an identical
+            // root pose makes Unity recalculate every child every editor frame, even though
+            // the camera, safe area, and fitting result have not changed. Only write when
+            // there is a visible pose change; absolute reference-derived values still avoid
+            // rounding drift once a write is needed.
+            if (RootPoseChanged(targetWorldPosition, targetWorldRotation, targetLocalScale))
+            {
+                compositionRoot.SetPositionAndRotation(targetWorldPosition, targetWorldRotation);
+                compositionRoot.localScale = targetLocalScale;
+            }
 
             appliedSafeAreaPixels = usablePixels;
             appliedSafeAreaViewport = new Rect(
@@ -252,11 +287,26 @@ namespace LiquidSort.Levels
             return true;
         }
 
-        private bool ValidateConfiguration(out string error)
+        private bool RootPoseChanged(Vector3 position, Quaternion rotation, Vector3 scale)
         {
-            if (targetCamera == null)
+            const float positionToleranceSquared = 0.00000001f;
+            const float scaleToleranceSquared = 0.00000001f;
+            const float rotationTolerance = 0.0000001f;
+
+            return (compositionRoot.position - position).sqrMagnitude > positionToleranceSquared
+                   || (compositionRoot.localScale - scale).sqrMagnitude > scaleToleranceSquared
+                   || Mathf.Abs(Quaternion.Dot(compositionRoot.rotation, rotation))
+                      < 1f - rotationTolerance;
+        }
+
+        private bool ValidateConfiguration(out Camera camera, out string error)
+        {
+            camera = ResolveTargetCamera();
+            if (camera == null)
             {
-                error = "Target Camera is not assigned.";
+                error = autoResolveMainCamera
+                    ? "Waiting for a tagged Camera.main."
+                    : "Target Camera is not assigned and automatic resolution is disabled.";
                 return false;
             }
 
@@ -266,14 +316,14 @@ namespace LiquidSort.Levels
                 return false;
             }
 
-            if (!targetCamera.orthographic)
+            if (!camera.orthographic)
             {
                 error = "Target Camera must be orthographic.";
                 return false;
             }
 
-            if (compositionRoot == targetCamera.transform
-                || targetCamera.transform.IsChildOf(compositionRoot))
+            if (compositionRoot == camera.transform
+                || camera.transform.IsChildOf(compositionRoot))
             {
                 error = "Composition Root cannot contain the Target Camera; the camera "
                       + "must remain a separate full-screen background camera.";
@@ -296,23 +346,48 @@ namespace LiquidSort.Levels
             return true;
         }
 
-        private void CaptureReferencePoseIfRequired()
+        private void CaptureReferencePoseIfRequired(Camera camera)
         {
             if (referencePoseCaptured)
                 return;
 
             referenceCameraLocalPosition =
-                targetCamera.transform.InverseTransformPoint(compositionRoot.position);
+                camera.transform.InverseTransformPoint(compositionRoot.position);
             referenceCameraRelativeRotation =
-                Quaternion.Inverse(targetCamera.transform.rotation) * compositionRoot.rotation;
+                Quaternion.Inverse(camera.transform.rotation) * compositionRoot.rotation;
             referenceLocalScale = compositionRoot.localScale;
-            referenceOrthographicSize = Mathf.Max(0.01f, targetCamera.orthographicSize);
+            referenceOrthographicSize = Mathf.Max(0.01f, camera.orthographicSize);
             referencePoseCaptured = true;
 
 #if UNITY_EDITOR
             if (!Application.isPlaying)
                 UnityEditor.EditorUtility.SetDirty(this);
 #endif
+        }
+
+        /// <summary>
+        /// Returns the Inspector-assigned camera unchanged. Only an empty explicit slot is
+        /// eligible for Camera.main resolution; looking it up on every apply also notices a
+        /// host scene replacing or retagging its camera without retaining a stale reference.
+        /// </summary>
+        private Camera ResolveTargetCamera()
+        {
+            if (targetCamera != null)
+            {
+                autoResolvedCamera = null;
+                return targetCamera;
+            }
+
+            if (!autoResolveMainCamera)
+            {
+                autoResolvedCamera = null;
+                return null;
+            }
+
+            Camera main = Camera.main;
+            if (autoResolvedCamera != main)
+                autoResolvedCamera = main;
+            return autoResolvedCamera;
         }
 
         private void ReportError(string error)
@@ -337,22 +412,23 @@ namespace LiquidSort.Levels
 
         private void OnDrawGizmosSelected()
         {
-            if (!drawSafeAreaGizmo || targetCamera == null || compositionRoot == null
+            Camera camera = ResolveTargetCamera();
+            if (!drawSafeAreaGizmo || camera == null || compositionRoot == null
                 || appliedSafeAreaViewport.width <= 0f
                 || appliedSafeAreaViewport.height <= 0f)
                 return;
 
             float depth = referencePoseCaptured
                 ? referenceCameraLocalPosition.z
-                : targetCamera.transform.InverseTransformPoint(compositionRoot.position).z;
+                : camera.transform.InverseTransformPoint(compositionRoot.position).z;
 
-            Vector3 bottomLeft = targetCamera.ViewportToWorldPoint(new Vector3(
+            Vector3 bottomLeft = camera.ViewportToWorldPoint(new Vector3(
                 appliedSafeAreaViewport.xMin, appliedSafeAreaViewport.yMin, depth));
-            Vector3 topLeft = targetCamera.ViewportToWorldPoint(new Vector3(
+            Vector3 topLeft = camera.ViewportToWorldPoint(new Vector3(
                 appliedSafeAreaViewport.xMin, appliedSafeAreaViewport.yMax, depth));
-            Vector3 topRight = targetCamera.ViewportToWorldPoint(new Vector3(
+            Vector3 topRight = camera.ViewportToWorldPoint(new Vector3(
                 appliedSafeAreaViewport.xMax, appliedSafeAreaViewport.yMax, depth));
-            Vector3 bottomRight = targetCamera.ViewportToWorldPoint(new Vector3(
+            Vector3 bottomRight = camera.ViewportToWorldPoint(new Vector3(
                 appliedSafeAreaViewport.xMax, appliedSafeAreaViewport.yMin, depth));
 
             Gizmos.color = new Color(0.15f, 1f, 0.55f, 0.9f);

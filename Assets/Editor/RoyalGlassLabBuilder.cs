@@ -293,6 +293,9 @@ public static class RoyalGlassLabBuilder
         profile.stemFootToonStrength = 0f;
         profile.bottomRimGlassLight = 0f;
         profile.liquidBounceScale = 0f;
+        // Covered colour junctions are shallower than the exposed top disc in the
+        // original treatment: 0.098 / 0.135 ~= 0.72.
+        profile.innerJunctionCurve = 0.72f;
         profile.clipRightInterior = clipRightInterior;
         profile.rightInteriorXAtY0 = rightInteriorXAtY0;
         profile.rightInteriorSlope = rightInteriorSlope;
@@ -316,10 +319,13 @@ public static class RoyalGlassLabBuilder
         material.name = "Royal Bottle Liquid";
         // Keep the proven liquid-light recipe but isolate it from the original scene.
         // The palette itself arrives per bottle through MaterialPropertyBlock values.
+        material.SetFloat("_BoundaryShade", 0.07f);
         material.SetFloat("_CapRim", 0.38f);
         material.SetFloat("_Shine", 0.30f);
         material.SetFloat("_Overbright", 1.35f);
         material.SetFloat("_CapValue", 1.22f);
+        material.SetColor("_OverheadColor", new Color(1f, 0.97f, 0.91f, 1f));
+        material.SetFloat("_OverheadStrength", 0.12f);
         EditorUtility.SetDirty(material);
         return material;
     }
@@ -327,8 +333,9 @@ public static class RoyalGlassLabBuilder
     private static Material EnsureSpriteMaterial()
     {
         Material material = AssetDatabase.LoadAssetAtPath<Material>(SpriteMaterial);
-        Shader shader = Shader.Find("Sprites/Default");
-        if (shader == null) throw new InvalidOperationException("Sprites/Default unavailable.");
+        Shader shader = Shader.Find("LiquidSort/RoyalGlassSprite");
+        if (shader == null)
+            throw new InvalidOperationException("Royal glass sprite shader is unavailable.");
         if (material == null)
         {
             material = new Material(shader) { name = "Royal Glass Sprite" };
@@ -339,6 +346,8 @@ public static class RoyalGlassLabBuilder
             material.shader = shader;
         }
         material.color = Color.white;
+        material.SetColor("_OverheadColor", new Color(1f, 0.97f, 0.91f, 1f));
+        material.SetFloat("_OverheadStrength", 0.12f);
         EditorUtility.SetDirty(material);
         return material;
     }
@@ -387,7 +396,8 @@ public static class RoyalGlassLabBuilder
         settings.paintedToyStrength = 0f;
         settings.shadowColor = Hex(0x351653);
         settings.shadowStrength = 0.42f;
-        settings.wideShadowStrength = 0f;
+        settings.wideShadowColor = Hex(0x1B0828);
+        settings.wideShadowStrength = 0.16f;
         settings.groundGlowStrength = 0f;
         settings.panelAlpha = 0f;
         theme.settings = settings;

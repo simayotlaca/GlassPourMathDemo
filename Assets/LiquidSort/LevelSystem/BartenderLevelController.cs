@@ -22,6 +22,16 @@ namespace LiquidSort.Levels
         OrderTimedOut
     }
 
+    /// <summary>Terminal navigation has non-boolean success outcomes.</summary>
+    public enum BartenderTerminalCommandResult
+    {
+        Rejected,
+        NextLevelLoaded,
+        CurrentLevelReloaded,
+        CampaignCompleted,
+        ReturnedToMainMenu
+    }
+
     /// <summary>
     /// Detached description of one committed rule move. A later view layer can animate
     /// these snapshots without owning or mutating the live board.
@@ -85,6 +95,24 @@ namespace LiquidSort.Levels
     {
         private const string DefaultPaletteResource = "BsPalette";
 
+        private enum OrderExpiryResult
+        {
+            NotExpired,
+            Settled,
+            SettlementRejected,
+        }
+
+        /// <summary>
+        /// Undo restores rule state and the exact order deadlines that belonged to it.
+        /// Deadlines are absolute points on <see cref="activeGameplayTime"/>; restoring a
+        /// memento therefore never gives back time spent after the captured move.
+        /// </summary>
+        private sealed class BoardMemento
+        {
+            public BsBoard Board;
+            public double?[] SlotDeadlines;
+        }
+
         [Header("Campaign")]
         [SerializeField] private bool loadOnStart = true;
         [SerializeField] private bool resumeSavedProgress = true;
@@ -95,29 +123,46 @@ namespace LiquidSort.Levels
         [SerializeField] private BsPalette palette;
 
         [Header("Booster kapasitesi")]
-        [Tooltip("Sahnedeki statik bardak slotu sınırı. +bardak bu sayıyı aşamaz; "
-               + "aştığı an sunum havuzu tükenir ve bütün level reddedilirdi.")]
-        [SerializeField, Min(1)] private int maxActiveGlasses = 12;
         [Tooltip("Geri al yığınının derinliği. Level başına ayrılan bellek bu kadar "
                + "board klonu; 0 geri almayı tamamen kapatır.")]
         [SerializeField, Min(0)] private int undoHistoryDepth = 32;
 
         private static List<BsLevel> cachedCampaign;
 
-        private readonly Dictionary<OrderDef, float> orderRemaining =
-            new Dictionary<OrderDef, float>(ReferenceComparer<OrderDef>.Instance);
+        private readonly Dictionary<OrderDef, double> orderDeadlines =
+            new Dictionary<OrderDef, double>(ReferenceComparer<OrderDef>.Instance);
         private readonly List<OrderDef> timerRemovalScratch = new List<OrderDef>();
-        /// <summary>Committed board snapshots, oldest first. Undo pops the last one.</summary>
-        private readonly List<BsBoard> undoHistory = new List<BsBoard>();
+        private readonly List<int> timeBoostOrderScratch = new List<int>(4);
+        /// <summary>Committed board/deadline mementos, oldest first. Undo pops the last one.</summary>
+        private readonly List<BoardMemento> undoHistory = new List<BoardMemento>();
         private readonly List<Layer> shuffleScratch = new List<Layer>(48);
 
         private BsBoard board;
+        private double activeGameplayTime;
+        private double[] timeBonusByOrderIndex = Array.Empty<double>();
         private bool commandInProgress;
         private bool notificationInProgress;
         private object presentationLockOwner;
         private int presentationLockRevision = -1;
+        private readonly HashSet<object> presentationBarrierOwners =
+            new HashSet<object>(ReferenceComparer<object>.Instance);
         private bool hasPendingStateNotification;
         private BartenderLevelState pendingStateNotification;
+        private string activeAttemptId;
+        private bool settlementInProgress;
+        private bool automaticLoadDisabledAtRuntime;
+        private bool startHasRun;
+        private bool applicationPaused;
+        private bool applicationFocusLost;
+        private bool suppressNextGameplayTick;
+        private bool ownsAutomaticPause;
+        private string automaticPauseAttemptId;
+        private int automaticPauseStateGeneration = -1;
+        private int stateGeneration;
+        private bool terminalSettlementPending;
+        private BartenderFailureReason pendingFailureReason;
+        private int pendingTimedOutOrderSlot = -1;
+        private float nextSettlementRetryTime;
 
         public BsLevel CurrentLevel { get; private set; }
         public int CurrentCampaignSlot { get; private set; } = -1;
@@ -130,14 +175,10 @@ namespace LiquidSort.Levels
 
         /// <summary>Kalan booster stokları. Level yüklenirken asset'ten kopyalanır.</summary>
         public int UndoRemaining { get; private set; }
-        public int ExtraGlassRemaining { get; private set; }
+        public int TimeBoostRemaining { get; private set; }
         public int ShuffleRemaining { get; private set; }
         /// <summary>Geri alınacak bir hamle var mı — stok ayrıca sayılır.</summary>
         public bool HasUndoableMove => undoHistory.Count > 0;
-        /// <summary>Bu levelda sahnede aynı anda kaç bardak bulunabilir.</summary>
-        public int MaxActiveGlasses => maxActiveGlasses;
-        /// <summary>Board'da şu an duran bardak sayısı; +bardak kapısı bunu okur.</summary>
-        public int ActiveGlassCount => board != null ? board.Glasses.Count : 0;
 
         /// <summary>
         /// A detached board clone. UI, tests and future presentation adapters cannot mutate
@@ -150,14 +191,35 @@ namespace LiquidSort.Levels
         /// means the campaign has been completed.
         /// </summary>
         public int NextUnlockedCampaignSlot => Mathf.Clamp(
-            PlayerPrefs.GetInt(progressKey, 0), 0, Campaign.Count);
+            BartenderProgressService.NextUnlockedCampaignSlot, 0, Campaign.Count);
+
+        /// <summary>
+        /// Human-facing level number stored in the next unlocked campaign asset. This is
+        /// intentionally not slot+1 because imported campaigns may use sparse indices.
+        /// </summary>
+        public int NextUnlockedLevelNumber
+        {
+            get
+            {
+                int slot = NextUnlockedCampaignSlot;
+                if (Campaign.Count == 0) return 1;
+                if (slot >= Campaign.Count)
+                {
+                    BsLevel finalLevel = Campaign[Campaign.Count - 1];
+                    return finalLevel != null ? finalLevel.Index : Campaign.Count;
+                }
+                BsLevel level = Campaign[slot];
+                return level != null ? level.Index : slot + 1;
+            }
+        }
 
         /// <summary>
         /// True while a view is animating an already committed board revision. The domain
         /// remains authoritative, but timers and additional commands wait until that visual
         /// transaction has reconciled.
         /// </summary>
-        public bool PresentationLocked => presentationLockOwner != null;
+        public bool PresentationLocked => presentationLockOwner != null
+                                          || presentationBarrierOwners.Count > 0;
 
         /// <summary>
         /// Read-only ownership check for presentation adapters. A view may start an
@@ -169,6 +231,26 @@ namespace LiquidSort.Levels
             owner != null && ReferenceEquals(presentationLockOwner, owner)
             && presentationLockRevision == committedRevision;
 
+        /// <summary>
+        /// Registers a view-owned presentation barrier that is independent from the exact
+        /// revision lock above. Multiple presenters may overlap; gameplay clocks and public
+        /// mutations stay frozen until every owner has released its barrier.
+        /// </summary>
+        public bool AcquirePresentationBarrier(object owner)
+        {
+            if (owner == null) return false;
+            presentationBarrierOwners.Add(owner);
+            return true;
+        }
+
+        /// <summary>Releases a barrier previously registered by the same owner token.</summary>
+        public bool ReleasePresentationBarrier(object owner) =>
+            owner != null && presentationBarrierOwners.Remove(owner);
+
+        /// <summary>Read-only ownership probe used by presentation adapters and tests.</summary>
+        public bool IsPresentationBarrierOwnedBy(object owner) =>
+            owner != null && presentationBarrierOwners.Contains(owner);
+
         public event Action<BsLevel> LevelLoaded;
         public event Action BoardChanged;
         public event Action OrdersChanged;
@@ -177,6 +259,8 @@ namespace LiquidSort.Levels
         public event Action<BartenderDeliveryReceipt> Delivered;
         /// <summary>Stok veya geri-al yığını değişti; alt şerit sayaçlarını tazeler.</summary>
         public event Action BoostersChanged;
+        /// <summary>Kabul edilen +süre miktarı; sunum isterse kartları pulse ettirir.</summary>
+        public event Action<float> TimeBoosted;
 
         private static List<BsLevel> Campaign
         {
@@ -199,12 +283,22 @@ namespace LiquidSort.Levels
 
         private void Start()
         {
+            startHasRun = true;
             ResolveDependencies();
-            if (!loadOnStart) return;
+            if (!loadOnStart || automaticLoadDisabledAtRuntime)
+            {
+                if (NextUnlockedCampaignSlot >= Campaign.Count && Campaign.Count > 0)
+                    SetState(BartenderLevelState.CampaignComplete);
+                return;
+            }
 
-            int slot = resumeSavedProgress
-                ? NextUnlockedCampaignSlot
-                : FindCampaignSlot(startingLevelNumber);
+            if (resumeSavedProgress)
+            {
+                ResumeSavedCampaign();
+                return;
+            }
+
+            int slot = FindCampaignSlot(startingLevelNumber);
 
             if (slot >= Campaign.Count)
             {
@@ -218,15 +312,57 @@ namespace LiquidSort.Levels
 
         private void Update()
         {
+            MaintainApplicationPause();
             Tick(Time.unscaledDeltaTime);
+        }
+
+        private void OnApplicationPause(bool paused)
+        {
+            applicationPaused = paused;
+            suppressNextGameplayTick = true;
+            BartenderProgressService.Refresh();
+            MaintainApplicationPause();
+        }
+
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            applicationFocusLost = !hasFocus;
+            suppressNextGameplayTick = true;
+            BartenderProgressService.Refresh();
+            MaintainApplicationPause();
+        }
+
+        /// <summary>
+        /// Called by a same-scene menu bootstrap before Start. Serialized authoring data
+        /// stays untouched while runtime auto-load is suppressed.
+        /// </summary>
+        public void DisableAutomaticLoadAtRuntime()
+        {
+            if (startHasRun || State != BartenderLevelState.Unloaded) return;
+            automaticLoadDisabledAtRuntime = true;
         }
 
         /// <summary>Advances order clocks; public for deterministic tests and hosts.</summary>
         public void Tick(float unscaledDeltaTime)
         {
+            if (terminalSettlementPending)
+            {
+                RetryPendingTerminalSettlement();
+                return;
+            }
+            if (applicationPaused || applicationFocusLost) return;
+            if (suppressNextGameplayTick)
+            {
+                suppressNextGameplayTick = false;
+                return;
+            }
             if (MutationBlocked || State != BartenderLevelState.Playing
                 || unscaledDeltaTime <= 0f) return;
-            TickOrderDeadlines(unscaledDeltaTime);
+            activeGameplayTime += unscaledDeltaTime;
+            OrderExpiryResult expiry = ExpireOrderIfNeeded(out string rejectionReason);
+            if (expiry == OrderExpiryResult.SettlementRejected)
+                ArmPendingTerminalSettlement(BartenderFailureReason.OrderTimedOut,
+                    FindExpiredOrderSlot(), rejectionReason);
         }
 
         public bool LoadLevelNumber(int oneBasedLevelNumber)
@@ -235,41 +371,161 @@ namespace LiquidSort.Levels
             return slot >= 0 && LoadCampaignSlot(slot);
         }
 
-        public bool LoadCampaignSlot(int zeroBasedSlot)
+        /// <summary>
+        /// Ana menü aynı sahne/rig üzerinde yaşıyorsa geri dönüşün açık yükleme kapısı.
+        /// Rozet ve diğer sunumlar LevelLoaded event'inden kendiliğinden yenilenir.
+        /// Bunu genel OnEnable akışına bağlamıyoruz; sıradan UI/rig toggle'ı aktif
+        /// leveli yanlışlıkla baştan başlatmamalı.
+        /// </summary>
+        public bool ResumeSavedCampaign()
         {
+            bool started = TryStartSavedCampaign(out string rejectionReason);
+            if (!started && !string.IsNullOrEmpty(rejectionReason))
+                Debug.LogWarning(rejectionReason, this);
+            return started;
+        }
+
+        /// <summary>Play button contract: saved slot + positive life + durable attempt.</summary>
+        public bool TryStartSavedCampaign(out string rejectionReason)
+        {
+            rejectionReason = null;
             if (MutationBlocked)
             {
-                Debug.LogWarning("Başka bir level işlemi sürerken level yüklenemez.", this);
+                rejectionReason = "Başka bir level işlemi sürüyor";
+                return false;
+            }
+            if (State != BartenderLevelState.Unloaded
+                && State != BartenderLevelState.CampaignComplete)
+            {
+                rejectionReason = "Oyun zaten açık";
+                return false;
+            }
+
+            int slot = NextUnlockedCampaignSlot;
+            if (slot >= Campaign.Count)
+            {
+                UnloadInternal(BartenderLevelState.CampaignComplete);
+                rejectionReason = "Tüm bölümler tamamlandı";
+                return false;
+            }
+            if (BartenderProgressService.Lives <= 0)
+            {
+                rejectionReason = "Canın dolmasını bekle";
+                return false;
+            }
+
+            return TryLoadCampaignSlot(Mathf.Max(0, slot), out rejectionReason);
+        }
+
+        public bool LoadCampaignSlot(int zeroBasedSlot)
+        {
+            if (State == BartenderLevelState.Failed
+                && zeroBasedSlot != CurrentCampaignSlot)
+            {
+                Debug.LogWarning("Failed tur yalnız aynı bölümle yeniden denenebilir.", this);
+                return false;
+            }
+            if (State == BartenderLevelState.Won
+                && zeroBasedSlot != CurrentCampaignSlot + 1)
+            {
+                Debug.LogWarning("Won tur yalnız sıradaki bölüme ilerleyebilir.", this);
+                return false;
+            }
+            if ((State == BartenderLevelState.Unloaded
+                 || State == BartenderLevelState.CampaignComplete)
+                && resumeSavedProgress
+                && zeroBasedSlot != NextUnlockedCampaignSlot)
+            {
+                Debug.LogWarning("Kampanya yalnız kayıtlı açık bölümden başlatılabilir.", this);
+                return false;
+            }
+            return TryLoadCampaignSlot(zeroBasedSlot, out _);
+        }
+
+        private bool TryLoadCampaignSlot(int zeroBasedSlot, out string rejectionReason) =>
+            TryLoadCampaignSlot(zeroBasedSlot, 0, out rejectionReason);
+
+        private bool TryLoadCampaignSlot(int zeroBasedSlot, int paidLifeCoinCost,
+                                         out string rejectionReason)
+        {
+            rejectionReason = null;
+            if (MutationBlocked)
+            {
+                rejectionReason = "Başka bir level işlemi sürüyor";
+                Debug.LogWarning(rejectionReason, this);
+                return false;
+            }
+            if ((State == BartenderLevelState.Playing
+                 || State == BartenderLevelState.Paused)
+                && !string.IsNullOrEmpty(activeAttemptId))
+            {
+                rejectionReason = "Etkin tur sonuçlanmadan başka bölüm yüklenemez";
+                Debug.LogWarning(rejectionReason, this);
                 return false;
             }
             ResolveDependencies();
             if (zeroBasedSlot < 0 || zeroBasedSlot >= Campaign.Count)
             {
-                Debug.LogError($"LiquidSort level slotu bulunamadı: {zeroBasedSlot}.", this);
+                rejectionReason = $"LiquidSort level slotu bulunamadı: {zeroBasedSlot}.";
+                Debug.LogError(rejectionReason, this);
                 return false;
             }
 
             BsLevel level = Campaign[zeroBasedSlot];
             if (!TryValidateLevel(level, out string error))
             {
-                Debug.LogError($"Level {level.Index} yüklenmedi: {error}", this);
+                string levelName = level != null
+                    ? level.Index.ToString()
+                    : zeroBasedSlot.ToString();
+                rejectionReason = $"Level {levelName} yüklenmedi: {error}";
+                Debug.LogError(rejectionReason, this);
                 return false;
             }
+
+            BsBoard loadedBoard;
+            try { loadedBoard = BsBoard.FromLevel(level); }
+            catch (Exception exception)
+            {
+                rejectionReason = "Level kuralları oluşturulamadı";
+                Debug.LogException(exception, this);
+                return false;
+            }
+
+            string attemptId;
+            bool attemptOpened = paidLifeCoinCost > 0
+                ? BartenderProgressService.TryPurchaseLifeAndBeginAttempt(
+                    zeroBasedSlot, paidLifeCoinCost, out attemptId,
+                    out rejectionReason)
+                : BartenderProgressService.TryBeginAttempt(
+                    zeroBasedSlot, out attemptId, out rejectionReason);
+            if (!attemptOpened)
+                return false;
 
             commandInProgress = true;
             try
             {
+                activeAttemptId = attemptId;
+                terminalSettlementPending = false;
+                pendingFailureReason = BartenderFailureReason.None;
+                pendingTimedOutOrderSlot = -1;
+                nextSettlementRetryTime = 0f;
                 CurrentCampaignSlot = zeroBasedSlot;
                 CurrentLevel = level;
-                board = BsBoard.FromLevel(level);
+                board = loadedBoard;
                 BoardRevision = 0;
                 FailureReason = BartenderFailureReason.None;
                 TimedOutOrderSlot = -1;
+                activeGameplayTime = 0d;
+                ResetTimeBonuses(level);
                 ResetOrderDeadlines();
                 ResetBoosters(level);
 
                 SetState(BartenderLevelState.Playing);
-                EvaluateTerminalState();
+                if (!EvaluateTerminalState(out rejectionReason))
+                {
+                    UnloadInternal(BartenderLevelState.Unloaded);
+                    return false;
+                }
                 InvokeSafely(LevelLoaded, level);
                 InvokeSafely(BoardChanged);
                 InvokeSafely(OrdersChanged);
@@ -288,23 +544,120 @@ namespace LiquidSort.Levels
             return CurrentCampaignSlot >= 0 && LoadCampaignSlot(CurrentCampaignSlot);
         }
 
-        public bool LoadNextLevel()
+        /// <summary>
+        /// Failure ekranının tek retry kapısı. Playing/Paused/Won veya boş bir session
+        /// aynı leveli bu niyet üzerinden yeniden başlatamaz.
+        /// </summary>
+        public BartenderTerminalCommandResult TryRetryAfterFailure()
         {
-            if (MutationBlocked) return false;
+            if (MutationBlocked || State != BartenderLevelState.Failed
+                || CurrentCampaignSlot < 0)
+                return BartenderTerminalCommandResult.Rejected;
+
+            return LoadCampaignSlot(CurrentCampaignSlot)
+                ? BartenderTerminalCommandResult.CurrentLevelReloaded
+                : BartenderTerminalCommandResult.Rejected;
+        }
+
+        /// <summary>
+        /// Failure kartındaki ücretli devam kapısı. Level doğrulandıktan sonra jeton
+        /// harcaması, bir canın iadesi ve yeni tur makbuzu progress servisinde atomik
+        /// yapılır; bu nedenle sıfır canda da aynı bölüm güvenle yeniden açılabilir.
+        /// </summary>
+        public BartenderTerminalCommandResult TryPaidRetryAfterFailure(int coinCost)
+        {
+            if (MutationBlocked || State != BartenderLevelState.Failed
+                || CurrentCampaignSlot < 0 || coinCost <= 0)
+                return BartenderTerminalCommandResult.Rejected;
+
+            return TryLoadCampaignSlot(CurrentCampaignSlot, coinCost, out _)
+                ? BartenderTerminalCommandResult.CurrentLevelReloaded
+                : BartenderTerminalCommandResult.Rejected;
+        }
+
+        /// <summary>
+        /// Win ekranının tek ilerleme kapısı. Son levelde CampaignComplete'e geçmek de
+        /// kabul edilmiş bir navigation sonucudur; false/retry döngüsü üretmez.
+        /// </summary>
+        public BartenderTerminalCommandResult TryContinueAfterWin()
+        {
+            if (MutationBlocked || State != BartenderLevelState.Won
+                || CurrentCampaignSlot < 0)
+                return BartenderTerminalCommandResult.Rejected;
+
             int next = CurrentCampaignSlot + 1;
-            if (next < 0) next = 0;
             if (next >= Campaign.Count)
             {
                 UnloadInternal(BartenderLevelState.CampaignComplete);
-                return false;
+                return BartenderTerminalCommandResult.CampaignCompleted;
             }
-            return LoadCampaignSlot(next);
+
+            return LoadCampaignSlot(next)
+                ? BartenderTerminalCommandResult.NextLevelLoaded
+                : BartenderTerminalCommandResult.Rejected;
+        }
+
+        /// <summary>
+        /// Sonuç ekranının kapatma kapısı. Won/Failed'a gelmeden önce tur makbuzu
+        /// zaten kalıcı olarak settle edilmiştir; burada yeniden settlement yapılmaz,
+        /// yalnızca terminal board boşaltılıp aynı sahnedeki ana menüye dönülür.
+        /// </summary>
+        public BartenderTerminalCommandResult TryReturnToMainMenuFromTerminal()
+        {
+            bool terminalState = State == BartenderLevelState.Won
+                              || State == BartenderLevelState.Failed;
+            if (MutationBlocked || !terminalState || CurrentCampaignSlot < 0
+                || !string.IsNullOrEmpty(activeAttemptId))
+                return BartenderTerminalCommandResult.Rejected;
+
+            UnloadInternal(BartenderLevelState.Unloaded);
+            return BartenderTerminalCommandResult.ReturnedToMainMenu;
+        }
+
+        public bool LoadNextLevel()
+        {
+            return TryContinueAfterWin() != BartenderTerminalCommandResult.Rejected;
         }
 
         public void UnloadLevel()
         {
             if (MutationBlocked) return;
+            if ((State == BartenderLevelState.Playing
+                 || State == BartenderLevelState.Paused)
+                && !string.IsNullOrEmpty(activeAttemptId))
+            {
+                Debug.LogWarning(
+                    "Etkin tur doğrudan boşaltılamaz; TryAbandonToMainMenu kullanın.", this);
+                return;
+            }
             UnloadInternal(BartenderLevelState.Unloaded);
+        }
+
+        /// <summary>
+        /// Confirmed pause-menu exit. Its durable abandon receipt consumes one life once;
+        /// a rejected save keeps both the paused round and confirmation UI intact.
+        /// </summary>
+        public bool TryAbandonToMainMenu(out string rejectionReason)
+        {
+            rejectionReason = null;
+            if (MutationBlocked)
+            {
+                rejectionReason = "Başka bir level işlemi sürüyor";
+                return false;
+            }
+            if (State != BartenderLevelState.Paused || CurrentCampaignSlot < 0
+                || string.IsNullOrEmpty(activeAttemptId))
+            {
+                rejectionReason = "Yalnız duraklatılmış etkin tur terk edilebilir";
+                return false;
+            }
+
+            if (!TrySettleActiveAttempt(BartenderSettlementKind.Abandoned,
+                    NextUnlockedCampaignSlot, out rejectionReason))
+                return false;
+
+            UnloadInternal(BartenderLevelState.Unloaded);
+            return true;
         }
 
         public bool Pause()
@@ -319,6 +672,41 @@ namespace LiquidSort.Levels
             if (MutationBlocked || State != BartenderLevelState.Paused) return false;
             SetState(BartenderLevelState.Playing);
             return true;
+        }
+
+        private void MaintainApplicationPause()
+        {
+            bool suspended = applicationPaused || applicationFocusLost;
+            if (suspended)
+            {
+                if (ownsAutomaticPause || State != BartenderLevelState.Playing) return;
+                ownsAutomaticPause = true;
+                automaticPauseAttemptId = activeAttemptId;
+                automaticPauseStateGeneration = -1;
+                if (Pause() && ownsAutomaticPause
+                    && State == BartenderLevelState.Paused)
+                {
+                    automaticPauseStateGeneration = stateGeneration;
+                    return;
+                }
+                ClearAutomaticPauseOwnership();
+                return;
+            }
+
+            if (!ownsAutomaticPause) return;
+            bool shouldResume = State == BartenderLevelState.Paused
+                             && stateGeneration == automaticPauseStateGeneration
+                             && string.Equals(activeAttemptId, automaticPauseAttemptId,
+                                 StringComparison.Ordinal);
+            ClearAutomaticPauseOwnership();
+            if (shouldResume) Resume();
+        }
+
+        private void ClearAutomaticPauseOwnership()
+        {
+            ownsAutomaticPause = false;
+            automaticPauseAttemptId = null;
+            automaticPauseStateGeneration = -1;
         }
 
         /// <summary>
@@ -401,9 +789,12 @@ namespace LiquidSort.Levels
             {
                 RtGlass sourceBefore = source.Clone();
                 RtGlass targetBefore = target.Clone();
-                // Captured before the mutation but only filed once the rules accepted it,
-                // so a refused command cannot leave a phantom step on the undo stack.
-                BsBoard undoSnapshot = CaptureUndoSnapshot();
+                // Settlement is part of the rule transaction. Keep an unconditional
+                // rollback even when player-facing undo history is disabled.
+                BoardMemento rollback = CaptureCurrentMemento();
+                BoardMemento undoSnapshot = undoHistoryDepth > 0
+                    ? CloneMemento(rollback)
+                    : null;
                 PourResult committed = board.Pour(source, target);
                 if (!committed.Success)
                 {
@@ -412,13 +803,19 @@ namespace LiquidSort.Levels
                 }
 
                 BoardRevision++;
-                CommitUndoSnapshot(undoSnapshot);
                 receipt = new BartenderPourReceipt(
                     BoardRevision, committed, sourceBefore, source.Clone(),
                     targetBefore, target.Clone());
 
                 // Settle all domain invariants before calling code owned by a future view.
-                EvaluateTerminalState();
+                if (!EvaluateTerminalState(out rejectionReason))
+                {
+                    RestoreUndoSnapshot(rollback);
+                    BoardRevision--;
+                    receipt = null;
+                    return false;
+                }
+                CommitUndoSnapshot(undoSnapshot);
                 InvokeSafely(Poured, receipt);
                 InvokeSafely(BoardChanged);
                 InvokeSafely(BoostersChanged);
@@ -434,6 +831,21 @@ namespace LiquidSort.Levels
         public int MatchedOrderSlot(int glassId)
         {
             return board == null ? -1 : board.MatchedSlot(board.GlassById(glassId));
+        }
+
+        /// <summary>Detached bir receipt karesini mevcut siparişlere göre değerlendirir.</summary>
+        public int MatchedOrderSlot(RtGlass glass)
+        {
+            return board == null ? -1 : board.MatchedSlot(glass);
+        }
+
+        /// <summary>Pointer'ın pickup sesi/seçimi için kaynak oyundaki aynı domain kapısı.</summary>
+        public bool CanSelectAsPourSource(int glassId)
+        {
+            if (board == null) return false;
+            RtGlass glass = board.GlassById(glassId);
+            return glass != null && !glass.IsEmpty && !glass.IsChained(board.Delivered)
+                   && glass.TopChainLength(board.Delivered) > 0;
         }
 
         public bool TryDeliver(int glassId, out BartenderDeliveryReceipt receipt,
@@ -462,7 +874,10 @@ namespace LiquidSort.Levels
             {
                 RtGlass deliveredGlass = glass.Clone();
                 OrderDef deliveredOrder = LiveOrderAtSlot(matchedSlot)?.Clone();
-                BsBoard undoSnapshot = CaptureUndoSnapshot();
+                BoardMemento rollback = CaptureCurrentMemento();
+                BoardMemento undoSnapshot = undoHistoryDepth > 0
+                    ? CloneMemento(rollback)
+                    : null;
                 if (!board.Deliver(glass, out int committedSlot) || committedSlot != matchedSlot)
                 {
                     rejectionReason = "Teslim kuralı işlemi reddetti";
@@ -470,13 +885,19 @@ namespace LiquidSort.Levels
                 }
 
                 BoardRevision++;
-                CommitUndoSnapshot(undoSnapshot);
                 RefreshOrderDeadlinesAfterDelivery();
                 receipt = new BartenderDeliveryReceipt(
                     BoardRevision, committedSlot, deliveredGlass, deliveredOrder,
                     LiveOrderAtSlot(committedSlot)?.Clone());
 
-                EvaluateTerminalState();
+                if (!EvaluateTerminalState(out rejectionReason))
+                {
+                    RestoreUndoSnapshot(rollback);
+                    BoardRevision--;
+                    receipt = null;
+                    return false;
+                }
+                CommitUndoSnapshot(undoSnapshot);
                 InvokeSafely(Delivered, receipt);
                 InvokeSafely(BoardChanged);
                 InvokeSafely(OrdersChanged);
@@ -494,10 +915,9 @@ namespace LiquidSort.Levels
         //  BOOSTER KOMUTLARI
         //
         //  Üçü de aynı kapıdan geçer: yalnız Playing durumunda, yalnız komut/sunum
-        //  kilidi yokken. Failed'dan kurtarma bilerek YOK — BsRoundStateMachine terminal
-        //  sonucu atomik olarak kilitliyor ve epoch'u artırıyor; oradan Playing'e dönmek
-        //  akış FSM'ini controller ile ayrıştırırdı. Kurtarma istenirse doğru yer level
-        //  yeniden yükleme, bir booster değil.
+        //  kilidi yokken. Undo yalnız normal gameplay hamlelerini geri alır; satın alınan
+        //  +süre ve kabul edilen karıştırma kalıcı booster harcamalarıdır. Failed'dan
+        //  kurtarma bilerek YOK — terminal turdan çıkışın doğru yeri retry akışıdır.
         // ---------------------------------------------------------------
 
         /// <summary>
@@ -522,17 +942,29 @@ namespace LiquidSort.Levels
             commandInProgress = true;
             try
             {
+                BoardMemento rollback = CaptureCurrentMemento();
                 int last = undoHistory.Count - 1;
-                board = undoHistory[last];
+                BoardMemento memento = undoHistory[last];
                 undoHistory.RemoveAt(last);
                 UndoRemaining--;
                 BoardRevision++;
 
-                // Slot'lardaki OrderDef referansları klonla birlikte değişti; süre sözlüğü
-                // referansla anahtarlandığı için baştan kurulmak zorunda.
-                ResetOrderDeadlines();
+                RestoreUndoSnapshot(memento);
 
-                EvaluateTerminalState();
+                // Geri alınan kartın deadline'ı geçen sürede dolmuş olabilir. Board
+                // yine de geri alınır, fakat aynı Undo komutu turu Failed'a kilitler.
+                OrderExpiryResult expiry = ExpireOrderIfNeeded(out rejectionReason);
+                bool settlementAccepted = expiry != OrderExpiryResult.SettlementRejected;
+                if (expiry == OrderExpiryResult.NotExpired)
+                    settlementAccepted = EvaluateTerminalState(out rejectionReason);
+                if (!settlementAccepted)
+                {
+                    RestoreUndoSnapshot(rollback);
+                    undoHistory.Add(memento);
+                    UndoRemaining++;
+                    BoardRevision--;
+                    return false;
+                }
                 InvokeSafely(BoardChanged);
                 InvokeSafely(OrdersChanged);
                 InvokeSafely(BoostersChanged);
@@ -546,49 +978,76 @@ namespace LiquidSort.Levels
         }
 
         /// <summary>
-        /// Boş bir çalışma bardağı ekler. Tipi ÇAĞIRAN seçer: hangi tiplerin sahnede
-        /// boş havuz slotu kaldığını yalnız sunum katmanı bilir, kural motoru bilmez.
+        /// Ücretli +süre teklifinin o anda kabul edilip edilemeyeceğini doğrular.
+        /// Süresi dolmuş sipariş CanAcceptCommand içinde önce Failed olur;
+        /// booster terminal sonucu geriye çeviremez.
         /// </summary>
-        public bool TryAddExtraGlass(GlassType type, out int newGlassId,
-                                     out string rejectionReason)
+        public bool CanPurchaseTimeBoost(float seconds, int coinCost,
+                                         out string rejectionReason)
         {
-            newGlassId = -1;
-            rejectionReason = null;
-            if (!CanAcceptCommand(out rejectionReason)) return false;
-            if (ExtraGlassRemaining <= 0)
+            if (!TryCollectTimeBoostTargets(seconds, out rejectionReason)) return false;
+            if (TimeBoostRemaining <= 0)
             {
-                rejectionReason = "Ekstra bardak hakkı kalmadı";
+                rejectionReason = "Süre booster hakkı kalmadı";
                 return false;
             }
-            if (!IsKnownGlassType(type))
+            if (coinCost <= 0)
             {
-                rejectionReason = "Geçersiz bardak tipi";
+                rejectionReason = "Süre booster fiyatı geçersiz";
                 return false;
             }
-            if (board.Glasses.Count >= maxActiveGlasses)
+            if (!BartenderEconomy.CanAfford(coinCost))
             {
-                rejectionReason = $"Sahnede en fazla {maxActiveGlasses} bardak durabilir";
+                rejectionReason = $"Yetersiz altın: {BartenderEconomy.Coins}/{coinCost}";
                 return false;
             }
+            return true;
+        }
+
+        /// <summary>
+        /// O anda açık olan bütün süreli siparişlere aynı bonusu ekler. Gelecekte açılan
+        /// kartlar hedef değildir. Satın alınan bonus logical order kimliğiyle ayrıca
+        /// tutulur ve bütün eski Undo mementolarındaki ilgili deadline'lara işlenir;
+        /// böylece Undo ne altını ne satın alınmış süreyi geri verir.
+        /// </summary>
+        public bool TryPurchaseTimeBoost(float seconds, int coinCost,
+                                         out string rejectionReason)
+        {
+            if (!CanPurchaseTimeBoost(seconds, coinCost, out rejectionReason)) return false;
+            int[] targetOrders = timeBoostOrderScratch.ToArray();
 
             commandInProgress = true;
             try
             {
-                BsBoard undoSnapshot = CaptureUndoSnapshot();
-                RtGlass added = board.AddEmptyGlass(type);
-                if (added == null)
+                // Hedef kümesi yukarıdaki doğrulamadan bu yana değişemez: Unity main
+                // thread'deyiz ve commandInProgress reentrant gameplay komutunu kapatır.
+                for (int target = 0; target < targetOrders.Length; target++)
                 {
-                    rejectionReason = "Bardak eklenemedi";
+                    int orderIndex = targetOrders[target];
+                    timeBonusByOrderIndex[orderIndex] += seconds;
+                    ExtendLiveDeadline(orderIndex, seconds);
+                    ExtendUndoDeadlines(orderIndex, seconds);
+                }
+                TimeBoostRemaining--;
+
+                // Avantajı ekonomi event'inden önce tamamla: CoinsChanged dinleyicileri
+                // yeni bakiye ile eski timer/stoğu aynı karede asla gözlemlemez. Kalıcı
+                // kayıt kabul edilmezse hiçbir controller eventi yayınlamadan geri al.
+                if (!BartenderEconomy.TrySpendCoins(coinCost, out rejectionReason))
+                {
+                    for (int target = 0; target < targetOrders.Length; target++)
+                    {
+                        int orderIndex = targetOrders[target];
+                        timeBonusByOrderIndex[orderIndex] -= seconds;
+                        ExtendLiveDeadline(orderIndex, -seconds);
+                        ExtendUndoDeadlines(orderIndex, -seconds);
+                    }
+                    TimeBoostRemaining++;
                     return false;
                 }
 
-                newGlassId = added.Id;
-                ExtraGlassRemaining--;
-                BoardRevision++;
-                CommitUndoSnapshot(undoSnapshot);
-
-                EvaluateTerminalState();
-                InvokeSafely(BoardChanged);
+                InvokeSafely(TimeBoosted, seconds);
+                InvokeSafely(OrdersChanged);
                 InvokeSafely(BoostersChanged);
                 return true;
             }
@@ -596,6 +1055,79 @@ namespace LiquidSort.Levels
             {
                 commandInProgress = false;
                 FlushPendingStateChanged();
+            }
+        }
+
+        private bool TryCollectTimeBoostTargets(float seconds, out string rejectionReason)
+        {
+            timeBoostOrderScratch.Clear();
+            rejectionReason = null;
+            if (float.IsNaN(seconds) || float.IsInfinity(seconds) || seconds <= 0f)
+            {
+                rejectionReason = "Eklenecek süre pozitif ve sonlu olmalı";
+                return false;
+            }
+            if (!CanAcceptCommand(out rejectionReason)) return false;
+            if (!board.TimedOrdersEnabled)
+            {
+                rejectionReason = "Bu levelda süreli sipariş yok";
+                return false;
+            }
+
+            for (int slot = 0; slot < board.Slots.Length; slot++)
+            {
+                OrderDef order = board.Slots[slot];
+                if (order == null || order.TimeLimit <= 0f
+                    || !orderDeadlines.ContainsKey(order))
+                    continue;
+
+                int orderIndex = order.RuntimeOrderIndex;
+                if (orderIndex < 0 || orderIndex >= timeBonusByOrderIndex.Length)
+                {
+                    rejectionReason = "Süreli sipariş kimliği geçersiz";
+                    timeBoostOrderScratch.Clear();
+                    return false;
+                }
+                if (!timeBoostOrderScratch.Contains(orderIndex))
+                    timeBoostOrderScratch.Add(orderIndex);
+            }
+
+            if (timeBoostOrderScratch.Count > 0) return true;
+            rejectionReason = "Açık süreli sipariş yok";
+            return false;
+        }
+
+        private void ExtendLiveDeadline(int orderIndex, double seconds)
+        {
+            for (int slot = 0; slot < board.Slots.Length; slot++)
+            {
+                OrderDef order = board.Slots[slot];
+                if (order == null || order.RuntimeOrderIndex != orderIndex
+                    || !orderDeadlines.TryGetValue(order, out double deadline))
+                    continue;
+                orderDeadlines[order] = deadline + seconds;
+            }
+        }
+
+        private void ExtendUndoDeadlines(int orderIndex, double seconds)
+        {
+            for (int history = 0; history < undoHistory.Count; history++)
+            {
+                BoardMemento memento = undoHistory[history];
+                if (memento?.Board?.Slots == null || memento.SlotDeadlines == null)
+                    continue;
+
+                int count = Math.Min(memento.Board.Slots.Length,
+                                     memento.SlotDeadlines.Length);
+                for (int slot = 0; slot < count; slot++)
+                {
+                    OrderDef order = memento.Board.Slots[slot];
+                    if (order == null || order.RuntimeOrderIndex != orderIndex
+                        || !memento.SlotDeadlines[slot].HasValue)
+                        continue;
+                    memento.SlotDeadlines[slot] =
+                        memento.SlotDeadlines[slot].Value + seconds;
+                }
             }
         }
 
@@ -610,11 +1142,10 @@ namespace LiquidSort.Levels
         /// bardaklar. Onların içeriği yerinde kalır; aksi hâlde karıştırma bir kilidi
         /// sessizce açardı.
         ///
-        /// DIKKAT: sonucun çözülebilir kalacağı GARANTİ EDİLMEZ. Renk toplamı korunduğu
-        /// için sipariş destesi hâlâ karşılanabilir durumdadır, ama dizilim kilitlenmiş
-        /// bir board üretebilir. Bu bilinçli: doğrulama tam bir solver koşturmak demek
-        /// ve bir buton dokunuşunun bütçesi değil. Kilitlenen board'u kural motoru
-        /// zaten IsFail ile yakalar.
+        /// Tam çözülebilirlik solver'ı gameplay ana thread'inde koşturulmaz; bunun yerine
+        /// sınırlı sayıda aday denenir ve IsFail olan (anında yasal hamlesiz) aday asla
+        /// commit edilmez. Kabul edilen karıştırma kalıcıdır ve eski undo geçmişini
+        /// kapatır; Undo booster harcamasını geri çeviremez.
         /// </summary>
         public bool TryShuffle(out string rejectionReason)
         {
@@ -629,18 +1160,34 @@ namespace LiquidSort.Levels
             commandInProgress = true;
             try
             {
-                BsBoard undoSnapshot = CaptureUndoSnapshot();
-                if (!ShuffleMovableLayers())
+                const int maxAttempts = 12;
+                BoardMemento rollback = CaptureCurrentMemento();
+                bool acceptedCandidate = false;
+                for (int attempt = 0; attempt < maxAttempts; attempt++)
                 {
-                    rejectionReason = "Karıştırılacak serbest sıvı yok";
+                    RestoreUndoSnapshot(CloneMemento(rollback));
+                    if (!ShuffleMovableLayers() || board.IsFail()) continue;
+                    acceptedCandidate = true;
+                    break;
+                }
+
+                if (!acceptedCandidate)
+                {
+                    RestoreUndoSnapshot(rollback);
+                    rejectionReason = "Yasal hamlesi kalan bir karıştırma bulunamadı";
                     return false;
                 }
 
                 ShuffleRemaining--;
                 BoardRevision++;
-                CommitUndoSnapshot(undoSnapshot);
-
-                EvaluateTerminalState();
+                if (!EvaluateTerminalState(out rejectionReason))
+                {
+                    RestoreUndoSnapshot(rollback);
+                    ShuffleRemaining++;
+                    BoardRevision--;
+                    return false;
+                }
+                undoHistory.Clear();
                 InvokeSafely(BoardChanged);
                 InvokeSafely(BoostersChanged);
                 return true;
@@ -697,14 +1244,64 @@ namespace LiquidSort.Levels
         {
             undoHistory.Clear();
             UndoRemaining = Mathf.Max(0, level != null ? level.UndoCount : 0);
-            ExtraGlassRemaining = Mathf.Max(0, level != null ? level.ExtraGlassCount : 0);
+            TimeBoostRemaining = Mathf.Max(0, level != null ? level.TimeBoostCount : 0);
             ShuffleRemaining = Mathf.Max(0, level != null ? level.ShuffleCount : 0);
         }
 
-        private BsBoard CaptureUndoSnapshot() =>
-            undoHistoryDepth > 0 && board != null ? board.Clone() : null;
+        private BoardMemento CaptureUndoSnapshot() =>
+            undoHistoryDepth > 0 && board != null ? CaptureCurrentMemento() : null;
 
-        private void CommitUndoSnapshot(BsBoard snapshot)
+        private BoardMemento CaptureCurrentMemento()
+        {
+            if (board == null) return null;
+
+            var deadlines = new double?[board.Slots.Length];
+            for (int slot = 0; slot < board.Slots.Length; slot++)
+            {
+                OrderDef order = board.Slots[slot];
+                if (order != null
+                    && orderDeadlines.TryGetValue(order, out double deadline))
+                    deadlines[slot] = deadline;
+            }
+
+            return new BoardMemento
+            {
+                Board = board.Clone(),
+                SlotDeadlines = deadlines,
+            };
+        }
+
+        private static BoardMemento CloneMemento(BoardMemento source)
+        {
+            if (source == null || source.Board == null) return null;
+            return new BoardMemento
+            {
+                Board = source.Board.Clone(),
+                SlotDeadlines = source.SlotDeadlines == null
+                    ? null
+                    : (double?[])source.SlotDeadlines.Clone(),
+            };
+        }
+
+        private void RestoreUndoSnapshot(BoardMemento snapshot)
+        {
+            if (snapshot == null || snapshot.Board == null)
+                throw new ArgumentNullException(nameof(snapshot));
+
+            board = snapshot.Board;
+            orderDeadlines.Clear();
+            double?[] deadlines = snapshot.SlotDeadlines;
+            for (int slot = 0; slot < board.Slots.Length; slot++)
+            {
+                OrderDef order = board.Slots[slot];
+                if (order == null || deadlines == null || slot >= deadlines.Length
+                    || !deadlines[slot].HasValue)
+                    continue;
+                orderDeadlines[order] = deadlines[slot].Value;
+            }
+        }
+
+        private void CommitUndoSnapshot(BoardMemento snapshot)
         {
             if (snapshot == null) return;
             undoHistory.Add(snapshot);
@@ -726,9 +1323,15 @@ namespace LiquidSort.Levels
                                              out float duration)
         {
             OrderDef order = LiveOrderAtSlot(slotIndex);
-            duration = order != null ? order.TimeLimit : 0f;
-            if (order != null && orderRemaining.TryGetValue(order, out remaining))
+            duration = order != null
+                ? order.TimeLimit + (float)TimeBonusFor(order)
+                : 0f;
+            if (order != null
+                && orderDeadlines.TryGetValue(order, out double deadline))
+            {
+                remaining = Mathf.Max(0f, (float)(deadline - activeGameplayTime));
                 return true;
+            }
             remaining = 0f;
             return false;
         }
@@ -835,7 +1438,10 @@ namespace LiquidSort.Levels
         }
 
         private bool MutationBlocked => commandInProgress || notificationInProgress
-                                     || presentationLockOwner != null;
+                                     || settlementInProgress
+                                     || terminalSettlementPending
+                                     || presentationLockOwner != null
+                                     || presentationBarrierOwners.Count > 0;
 
         private bool CanAcceptCommand(out string reason)
         {
@@ -849,9 +1455,15 @@ namespace LiquidSort.Levels
                 reason = "Level oynanır durumda değil";
                 return false;
             }
-            if (ExpireOrderIfNeeded())
+            OrderExpiryResult expiry = ExpireOrderIfNeeded(out string expiryReason);
+            if (expiry != OrderExpiryResult.NotExpired)
             {
-                reason = "Sipariş süresi doldu";
+                if (expiry == OrderExpiryResult.SettlementRejected)
+                    ArmPendingTerminalSettlement(BartenderFailureReason.OrderTimedOut,
+                        FindExpiredOrderSlot(), expiryReason);
+                reason = string.IsNullOrEmpty(expiryReason)
+                    ? "Sipariş süresi doldu"
+                    : expiryReason;
                 return false;
             }
             reason = null;
@@ -860,97 +1472,199 @@ namespace LiquidSort.Levels
 
         private void ResetOrderDeadlines()
         {
-            orderRemaining.Clear();
+            orderDeadlines.Clear();
             RefreshOrderDeadlinesAfterDelivery();
+        }
+
+        private void ResetTimeBonuses(BsLevel level)
+        {
+            int count = level != null && level.Orders != null ? level.Orders.Count : 0;
+            timeBonusByOrderIndex = count > 0 ? new double[count] : Array.Empty<double>();
+        }
+
+        private double TimeBonusFor(OrderDef order)
+        {
+            if (order == null) return 0d;
+            int index = order.RuntimeOrderIndex;
+            return index >= 0 && index < timeBonusByOrderIndex.Length
+                ? timeBonusByOrderIndex[index]
+                : 0d;
         }
 
         private void RefreshOrderDeadlinesAfterDelivery()
         {
             if (board == null || board.Slots == null)
             {
-                orderRemaining.Clear();
+                orderDeadlines.Clear();
                 return;
             }
 
             timerRemovalScratch.Clear();
-            foreach (KeyValuePair<OrderDef, float> pair in orderRemaining)
+            foreach (KeyValuePair<OrderDef, double> pair in orderDeadlines)
             {
                 if (!ContainsOrderReference(board.Slots, pair.Key))
                     timerRemovalScratch.Add(pair.Key);
             }
             for (int i = 0; i < timerRemovalScratch.Count; i++)
-                orderRemaining.Remove(timerRemovalScratch[i]);
+                orderDeadlines.Remove(timerRemovalScratch[i]);
 
             if (!board.TimedOrdersEnabled) return;
             for (int i = 0; i < board.Slots.Length; i++)
             {
                 OrderDef order = board.Slots[i];
-                if (order == null || order.TimeLimit <= 0f || orderRemaining.ContainsKey(order))
+                if (order == null || order.TimeLimit <= 0f
+                    || orderDeadlines.ContainsKey(order))
                     continue;
-                orderRemaining.Add(order, order.TimeLimit);
+                orderDeadlines.Add(order,
+                    activeGameplayTime + order.TimeLimit + TimeBonusFor(order));
             }
         }
 
-        private void TickOrderDeadlines(float delta)
+        private OrderExpiryResult ExpireOrderIfNeeded(out string rejectionReason)
         {
-            if (board == null || !board.TimedOrdersEnabled) return;
+            rejectionReason = null;
+            if (board == null || !board.TimedOrdersEnabled)
+                return OrderExpiryResult.NotExpired;
             for (int slot = 0; slot < board.Slots.Length; slot++)
             {
                 OrderDef order = board.Slots[slot];
-                if (order == null || !orderRemaining.TryGetValue(order, out float remaining))
-                    continue;
-                remaining -= delta;
-                orderRemaining[order] = remaining;
-                if (remaining > 0f) continue;
-                Fail(BartenderFailureReason.OrderTimedOut, slot);
-                return;
-            }
-        }
-
-        private bool ExpireOrderIfNeeded()
-        {
-            if (board == null || !board.TimedOrdersEnabled) return false;
-            for (int slot = 0; slot < board.Slots.Length; slot++)
-            {
-                OrderDef order = board.Slots[slot];
-                if (order != null && orderRemaining.TryGetValue(order, out float remaining)
-                                  && remaining <= 0f)
+                if (order != null
+                    && orderDeadlines.TryGetValue(order, out double deadline)
+                    && deadline <= activeGameplayTime)
                 {
-                    Fail(BartenderFailureReason.OrderTimedOut, slot);
-                    return true;
+                    return Fail(BartenderFailureReason.OrderTimedOut, slot,
+                            out rejectionReason)
+                        ? OrderExpiryResult.Settled
+                        : OrderExpiryResult.SettlementRejected;
                 }
             }
-            return false;
+            return OrderExpiryResult.NotExpired;
         }
 
-        private void EvaluateTerminalState()
+        private int FindExpiredOrderSlot()
         {
-            if (State != BartenderLevelState.Playing || board == null) return;
+            if (board == null || board.Slots == null) return -1;
+            for (int slot = 0; slot < board.Slots.Length; slot++)
+            {
+                OrderDef order = board.Slots[slot];
+                if (order != null
+                    && orderDeadlines.TryGetValue(order, out double deadline)
+                    && deadline <= activeGameplayTime)
+                    return slot;
+            }
+            return -1;
+        }
+
+        private void ArmPendingTerminalSettlement(BartenderFailureReason reason,
+                                                  int timedOutSlot,
+                                                  string rejectionReason)
+        {
+            terminalSettlementPending = true;
+            pendingFailureReason = reason;
+            pendingTimedOutOrderSlot = timedOutSlot;
+            nextSettlementRetryTime = Time.unscaledTime + 1f;
+            if (!string.IsNullOrEmpty(rejectionReason))
+                Debug.LogWarning("Tur sonucu kaydedilemedi; yeniden denenecek: "
+                               + rejectionReason, this);
+        }
+
+        private void RetryPendingTerminalSettlement()
+        {
+            if (!terminalSettlementPending || State != BartenderLevelState.Playing) return;
+            if (applicationPaused || applicationFocusLost
+                || Time.unscaledTime < nextSettlementRetryTime) return;
+
+            if (!Fail(pendingFailureReason, pendingTimedOutOrderSlot, out _))
+            {
+                nextSettlementRetryTime = Time.unscaledTime + 1f;
+                return;
+            }
+
+            terminalSettlementPending = false;
+            pendingFailureReason = BartenderFailureReason.None;
+            pendingTimedOutOrderSlot = -1;
+            nextSettlementRetryTime = 0f;
+        }
+
+        private bool EvaluateTerminalState() => EvaluateTerminalState(out _);
+
+        /// <summary>
+        /// Returns false only when a terminal result was detected but its durable receipt
+        /// could not be committed. Callers that mutated the board can then roll back before
+        /// publishing any presentation event.
+        /// </summary>
+        private bool EvaluateTerminalState(out string rejectionReason)
+        {
+            rejectionReason = null;
+            if (State != BartenderLevelState.Playing || board == null) return true;
             if (board.IsWin())
             {
-                int unlocked = Mathf.Max(NextUnlockedCampaignSlot, CurrentCampaignSlot + 1);
-                PlayerPrefs.SetInt(progressKey, Mathf.Min(unlocked, Campaign.Count));
-                PlayerPrefs.Save();
+                int unlocked = Mathf.Min(CurrentCampaignSlot + 1, Campaign.Count);
+                if (!TrySettleActiveAttempt(BartenderSettlementKind.Won, unlocked,
+                        out rejectionReason))
+                    return false;
                 SetState(BartenderLevelState.Won);
             }
             else if (board.IsFail())
             {
-                Fail(BartenderFailureReason.NoLegalMoves, -1);
+                return Fail(BartenderFailureReason.NoLegalMoves, -1,
+                    out rejectionReason);
             }
+            return true;
         }
 
-        private void Fail(BartenderFailureReason reason, int timedOutSlot)
+        private bool Fail(BartenderFailureReason reason, int timedOutSlot,
+                          out string rejectionReason)
         {
-            if (State != BartenderLevelState.Playing) return;
+            rejectionReason = null;
+            if (State != BartenderLevelState.Playing) return true;
+            if (!TrySettleActiveAttempt(BartenderSettlementKind.Failed,
+                    NextUnlockedCampaignSlot, out rejectionReason))
+                return false;
             FailureReason = reason;
             TimedOutOrderSlot = timedOutSlot;
             SetState(BartenderLevelState.Failed);
+            return true;
+        }
+
+        private bool TrySettleActiveAttempt(BartenderSettlementKind kind,
+                                            int nextUnlockedOnWin,
+                                            out string rejectionReason)
+        {
+            rejectionReason = null;
+            if (settlementInProgress)
+            {
+                rejectionReason = "Tur sonucu zaten işleniyor";
+                return false;
+            }
+            if (string.IsNullOrEmpty(activeAttemptId) || CurrentCampaignSlot < 0)
+            {
+                rejectionReason = "Etkin tur makbuzu bulunamadı";
+                return false;
+            }
+
+            settlementInProgress = true;
+            try
+            {
+                BartenderProgressCommitResult result =
+                    BartenderProgressService.TrySettleAttempt(
+                        activeAttemptId, kind, CurrentCampaignSlot,
+                        nextUnlockedOnWin, out rejectionReason);
+                if (result == BartenderProgressCommitResult.Rejected) return false;
+                activeAttemptId = null;
+                return true;
+            }
+            finally
+            {
+                settlementInProgress = false;
+            }
         }
 
         private void SetState(BartenderLevelState next)
         {
             if (State == next) return;
             State = next;
+            stateGeneration++;
             if (commandInProgress)
             {
                 pendingStateNotification = next;
@@ -972,11 +1686,20 @@ namespace LiquidSort.Levels
         {
             presentationLockOwner = null;
             presentationLockRevision = -1;
+            presentationBarrierOwners.Clear();
+            activeAttemptId = null;
+            ClearAutomaticPauseOwnership();
+            terminalSettlementPending = false;
+            pendingFailureReason = BartenderFailureReason.None;
+            pendingTimedOutOrderSlot = -1;
+            nextSettlementRetryTime = 0f;
             board = null;
             CurrentLevel = null;
             CurrentCampaignSlot = -1;
             BoardRevision = 0;
-            orderRemaining.Clear();
+            activeGameplayTime = 0d;
+            timeBonusByOrderIndex = Array.Empty<double>();
+            orderDeadlines.Clear();
             ResetBoosters(null);
             FailureReason = BartenderFailureReason.None;
             TimedOutOrderSlot = -1;

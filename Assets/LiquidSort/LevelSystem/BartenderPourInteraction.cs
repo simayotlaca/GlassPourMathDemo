@@ -22,6 +22,8 @@ namespace LiquidSort.Levels
         [SerializeField] private PourAnimator pourAnimator;
         [Tooltip("Round-token owner. Empty resolves the BartenderSession on this rig.")]
         [SerializeField] private BartenderSession session;
+        [Tooltip("Optional. Empty resolves the OrderStripPresenter on this rig.")]
+        [SerializeField] private OrderStripPresenter orderStrip;
 
         [Header("Host scene")]
         [Tooltip("Optional. A portable prefab resolves Camera.main when this is empty.")]
@@ -32,9 +34,20 @@ namespace LiquidSort.Levels
         [SerializeField, Min(0f)] private float selectionLift = 0.16f;
         [SerializeField, Min(0.01f)] private float selectionSpeed = 14f;
 
+        [Header("Rejected move feel")]
+        [SerializeField, Min(0.08f)] private float rejectionDuration = 0.28f;
+        [SerializeField, Range(0f, 12f)] private float sourceRejectionWobble = 3.5f;
+        [SerializeField, Range(0f, 12f)] private float targetRejectionWobble = 6f;
+        [SerializeField, Range(0f, 1f)] private float rejectionHighlightAlpha = 0.58f;
+        [SerializeField] private Color rejectedSourceColor =
+            new Color(1f, 0.63f, 0.16f, 1f);
+        [SerializeField] private Color rejectedTargetColor =
+            new Color(1f, 0.20f, 0.18f, 1f);
+
         private BartenderLevelController subscribedController;
         private BartenderShelfLevelView subscribedView;
         private PourAnimator subscribedAnimator;
+        private IBartenderInputPolicy inputPolicy;
 
         private LiquidBottle selectedBottle;
         private int selectedGlassId = -1;
@@ -44,6 +57,7 @@ namespace LiquidSort.Levels
 
         private int activeOperationId;
         private bool deliveryPresentationActive;
+        private BartenderDeliveryReceipt activeDeliveryReceipt;
         private int lockedRevision = -1;
         private int activeTransactionToken;
         private int nextTransactionToken;
@@ -56,12 +70,51 @@ namespace LiquidSort.Levels
 
         public int SelectedGlassId => selectedGlassId;
         public bool Busy => activeOperationId != 0 || deliveryPresentationActive
-                         || (pourAnimator != null && pourAnimator.Busy);
+                         || (pourAnimator != null && pourAnimator.Busy)
+                         || (orderStrip != null && orderStrip.TransitionPlaying);
         public string LastRejection { get; private set; }
         public BartenderLevelController Controller => controller;
         public BartenderShelfLevelView ShelfView => shelfView;
         public PourAnimator Animator => pourAnimator;
         public BartenderSession Session => session;
+        public Camera InputCamera => ResolveCamera();
+        public IBartenderInputPolicy InputPolicy
+        {
+            get
+            {
+                DropDestroyedInputPolicy();
+                return inputPolicy;
+            }
+        }
+
+        /// <summary>Raised only when the selected domain glass id actually changes.</summary>
+        public event Action<int> SelectionChanged;
+
+        /// <summary>
+        /// Acquires the optional modal world-input gate without stealing it from another
+        /// flow. Tutorial, accessibility and scripted-demo layers all share this lease.
+        /// </summary>
+        public bool TrySetInputPolicy(IBartenderInputPolicy policy)
+        {
+            if (policy == null) return false;
+            DropDestroyedInputPolicy();
+            if (inputPolicy != null && !ReferenceEquals(inputPolicy, policy)) return false;
+            inputPolicy = policy;
+            return true;
+        }
+
+        public bool ClearInputPolicy(IBartenderInputPolicy policy)
+        {
+            if (policy == null || !ReferenceEquals(inputPolicy, policy)) return false;
+            inputPolicy = null;
+            return true;
+        }
+
+        /// <summary>
+        /// Lets a modal flow begin from a deterministic neutral pointer state without
+        /// mutating the board. The normal selection-change receipt is still published.
+        /// </summary>
+        public void ClearSelectionForModal() => ClearSelection(true);
 
         public void Configure(BartenderLevelController levelController,
                               BartenderShelfLevelView view,
@@ -69,9 +122,11 @@ namespace LiquidSort.Levels
                               Camera sceneCamera = null,
                               BartenderSession roundSession = null)
         {
+            CancelRejectionFeedbacks(true);
             CancelAndFinishPresentation();
             Unsubscribe();
             ClearSelection(true);
+            inputPolicy = null;
             controller = levelController;
             shelfView = view;
             pourAnimator = animator;
@@ -92,8 +147,10 @@ namespace LiquidSort.Levels
         private void OnDisable()
         {
             Unsubscribe();
+            CancelRejectionFeedbacks(true);
             CancelAndFinishPresentation();
             ClearSelection(true);
+            inputPolicy = null;
         }
 
         private void OnValidate()
@@ -101,11 +158,16 @@ namespace LiquidSort.Levels
             pickPadding = Mathf.Max(0f, pickPadding);
             selectionLift = Mathf.Max(0f, selectionLift);
             selectionSpeed = Mathf.Max(0.01f, selectionSpeed);
+            rejectionDuration = Mathf.Max(0.08f, rejectionDuration);
+            sourceRejectionWobble = Mathf.Clamp(sourceRejectionWobble, 0f, 12f);
+            targetRejectionWobble = Mathf.Clamp(targetRejectionWobble, 0f, 12f);
+            rejectionHighlightAlpha = Mathf.Clamp01(rejectionHighlightAlpha);
         }
 
         private void Update()
         {
             AnimateSelection();
+            if (TryHandleTerminalPointer()) return;
             if (!CanReadPointer() || !TryReadPointerDown(out Vector2 screenPoint)) return;
             if (IsPointerOverUi()) return;
             HandlePointerDown(screenPoint);
@@ -122,6 +184,11 @@ namespace LiquidSort.Levels
             rejectionReason = null;
             LastRejection = null;
             ResolveDependencies();
+
+            if (!CheckInputPolicy(
+                    BartenderInputRequest.Pour(sourceGlassId, targetGlassId),
+                    out rejectionReason))
+                return false;
 
             if (controller == null || shelfView == null || pourAnimator == null
                 || session == null)
@@ -143,7 +210,18 @@ namespace LiquidSort.Levels
                               out rejectionReason);
 
             PourResult rule = controller.CanPour(sourceGlassId, targetGlassId);
-            if (!rule.Success) return Reject(rule.Reason, out rejectionReason);
+            if (!rule.Success)
+            {
+                BsAudio.Instance?.Play(BsSfx.Invalid);
+                PlayRejectedPourFeedback(source, target);
+                return Reject(rule.Reason, out rejectionReason);
+            }
+
+            // A new legal operation owns these roots next. Stop only our feedback
+            // sequences (never transform.DOKill), restore their authored rotations, then
+            // hand the same transforms to PourAnimator.
+            CancelRejectionFeedback(source, true);
+            CancelRejectionFeedback(target, true);
 
             if (!shelfView.TryGetSeatPose(sourceGlassId,
                     out BartenderGlassSeatPose home))
@@ -176,6 +254,8 @@ namespace LiquidSort.Levels
             if (!committed)
             {
                 FinishPresentationTransaction(false);
+                BsAudio.Instance?.Play(BsSfx.Invalid);
+                PlayRejectedPourFeedback(source, target);
                 return Reject(domainRejection, out rejectionReason);
             }
 
@@ -248,6 +328,10 @@ namespace LiquidSort.Levels
             LastRejection = null;
             ResolveDependencies();
 
+            if (!CheckInputPolicy(BartenderInputRequest.Delivery(glassId),
+                                  out rejectionReason))
+                return false;
+
             if (controller == null || shelfView == null || session == null)
                 return Reject("Gameplay rig controller/view/session bağlantısı eksik.",
                               out rejectionReason);
@@ -261,12 +345,19 @@ namespace LiquidSort.Levels
                 || shelfView.DeliveryPlaying || Busy || controller.PresentationLocked)
                 return Reject("Sahne başka bir sunum animasyonuyla meşgul.",
                               out rejectionReason);
-            if (!shelfView.TryGetBottle(glassId, out _))
+            if (!shelfView.TryGetBottle(glassId, out LiquidBottle deliveryBottle))
                 return Reject("Bardağın aktif sahne bağlantısı bulunamadı.",
                               out rejectionReason);
             if (controller.MatchedOrderSlot(glassId) < 0)
+            {
+                BsAudio.Instance?.Play(BsSfx.Invalid);
+                PlayRejectionFeedback(deliveryBottle, rejectedTargetColor,
+                    targetRejectionWobble);
                 return Reject("Bardak açık bir siparişi karşılamıyor.",
                               out rejectionReason);
+            }
+
+            CancelRejectionFeedback(deliveryBottle, true);
 
             ClearSelection(true);
             if (!shelfView.TryBeginSynchronizationDeferral(this))
@@ -295,6 +386,9 @@ namespace LiquidSort.Levels
             if (!committed)
             {
                 FinishPresentationTransaction(false);
+                BsAudio.Instance?.Play(BsSfx.Invalid);
+                PlayRejectionFeedback(deliveryBottle, rejectedTargetColor,
+                    targetRejectionWobble);
                 return Reject(domainRejection, out rejectionReason);
             }
 
@@ -325,6 +419,7 @@ namespace LiquidSort.Levels
 
             lockedRevision = receipt.Revision;
             deliveryPresentationActive = true;
+            activeDeliveryReceipt = receipt;
 
             bool synchronized;
             try
@@ -368,6 +463,43 @@ namespace LiquidSort.Levels
                 && !Busy;
         }
 
+        /// <summary>
+        /// Bu prototype sahnesinde henüz authored win/fail paneli yok. Kaynak oyundaki
+        /// explicit Devam / Tekrar Dene butonlarının code-only karşılığı olarak, terminal
+        /// sunumu bittikten sonraki ilk YENİ dokunuş session'a niyet yollar. Session'ın
+        /// frame/token kapısı teslimi başlatan aynı dokunuşun burada tekrar kullanılmasını
+        /// ve çift dokunuşla iki level atlanmasını engeller.
+        /// </summary>
+        private bool TryHandleTerminalPointer()
+        {
+            if (controller == null || shelfView == null || session == null
+                || !ReferenceEquals(session.Controller, controller))
+                return false;
+
+            bool continueAfterWin = session.CanContinueAfterWin;
+            bool retryAfterFailure = session.CanRetryAfterFailure;
+            if (!continueAfterWin && !retryAfterFailure) return false;
+            if (Busy || controller.PresentationLocked || !shelfView.Ready
+                || shelfView.SeatAnimationPlaying || shelfView.DeliveryPlaying
+                || shelfView.SynchronizationDeferred)
+                return false;
+            if (!TryReadPointerDown(out _)) return false;
+
+            // Gerçek bir sonuç paneli eklendiğinde UI click'i kendi butonuna bırakılır;
+            // world tap fallback aynı click'i tüketmez.
+            if (IsPointerOverUi()) return true;
+            if (!CheckInputPolicy(
+                    BartenderInputRequest.Background(selectedGlassId), out _))
+                return true;
+
+            bool accepted = continueAfterWin
+                ? session.RequestContinueAfterWin()
+                : session.RequestRetryAfterFailure();
+            if (!accepted)
+                LastRejection = "Terminal geçiş niyeti artık güncel değil.";
+            return true;
+        }
+
         private static bool TryReadPointerDown(out Vector2 screenPoint)
         {
             if (Input.touchCount > 0)
@@ -406,13 +538,20 @@ namespace LiquidSort.Levels
                 || !shelfView.TryPickBottle(camera, screenPoint, pickPadding,
                                             out LiquidBottle hit, out int hitId))
             {
-                ClearSelection(true);
+                if (!CheckInputPolicy(
+                        BartenderInputRequest.Background(selectedGlassId), out _))
+                    return;
+                ClearSelectionWithSound(true);
                 return;
             }
 
+            if (!CheckInputPolicy(
+                    BartenderInputRequest.Bottle(hitId, selectedGlassId), out _))
+                return;
+
             if (controller != null && controller.MatchedOrderSlot(hitId) >= 0)
             {
-                ClearSelection(true);
+                ClearSelectionWithSound(true);
                 TryCommitAndAnimateDelivery(hitId, out _);
                 return;
             }
@@ -425,21 +564,21 @@ namespace LiquidSort.Levels
 
             if (hit == selectedBottle)
             {
-                ClearSelection(true);
+                ClearSelectionWithSound(true);
                 return;
             }
 
             int sourceId = selectedGlassId;
             if (TryCommitAndAnimatePour(sourceId, hitId, out _)) return;
-
-            ClearSelection(true);
-            SelectIfUsable(hit, hitId);
+            // Kaynak tap akışında geçersiz hedef eski seçimi korur. Böylece Invalid
+            // ile yeni bir GlassPickup aynı karede üst üste çalmaz.
+            return;
         }
 
         private void SelectIfUsable(LiquidBottle bottle, int glassId)
         {
-            RtGlass glass = controller != null ? controller.GlassById(glassId) : null;
-            if (bottle == null || glass == null || glass.IsEmpty)
+            if (bottle == null || controller == null
+                || !controller.CanSelectAsPourSource(glassId))
             {
                 ClearSelection(true);
                 return;
@@ -454,6 +593,8 @@ namespace LiquidSort.Levels
             selectedHomePosition = home.Position;
             selectedHomeRotation = home.Rotation;
             selectedHomeScale = home.LocalScale;
+            BsAudio.Instance?.Play(BsSfx.GlassPickup);
+            NotifySelectionChanged(glassId);
         }
 
         private void AnimateSelection()
@@ -465,8 +606,13 @@ namespace LiquidSort.Levels
                            * selectionLift;
             selectedBottle.transform.position = Vector3.Lerp(
                 selectedBottle.transform.position, wanted, follow);
-            selectedBottle.transform.rotation = Quaternion.Slerp(
-                selectedBottle.transform.rotation, selectedHomeRotation, follow);
+            BartenderInvalidMoveFeedback rejection =
+                selectedBottle.GetComponent<BartenderInvalidMoveFeedback>();
+            if (rejection == null || !rejection.Playing)
+            {
+                selectedBottle.transform.rotation = Quaternion.Slerp(
+                    selectedBottle.transform.rotation, selectedHomeRotation, follow);
+            }
             selectedBottle.transform.localScale = Vector3.Lerp(
                 selectedBottle.transform.localScale, selectedHomeScale, follow);
 
@@ -477,6 +623,7 @@ namespace LiquidSort.Levels
 
         private void ClearSelection(bool restorePose)
         {
+            int previousGlassId = selectedGlassId;
             LiquidBottle bottle = selectedBottle;
             if (bottle != null)
             {
@@ -494,6 +641,14 @@ namespace LiquidSort.Levels
             selectedHomePosition = default;
             selectedHomeRotation = Quaternion.identity;
             selectedHomeScale = Vector3.one;
+            if (previousGlassId >= 0) NotifySelectionChanged(-1);
+        }
+
+        private void ClearSelectionWithSound(bool restorePose)
+        {
+            bool hadSelection = selectedBottle != null;
+            ClearSelection(restorePose);
+            if (hadSelection) BsAudio.Instance?.Play(BsSfx.GlassSet);
         }
 
         private void HandlePourFinished(int operationId, PourOutcome outcome)
@@ -506,6 +661,7 @@ namespace LiquidSort.Levels
         {
             activeOperationId = 0;
             deliveryPresentationActive = false;
+            activeDeliveryReceipt = null;
             int revision = lockedRevision;
             lockedRevision = -1;
             BartenderShelfLevelView finishingView = transactionView;
@@ -560,6 +716,7 @@ namespace LiquidSort.Levels
             hasTransactionRoundToken = false;
             lockedRevision = -1;
             deliveryPresentationActive = false;
+            activeDeliveryReceipt = null;
             return activeTransactionToken;
         }
 
@@ -606,22 +763,81 @@ namespace LiquidSort.Levels
             FinishPresentationTransaction(IsTransactionRoundCurrent());
         }
 
-        private void HandleLevelLoaded(BsLevel _) => ClearSelection(true);
+        private void HandleLevelLoaded(BsLevel _)
+        {
+            CancelRejectionFeedbacks(true);
+            ClearSelection(true);
+        }
 
         private void HandleStateChanged(BartenderLevelState state)
         {
             if (state != BartenderLevelState.Playing && activeOperationId == 0)
-                ClearSelection(true);
+            {
+                CancelRejectionFeedbacks(true);
+                ClearSelectionWithSound(true);
+            }
         }
 
         private void HandlePresentationChanged()
         {
-            if (activeOperationId == 0) ClearSelection(false);
+            if (activeOperationId != 0) return;
+
+            // The shelf has already applied its new authoritative poses. Killing without
+            // restoring an older cached rotation prevents a stale feedback tween from
+            // writing over that freshly laid-out board.
+            CancelRejectionFeedbacks(false);
+            ClearSelection(false);
         }
 
-        private void HandleDeliveryPresentationFinished()
+        private void PlayRejectedPourFeedback(LiquidBottle source, LiquidBottle target)
         {
-            if (!deliveryPresentationActive) return;
+            float direction = source != null && target != null
+                && source.transform.position.x > target.transform.position.x
+                ? -1f
+                : 1f;
+            PlayRejectionFeedback(source, rejectedSourceColor,
+                -direction * sourceRejectionWobble);
+            PlayRejectionFeedback(target, rejectedTargetColor,
+                direction * targetRejectionWobble);
+        }
+
+        private void PlayRejectionFeedback(LiquidBottle bottle, Color color,
+                                           float wobbleDegrees)
+        {
+            if (bottle == null || !bottle.gameObject.activeInHierarchy) return;
+            BartenderInvalidMoveFeedback feedback =
+                bottle.GetComponent<BartenderInvalidMoveFeedback>();
+            if (feedback == null)
+                feedback = bottle.gameObject.AddComponent<BartenderInvalidMoveFeedback>();
+            feedback.Play(color, rejectionHighlightAlpha,
+                wobbleDegrees, rejectionDuration);
+        }
+
+        private static void CancelRejectionFeedback(LiquidBottle bottle,
+                                                     bool restoreRotation)
+        {
+            if (bottle == null) return;
+            BartenderInvalidMoveFeedback feedback =
+                bottle.GetComponent<BartenderInvalidMoveFeedback>();
+            if (feedback != null) feedback.Cancel(restoreRotation);
+        }
+
+        private void CancelRejectionFeedbacks(bool restoreRotation)
+        {
+            if (shelfView == null) return;
+            BartenderInvalidMoveFeedback[] feedbacks =
+                shelfView.GetComponentsInChildren<BartenderInvalidMoveFeedback>(true);
+            for (int i = 0; i < feedbacks.Length; i++)
+            {
+                BartenderInvalidMoveFeedback feedback = feedbacks[i];
+                if (feedback != null) feedback.Cancel(restoreRotation);
+            }
+        }
+
+        private void HandleDeliveryPresentationFinished(BartenderDeliveryReceipt receipt)
+        {
+            if (!deliveryPresentationActive
+                || !ReferenceEquals(activeDeliveryReceipt, receipt)) return;
             // A stale callback may only clean up its own lease; it must never refresh a
             // replacement round. Delivery already refreshed before the portal started.
             FinishPresentationTransaction(false);
@@ -640,6 +856,7 @@ namespace LiquidSort.Levels
             if (controller == null) controller = GetComponent<BartenderLevelController>();
             if (pourAnimator == null) pourAnimator = GetComponent<PourAnimator>();
             if (session == null) session = GetComponent<BartenderSession>();
+            if (orderStrip == null) orderStrip = GetComponent<OrderStripPresenter>();
         }
 
         private void Subscribe()
@@ -704,6 +921,69 @@ namespace LiquidSort.Levels
             subscribedController = null;
             subscribedView = null;
             subscribedAnimator = null;
+        }
+
+        private bool CheckInputPolicy(BartenderInputRequest request,
+                                      out string rejectionReason)
+        {
+            rejectionReason = null;
+            DropDestroyedInputPolicy();
+            IBartenderInputPolicy policy = inputPolicy;
+            if (policy == null) return true;
+
+            bool allowed;
+            try
+            {
+                allowed = policy.Allows(request, out rejectionReason);
+            }
+            catch (Exception exception)
+            {
+                // A presentation-only policy must never wedge the authoritative gameplay
+                // bridge. Drop a broken lease and fail open.
+                Debug.LogException(exception, this);
+                if (ReferenceEquals(inputPolicy, policy)) inputPolicy = null;
+                rejectionReason = null;
+                return true;
+            }
+
+            if (allowed) return true;
+            if (string.IsNullOrEmpty(rejectionReason))
+                rejectionReason = "Bu adımda parlayan hedefe dokun.";
+            LastRejection = rejectionReason;
+            try
+            {
+                policy.HandleRejected(request, rejectionReason);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogException(exception, this);
+                if (ReferenceEquals(inputPolicy, policy)) inputPolicy = null;
+            }
+            return false;
+        }
+
+        private void DropDestroyedInputPolicy()
+        {
+            if (inputPolicy is UnityEngine.Object unityOwner && unityOwner == null)
+                inputPolicy = null;
+        }
+
+        private void NotifySelectionChanged(int glassId)
+        {
+            Action<int> handlers = SelectionChanged;
+            if (handlers == null) return;
+            Delegate[] invocationList = handlers.GetInvocationList();
+            for (int i = 0; i < invocationList.Length; i++)
+            {
+                try
+                {
+                    ((Action<int>)invocationList[i]).Invoke(glassId);
+                }
+                catch (Exception exception)
+                {
+                    Debug.LogException(exception, this);
+                }
+            }
         }
 
         private bool Reject(string reason, out string rejectionReason)

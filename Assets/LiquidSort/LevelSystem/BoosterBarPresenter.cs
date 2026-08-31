@@ -1,23 +1,22 @@
 using BartenderSort.Core;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Serialization;
 using UnityEngine.UI;
 
 namespace LiquidSort.Levels
 {
     /// <summary>
-    /// Alt şeritteki üç booster düğmesi: geri al, +bardak, karıştır.
+    /// Alt şeritteki üç booster düğmesi: geri al, +süre, karıştır.
     ///
     /// OPTİMİSTİK UI YOK — <see cref="BartenderPausePresenter"/> ile aynı disiplin.
     /// Düğme yalnızca komutu yollar; sayaç, kural motoru komutu kabul edip
     /// <see cref="BartenderLevelController.BoostersChanged"/> geri geldiğinde düşer.
     /// Reddedilen bir dokunuşta ekranda hiçbir şey kıpırdamaz.
     ///
-    /// BARDAK TİPİ SEÇİMİ BURADA. Kural motoru "hangi bardağı ekleyeyim" sorusunu
-    /// cevaplayamaz, çünkü sahnedeki havuzun sonlu olduğunu bilmez: her tipin elle
-    /// yerleştirilmiş, sayısı sabit scene objeleri var. Boş slotu olan bir tip
-    /// seçmezsek view bütün sunumu reddeder. O yüzden tip, açık siparişlere ve havuz
-    /// doluluğuna bakılarak burada kararlaştırılır.
+    /// Orta düğme ücretli bir tekliftir. Controller önce terminal/timer/stock
+    /// invariantlarını doğrular, sonra tek ekonomi otoritesinden altını düşer ve yalnız
+    /// o anda açık olan süreli siparişlere bonusu atomik olarak uygular.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class BoosterBarPresenter : MonoBehaviour
@@ -25,23 +24,32 @@ namespace LiquidSort.Levels
         [Header("Rig references")]
         [Tooltip("Boşsa aynı GameObject üzerinde aranır.")]
         [SerializeField] private BartenderLevelController controller;
-        [Tooltip("Havuz doluluğu ve süren animasyon buradan okunur.")]
+        [Tooltip("Seat/portal/senkronizasyon sunum bariyeri buradan okunur.")]
         [SerializeField] private BartenderShelfLevelView shelfView;
         [Tooltip("Opsiyonel. Dökme sürerken booster kabul edilmesin diye okunur.")]
         [SerializeField] private BartenderPourInteraction pourInteraction;
 
         [Header("Düğmeler")]
         [SerializeField] private Button undoButton = null;
-        [SerializeField] private Button extraGlassButton = null;
+        [FormerlySerializedAs("extraGlassButton")]
+        [SerializeField] private Button addTimeButton = null;
         [SerializeField] private Button shuffleButton = null;
 
-        [Header("Kalan sayaçları (opsiyonel)")]
+        [Header("+Süre teklifi")]
+        [SerializeField, Min(1f)] private float addTimeSeconds = 15f;
+        [SerializeField, Min(1)] private int addTimeCoinCost = 900;
+
+        [Header("Sayaçlar / fiyatlar (opsiyonel)")]
         [SerializeField] private Text undoCountLabel = null;
-        [SerializeField] private Text extraGlassCountLabel = null;
+        [FormerlySerializedAs("extraGlassCountLabel")]
+        [SerializeField] private Text addTimePriceLabel = null;
         [SerializeField] private Text shuffleCountLabel = null;
         [SerializeField] private TMP_Text undoCountRichLabel = null;
-        [SerializeField] private TMP_Text extraGlassCountRichLabel = null;
+        [FormerlySerializedAs("extraGlassCountRichLabel")]
+        [SerializeField] private TMP_Text addTimePriceRichLabel = null;
         [SerializeField] private TMP_Text shuffleCountRichLabel = null;
+        [SerializeField] private Text coinBalanceLabel = null;
+        [SerializeField] private TMP_Text coinBalanceRichLabel = null;
         [Tooltip("Stok bu değerin üstündeyken sayaç yazılmaz. MVP'de stoklar 99, "
                + "yani her düğmenin altında '99' yazması bilgi değil gürültü olurdu.")]
         [SerializeField, Min(0)] private int hideCountAbove = 20;
@@ -49,12 +57,17 @@ namespace LiquidSort.Levels
         private BartenderLevelController subscribedController;
 
         public string LastRejection { get; private set; }
+        private float EffectiveAddTimeSeconds =>
+            addTimeSeconds > 0f && !float.IsNaN(addTimeSeconds)
+            && !float.IsInfinity(addTimeSeconds) ? addTimeSeconds : 15f;
+        private int EffectiveAddTimeCoinCost => addTimeCoinCost > 0 ? addTimeCoinCost : 900;
 
         private void Awake() => ResolveDependencies();
 
         private void OnEnable()
         {
             ResolveDependencies();
+            EnsureEconomyLabels();
             HookButtons();
             Subscribe();
             Refresh();
@@ -70,7 +83,7 @@ namespace LiquidSort.Levels
         public void ConfigureSceneBindings(BartenderLevelController levelController,
                                            BartenderShelfLevelView view,
                                            BartenderPourInteraction pour,
-                                           Button undo, Button extraGlass, Button shuffle)
+                                           Button undo, Button addTime, Button shuffle)
         {
             Unsubscribe();
             UnhookButtons();
@@ -78,9 +91,10 @@ namespace LiquidSort.Levels
             shelfView = view;
             pourInteraction = pour;
             undoButton = undo;
-            extraGlassButton = extraGlass;
+            addTimeButton = addTime;
             shuffleButton = shuffle;
             if (!isActiveAndEnabled) return;
+            EnsureEconomyLabels();
             HookButtons();
             Subscribe();
             Refresh();
@@ -95,11 +109,11 @@ namespace LiquidSort.Levels
             }
             if (shelfView == null)
             {
-                reason = "BartenderShelfLevelView Inspector referansı eksik; +bardak "
-                       + "havuzda boş slot olup olmadığını soramaz.";
+                reason = "BartenderShelfLevelView Inspector referansı eksik; booster "
+                       + "sunum bariyerini okuyamaz.";
                 return false;
             }
-            if (undoButton == null || extraGlassButton == null || shuffleButton == null)
+            if (undoButton == null || addTimeButton == null || shuffleButton == null)
             {
                 reason = "Üç booster düğmesinin üçü de bağlı olmalı.";
                 return false;
@@ -125,15 +139,11 @@ namespace LiquidSort.Levels
             if (!controller.TryUndo(out string reason)) LastRejection = reason;
         }
 
-        public void RequestExtraGlass()
+        public void RequestAddTime()
         {
             if (!CanCommand()) return;
-            if (!TryChooseExtraGlassType(out GlassType type))
-            {
-                LastRejection = "Havuzda boş bardak slotu kalmadı";
-                return;
-            }
-            if (!controller.TryAddExtraGlass(type, out _, out string reason))
+            if (!controller.TryPurchaseTimeBoost(
+                    EffectiveAddTimeSeconds, EffectiveAddTimeCoinCost, out string reason))
                 LastRejection = reason;
         }
 
@@ -141,35 +151,6 @@ namespace LiquidSort.Levels
         {
             if (!CanCommand()) return;
             if (!controller.TryShuffle(out string reason)) LastRejection = reason;
-        }
-
-        /// <summary>
-        /// Hangi bardak eklenmeli? Önce SOLDAKİ açık siparişin bardağı denenir — kural
-        /// 3'te teslim önceliği de soldan başlar, yani oyuncunun bir sonraki hedefi
-        /// oradadır. O tipin havuzu doluysa boş slotu olan ilk tip alınır.
-        /// </summary>
-        public bool TryChooseExtraGlassType(out GlassType type)
-        {
-            type = GlassType.Tumbler;
-            if (controller == null || shelfView == null) return false;
-
-            BsLevel level = controller.CurrentLevel;
-            int slots = level != null ? Mathf.Max(1, level.OrderSlots) : 0;
-            for (int i = 0; i < slots; i++)
-            {
-                OrderDef order = controller.OrderAtSlot(i);
-                if (order == null || !shelfView.HasFreePoolSlot(order.Glass)) continue;
-                type = order.Glass;
-                return true;
-            }
-
-            foreach (GlassType candidate in BsRules.AllGlassTypes)
-            {
-                if (!shelfView.HasFreePoolSlot(candidate)) continue;
-                type = candidate;
-                return true;
-            }
-            return false;
         }
 
         private bool CanCommand()
@@ -194,24 +175,38 @@ namespace LiquidSort.Levels
         /// </summary>
         public void Refresh()
         {
+            // Availability and appearance are deliberately separate. A booster that is
+            // out of stock or unaffordable must still keep the authored, lively artwork;
+            // Button.interactable remains the authority that prevents its onClick.
+            KeepDisabledVisualVivid(undoButton);
+            KeepDisabledVisualVivid(addTimeButton);
+            KeepDisabledVisualVivid(shuffleButton);
+
             bool gate = CanCommand();
             bool hasController = controller != null;
 
             SetInteractable(undoButton,
                 gate && hasController && controller.UndoRemaining > 0
                 && controller.HasUndoableMove);
-            SetInteractable(extraGlassButton,
-                gate && hasController && controller.ExtraGlassRemaining > 0
-                && controller.ActiveGlassCount < controller.MaxActiveGlasses
-                && TryChooseExtraGlassType(out _));
+            SetInteractable(addTimeButton,
+                gate && hasController
+                && controller.CanPurchaseTimeBoost(
+                    EffectiveAddTimeSeconds, EffectiveAddTimeCoinCost, out _));
             SetInteractable(shuffleButton,
                 gate && hasController && controller.ShuffleRemaining > 0);
 
             if (!hasController) return;
             SetCount(undoCountLabel, undoCountRichLabel, controller.UndoRemaining);
-            SetCount(extraGlassCountLabel, extraGlassCountRichLabel,
-                controller.ExtraGlassRemaining);
+            SetOffer(addTimePriceLabel, addTimePriceRichLabel,
+                EffectiveAddTimeCoinCost);
             SetCount(shuffleCountLabel, shuffleCountRichLabel, controller.ShuffleRemaining);
+            // Altın bu şeritte yalnız ücretli +süre gerçekten kullanılabildiğinde anlamlı.
+            // Tutorial/erken level kontrolü yerine level kuralını okumak, özelliğin açıldığı
+            // ilk seviyeyi tek bir otoriteden takip eder.
+            bool showBalance = controller.CurrentLevel != null
+                               && controller.CurrentLevel.AllowTimedOrders;
+            SetBalance(coinBalanceLabel, coinBalanceRichLabel,
+                BartenderEconomy.Coins, showBalance);
         }
 
         private void SetCount(Text legacy, TMP_Text rich, int remaining)
@@ -228,10 +223,112 @@ namespace LiquidSort.Levels
             if (rich.gameObject.activeSelf != show) rich.gameObject.SetActive(show);
         }
 
+        private static void SetOffer(Text legacy, TMP_Text rich, int cost)
+        {
+            string value = Mathf.Max(0, cost).ToString();
+            if (legacy != null) legacy.text = value;
+            if (rich != null) rich.text = value;
+        }
+
+        private static void SetBalance(Text legacy, TMP_Text rich, int balance,
+                                       bool visible)
+        {
+            string value = $"ALTIN {Mathf.Max(0, balance)}";
+            if (legacy != null)
+            {
+                legacy.text = value;
+                if (legacy.gameObject.activeSelf != visible)
+                    legacy.gameObject.SetActive(visible);
+            }
+            if (rich == null) return;
+            rich.text = value;
+            if (rich.gameObject.activeSelf != visible)
+                rich.gameObject.SetActive(visible);
+        }
+
         private static void SetInteractable(Button button, bool interactable)
         {
             if (button != null && button.interactable != interactable)
                 button.interactable = interactable;
+        }
+
+        private static void KeepDisabledVisualVivid(Button button)
+        {
+            if (button == null) return;
+            ColorBlock colors = button.colors;
+            if (colors.disabledColor == colors.normalColor) return;
+            colors.disabledColor = colors.normalColor;
+            button.colors = colors;
+        }
+
+        /// <summary>
+        /// Mevcut scene/prefab eski MVP'den geldiği için fiyat ve bakiye label ref'leri
+        /// boş olabilir. Runtime fallback yalnız eksik iki sunum objesini üretir; authored
+        /// label bağlandığında hiçbir şey yaratmaz.
+        /// </summary>
+        private void EnsureEconomyLabels()
+        {
+            if (addTimeButton != null
+                && addTimePriceLabel == null && addTimePriceRichLabel == null)
+            {
+                addTimePriceLabel = CreateLegacyLabel(addTimeButton.transform,
+                    "Add Time Price - Runtime", TextAnchor.MiddleCenter,
+                    new Vector2(0.5f, 0.5f), new Vector2(0f, -43f),
+                    new Vector2(94f, 28f), 20);
+            }
+
+            if (coinBalanceLabel != null || coinBalanceRichLabel != null
+                || addTimeButton == null)
+                return;
+
+            Canvas canvas = addTimeButton.GetComponentInParent<Canvas>();
+            if (canvas == null) return;
+            Transform topBar = canvas.transform.Find("Safe Area/01 Top Bar");
+            Transform parent = topBar != null ? topBar : canvas.transform;
+            coinBalanceLabel = CreateLegacyLabel(parent,
+                "Coin Balance - Runtime", TextAnchor.MiddleLeft,
+                new Vector2(0f, topBar != null ? 0.5f : 1f),
+                topBar != null ? new Vector2(22f, 0f) : new Vector2(22f, -34f),
+                new Vector2(180f, 46f), 24);
+            // OnEnable içindeki ilk Refresh'e kadar tek karelik bir HUD parlaması olmasın.
+            if (coinBalanceLabel != null)
+                coinBalanceLabel.gameObject.SetActive(false);
+        }
+
+        private static Text CreateLegacyLabel(Transform parent, string name,
+                                              TextAnchor alignment, Vector2 anchor,
+                                              Vector2 position, Vector2 size,
+                                              int fontSize)
+        {
+            Transform existing = parent != null ? parent.Find(name) : null;
+            if (existing != null && existing.TryGetComponent(out Text existingText))
+                return existingText;
+
+            var go = new GameObject(name, typeof(RectTransform),
+                typeof(CanvasRenderer), typeof(Text));
+            go.layer = parent != null ? parent.gameObject.layer : 0;
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(parent, false);
+            rect.anchorMin = rect.anchorMax = anchor;
+            rect.pivot = new Vector2(anchor.x <= 0f ? 0f : 0.5f, 0.5f);
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+
+            Text label = go.GetComponent<Text>();
+            label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf")
+                         ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
+            label.fontSize = fontSize;
+            label.fontStyle = FontStyle.Bold;
+            label.alignment = alignment;
+            label.color = new Color(1f, 0.82f, 0.18f, 1f);
+            label.raycastTarget = false;
+            label.horizontalOverflow = HorizontalWrapMode.Overflow;
+            label.verticalOverflow = VerticalWrapMode.Overflow;
+
+            var outline = go.AddComponent<Outline>();
+            outline.effectColor = new Color(0.20f, 0.08f, 0.28f, 0.90f);
+            outline.effectDistance = new Vector2(1.5f, -1.5f);
+            return label;
         }
 
         // ---- Wiring -----------------------------------------------------------------
@@ -248,16 +345,16 @@ namespace LiquidSort.Levels
         private void HookButtons()
         {
             if (undoButton != null) undoButton.onClick.AddListener(RequestUndo);
-            if (extraGlassButton != null)
-                extraGlassButton.onClick.AddListener(RequestExtraGlass);
+            if (addTimeButton != null)
+                addTimeButton.onClick.AddListener(RequestAddTime);
             if (shuffleButton != null) shuffleButton.onClick.AddListener(RequestShuffle);
         }
 
         private void UnhookButtons()
         {
             if (undoButton != null) undoButton.onClick.RemoveListener(RequestUndo);
-            if (extraGlassButton != null)
-                extraGlassButton.onClick.RemoveListener(RequestExtraGlass);
+            if (addTimeButton != null)
+                addTimeButton.onClick.RemoveListener(RequestAddTime);
             if (shuffleButton != null) shuffleButton.onClick.RemoveListener(RequestShuffle);
         }
 
@@ -270,6 +367,7 @@ namespace LiquidSort.Levels
             subscribedController.BoostersChanged += Refresh;
             subscribedController.LevelLoaded += HandleLevelLoaded;
             subscribedController.StateChanged += HandleStateChanged;
+            BartenderEconomy.CoinsChanged += HandleCoinsChanged;
         }
 
         private void Unsubscribe()
@@ -280,10 +378,12 @@ namespace LiquidSort.Levels
                 subscribedController.LevelLoaded -= HandleLevelLoaded;
                 subscribedController.StateChanged -= HandleStateChanged;
             }
+            BartenderEconomy.CoinsChanged -= HandleCoinsChanged;
             subscribedController = null;
         }
 
         private void HandleLevelLoaded(BsLevel level) => Refresh();
         private void HandleStateChanged(BartenderLevelState state) => Refresh();
+        private void HandleCoinsChanged(int balance) => Refresh();
     }
 }
