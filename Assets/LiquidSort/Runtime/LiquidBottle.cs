@@ -138,6 +138,7 @@ namespace LiquidSort
         private float previousAngle;
         private float lastBuiltAngle = float.NaN;
         private float lastBuiltVolume = float.NaN;
+        private int lastBuiltLookHash = int.MinValue;
         private int contentVersion;
         private int builtContentVersion = -1;
         private float surfaceLocalY;
@@ -527,6 +528,7 @@ namespace LiquidSort
             fittedToArt = false;
             lastBuiltAngle = float.NaN;
             lastBuiltVolume = float.NaN;
+            lastBuiltLookHash = int.MinValue;
             builtContentVersion = -1;
             cachedRenderers = null;
         }
@@ -558,10 +560,12 @@ namespace LiquidSort
 
             float angle = NormalizeAngle(transform.eulerAngles.z) - sloshAngle;
             float volume = Mathf.Clamp(displayVolume, 0f, capacity);
+            int lookHash = LiquidLookHash(volume);
 
             bool dirty = builtContentVersion != contentVersion
                          || !Mathf.Approximately(lastBuiltAngle, angle)
                          || Mathf.Abs(lastBuiltVolume - volume) > 1e-4f
+                         || lastBuiltLookHash != lookHash
                          || waveActive
                          || splashActive
                          || (!Application.isPlaying && splashAmplitude > 0.0001f);
@@ -571,6 +575,7 @@ namespace LiquidSort
                 BuildBands(angle, volume);
                 lastBuiltAngle = angle;
                 lastBuiltVolume = volume;
+                lastBuiltLookHash = lookHash;
                 builtContentVersion = contentVersion;
             }
 
@@ -602,6 +607,45 @@ namespace LiquidSort
                             SplashDuration, splashAge + Time.deltaTime);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Every value that changes the band waterlines or their property block. Contents,
+        /// angle and volume have their own fast checks; this signature covers the asset
+        /// look and shared Royal policy that previously left visually different stale
+        /// blocks on identical pooled vessels after an editor/profile refresh.
+        /// </summary>
+        private int LiquidLookHash(float volume)
+        {
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 397 + LiquidSurfaceContract.Revision;
+                hash = hash * 397 + LiquidPalette.Revision;
+                hash = hash * 397 + capacity;
+                hash = hash * 397 + SurfaceScale(volume).GetHashCode();
+                hash = hash * 397 + Bulge.GetHashCode();
+                hash = hash * 397 + CapDepth.GetHashCode();
+                hash = hash * 397 + Headroom.GetHashCode();
+                hash = hash * 397 + GapCaps.GetHashCode();
+                hash = hash * 397 + Allowance.GetHashCode();
+                hash = hash * 397 + EvenBands.GetHashCode();
+                hash = hash * 397 + JunctionCurve.GetHashCode();
+                hash = hash * 397 + JunctionDepth.GetHashCode();
+                hash = hash * 397 + UsableFill.GetHashCode();
+                hash = hash * 397 + InteriorHeight.GetHashCode();
+
+                if (Profiled)
+                {
+                    hash = hash * 397 + profile.GetInstanceID();
+                    hash = hash * 397 + profile.visibleLiquidFloor.GetHashCode();
+                    hash = hash * 397 + (profile.hasVisibleLiquidFloor ? 1 : 0);
+                    hash = hash * 397 + profile.upright.floorY.GetHashCode();
+                    hash = hash * 397 + profile.upright.ceilingY.GetHashCode();
+                }
+
+                return hash;
             }
         }
 

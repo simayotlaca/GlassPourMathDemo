@@ -41,6 +41,7 @@ Material:
     - _CapFlash: 0
     - _CapRim: 0.38
     - _CapValue: 1.22
+    - _CapWallInset: 1.25
     - _CylinderKey: 0.55
     - _CylinderShade: 0.2
     - _DepthRange: 2

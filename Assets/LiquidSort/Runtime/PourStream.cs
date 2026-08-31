@@ -12,6 +12,8 @@ namespace LiquidSort
     [DisallowMultipleComponent]
     public sealed class PourStream : MonoBehaviour
     {
+        private const float WidthEpsilon = 0.0001f;
+
         public Material material;
         public float width = 0.085f;
         public float tipWidth = 0.055f;
@@ -44,6 +46,7 @@ namespace LiquidSort
         private float landY, fallX;
         private Vector3 lip;
         private float activeWidth, activeTipWidth;
+        private float activeLipDrop, activeMinimumFall;
 
         private readonly List<Vector3> vertices = new List<Vector3>(64);
         private readonly List<Color32> colors = new List<Color32>(64);
@@ -103,14 +106,28 @@ namespace LiquidSort
             Begin(from, to, liquidColor, width, tipWidth);
 
         public void Begin(LiquidBottle from, LiquidBottle to, Color liquidColor,
-            float bodyWidth, float leadingWidth)
+            float bodyWidth, float leadingWidth) =>
+            Begin(from, to, liquidColor, bodyWidth, leadingWidth, 1f);
+
+        /// <summary>
+        /// Starts a stream whose shared Royal-authored world distances follow the board
+        /// and safe-area scale. Widths are already supplied in final vessel world units;
+        /// only the shared curve/drop constants use <paramref name="referenceDistanceScale"/>.
+        /// </summary>
+        public void Begin(LiquidBottle from, LiquidBottle to, Color liquidColor,
+            float bodyWidth, float leadingWidth, float referenceDistanceScale)
         {
             EnsureRenderer();
             source = from;
             target = to;
             color = liquidColor;
-            activeWidth = Mathf.Max(0.01f, bodyWidth);
-            activeTipWidth = Mathf.Clamp(leadingWidth, 0.005f, activeWidth);
+            // Numerical guards must not become visible world-size floors. Otherwise the
+            // stream stops shrinking while a compact/safe-area-fitted glass keeps shrinking.
+            activeWidth = Mathf.Max(WidthEpsilon, bodyWidth);
+            activeTipWidth = Mathf.Clamp(leadingWidth, WidthEpsilon, activeWidth);
+            float distanceScale = Mathf.Max(0.0001f, referenceDistanceScale);
+            activeLipDrop = Mathf.Max(0.0001f, lipDrop * distanceScale);
+            activeMinimumFall = Mathf.Max(0.0001f, minimumFall * distanceScale);
 
             UpdateEndpoints();
             headY = lip.y;
@@ -185,7 +202,7 @@ namespace LiquidSort
             {
                 // The detached tail keeps its lip and x path in world space, but the
                 // receiving surface may still rise during the short in-flight delay.
-                landY = Mathf.Min(target.SurfaceWorldY, lip.y - minimumFall);
+                landY = Mathf.Min(target.SurfaceWorldY, lip.y - activeMinimumFall);
             }
             age += Mathf.Max(0f, dt);
 
@@ -224,7 +241,7 @@ namespace LiquidSort
         private void UpdateEndpoints()
         {
             lip = source.PourLipWorld(target.transform.position.x);
-            landY = Mathf.Min(target.SurfaceWorldY, lip.y - minimumFall);
+            landY = Mathf.Min(target.SurfaceWorldY, lip.y - activeMinimumFall);
             // Aim at the authored mouth, not the GameObject pivot. They are not the same
             // on handled/asymmetric vessels.
             fallX = Mathf.Lerp(lip.x, target.MouthWorld.x, 0.85f);
@@ -331,7 +348,7 @@ namespace LiquidSort
         /// <summary>Path of the stream: a short bezier off the lip, then a vertical fall.</summary>
         private Vector2 PointAt(float y)
         {
-            float drop = Mathf.Max(0.01f, lipDrop);
+            float drop = Mathf.Max(0.0001f, activeLipDrop);
             float t = (lip.y - y) / drop;
             if (t >= 1f) return new Vector2(fallX, y);
 

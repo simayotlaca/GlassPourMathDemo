@@ -90,6 +90,14 @@ namespace LiquidSort
         public Vector2 supportLocal;
         [Tooltip("True when supportLocal was measured from the front sprite's visible alpha.")]
         public bool hasSupportLocal;
+
+        [Header("Shelf presentation")]
+        [Tooltip("Canonical uniform scale used by RoyalGlassLab before a level applies its "
+               + "board-wide fit. This belongs to the vessel asset, never to a scene clone.")]
+        [Min(0.01f)] public float shelfReferenceScale = 1f;
+        [Tooltip("Canonical upright 2D pose used both in RoyalGlassLab and on gameplay "
+               + "shelves. Levels may move a vessel, but cannot redefine its own pose.")]
+        [Range(-180f, 180f)] public float shelfReferenceRotationDegrees;
         [Tooltip("Height under which the drawing hides the liquid behind its own outline.")]
         public float visibleBottomLocal;
         [Tooltip("True after the baker produced the automatic optical-height table for this artwork.")]
@@ -154,6 +162,14 @@ namespace LiquidSort
                 return new Vector2(mouthLocal.x, bottom);
             }
         }
+
+        public float ShelfReferenceScale => Mathf.Max(0.01f, shelfReferenceScale);
+
+        public Vector3 ShelfReferenceLocalScale =>
+            Vector3.one * ShelfReferenceScale;
+
+        public Quaternion ShelfReferenceLocalRotation =>
+            Quaternion.Euler(0f, 0f, shelfReferenceRotationDegrees);
 
         /// <summary>
         /// Small art-specific corrections for a pour. A coupe should not be lifted or

@@ -20,6 +20,15 @@ namespace LiquidSort
     /// </summary>
     public static class LiquidPalette
     {
+        public const int Revision = 2;
+        // Canonical RoyalGlassLab bodies. Gameplay levels use these same values so the
+        // profile/material result cannot change merely because a vessel moved scenes.
+        public static Color RoyalOrange => Hex(0xF39A12);
+        public static Color RoyalGreen => Hex(0x008E57);
+        public static Color RoyalBlue => Hex(0x09A9E6);
+        public static Color RoyalPurple => Hex(0x792DC4);
+        public static Color RoyalPink => Hex(0xF44F8D);
+
         public struct Entry
         {
             /// <summary>What a designer calls this liquid. Levels refer to it by name so a

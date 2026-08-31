@@ -9,6 +9,10 @@ namespace LiquidSort
     /// </summary>
     public static class LiquidSurfaceContract
     {
+        // Bump whenever the meaning of a published liquid property changes. Pooled
+        // renderers include this in their dirty signature, so hot reloads cannot leave a
+        // mixture of old and new MaterialPropertyBlocks on otherwise identical glasses.
+        public const int Revision = 2;
         public const string ShaderName = "LiquidSort/BottleLiquid";
         public const string BulgeProperty = "_Bulge";
         public const string BulgeMaxProperty = "_BulgeMax";
@@ -16,6 +20,7 @@ namespace LiquidSort
         public const string InnerBulgeProperty = "_InnerBulge";
         public const string InnerMaxProperty = "_InnerMax";
         public const string SurfaceScaleProperty = "_SurfaceScale";
+        public const string CapWallInsetProperty = "_CapWallInset";
 
         public static readonly int BulgeId = Shader.PropertyToID(BulgeProperty);
         public static readonly int BulgeMaxId = Shader.PropertyToID(BulgeMaxProperty);
@@ -35,6 +40,7 @@ namespace LiquidSort
             InnerBulgeProperty,
             InnerMaxProperty,
             SurfaceScaleProperty,
+            CapWallInsetProperty,
             "_Wave",
             "_SplashAmp",
             "_SplashX",

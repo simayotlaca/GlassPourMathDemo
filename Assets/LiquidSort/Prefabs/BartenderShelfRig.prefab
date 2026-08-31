@@ -949,8 +949,8 @@ MonoBehaviour:
   fitToArt: 1
   capacity: 3
   units:
-  - {r: 0.96862745, g: 0.80784315, b: 0.27450982, a: 1}
-  - {r: 0.35686275, g: 0.7607843, b: 0.29411766, a: 1}
+  - {r: 0.9529412, g: 0.7882353, b: 0.15686275, a: 1}
+  - {r: 0, g: 0.5568628, b: 0.34117648, a: 1}
   maskSprite: {fileID: 0}
   liquidMaterial: {fileID: 0}
   sortingOrder: 1
@@ -2046,7 +2046,7 @@ MonoBehaviour:
   fitToArt: 1
   capacity: 2
   units:
-  - {r: 0.35686275, g: 0.7607843, b: 0.29411766, a: 1}
+  - {r: 0, g: 0.5568628, b: 0.34117648, a: 1}
   maskSprite: {fileID: 0}
   liquidMaterial: {fileID: 0}
   sortingOrder: 1
@@ -4695,7 +4695,7 @@ MonoBehaviour:
   fitToArt: 1
   capacity: 1
   units:
-  - {r: 0.9607843, g: 0.5372549, b: 0.23137255, a: 1}
+  - {r: 0.9529412, g: 0.6039216, b: 0.07058824, a: 1}
   maskSprite: {fileID: 0}
   liquidMaterial: {fileID: 0}
   sortingOrder: 1
@@ -6825,7 +6825,7 @@ MonoBehaviour:
   fitToArt: 1
   capacity: 3
   units:
-  - {r: 0.96862745, g: 0.80784315, b: 0.27450982, a: 1}
+  - {r: 0.9529412, g: 0.7882353, b: 0.15686275, a: 1}
   maskSprite: {fileID: 0}
   liquidMaterial: {fileID: 0}
   sortingOrder: 1
@@ -14086,7 +14086,7 @@ MonoBehaviour:
   entranceGlassStagger: 0.055
   entranceRowStagger: 0.12
   entranceSortingBoost: 60
-  entranceLandingSquash: 0.13
+  entranceLandingSquash: 0
   entranceSettleDuration: 0.2
   shelfFadeDuration: 0.22
   reseatDuration: 0.22
@@ -14266,6 +14266,7 @@ MonoBehaviour:
     badge: {fileID: 8584911913988399791}
     badgeRenderer: {fileID: 3097893221093820245}
     authoredLocalScale: {x: 0.6367433, y: 0.6367433, z: 1}
+  lockSprite: {fileID: 21300000, guid: 38c93f318796247ccbe4b9d317a247d0, type: 3}
   tapDelivers: 1
   tapPadding: 0.12
   popDuration: 0.22
@@ -32191,7 +32192,7 @@ MonoBehaviour:
   fitToArt: 1
   capacity: 2
   units:
-  - {r: 0.35686275, g: 0.7607843, b: 0.29411766, a: 1}
+  - {r: 0, g: 0.5568628, b: 0.34117648, a: 1}
   maskSprite: {fileID: 0}
   liquidMaterial: {fileID: 0}
   sortingOrder: 1
@@ -32679,8 +32680,8 @@ MonoBehaviour:
   fitToArt: 1
   capacity: 3
   units:
-  - {r: 0.9607843, g: 0.5372549, b: 0.23137255, a: 1}
-  - {r: 0.9607843, g: 0.5372549, b: 0.23137255, a: 1}
+  - {r: 0.9529412, g: 0.6039216, b: 0.07058824, a: 1}
+  - {r: 0.9529412, g: 0.6039216, b: 0.07058824, a: 1}
   maskSprite: {fileID: 0}
   liquidMaterial: {fileID: 0}
   sortingOrder: 1

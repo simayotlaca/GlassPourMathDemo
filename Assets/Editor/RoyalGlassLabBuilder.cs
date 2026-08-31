@@ -178,26 +178,27 @@ public static class RoyalGlassLabBuilder
             // transforms align the rendered silhouettes rather than merely copying
             // numerically identical Transform values.
             board.bottles.Add(BuildVessel(root.transform, "01 Shot Royal", shot,
-                new Vector2(-1.20f, 1.574f), 0.654f, theme, null, 0f,
-                new[] { Hex(0xF39A12) }));
+                new Vector2(-1.20f, 1.574f), theme, null, 0f,
+                new[] { LiquidPalette.RoyalOrange }));
             LiquidBottle cocktailBottle = BuildVessel(root.transform,
                 "02 Cocktail Royal", cocktail,
-                new Vector2(1.20f, 2.091f), 0.539f, theme, glassLight, 0.32f,
-                new[] { Hex(0x008E57), Hex(0xF44F8D) });
+                new Vector2(1.20f, 2.091f), theme, glassLight, 0.32f,
+                new[] { LiquidPalette.RoyalGreen, LiquidPalette.RoyalPink });
             board.bottles.Add(cocktailBottle);
             board.bottles.Add(BuildVessel(root.transform, "03 Mug Royal", mug,
-                new Vector2(-1.20f, -2.10f), 0.66f, theme, null, 0f,
-                new[] { Hex(0xF39A12), Hex(0x008E57) }));
+                new Vector2(-1.20f, -2.10f), theme, null, 0f,
+                new[] { LiquidPalette.RoyalOrange, LiquidPalette.RoyalGreen }));
             board.bottles.Add(BuildVessel(root.transform, "04 Tumbler Royal", tall,
-                new Vector2(1.20f, -2.202f), 0.783f, theme, glassLight, 0.26f,
-                new[] { Hex(0x09A9E6), Hex(0x792DC4) }));
+                new Vector2(1.20f, -2.202f), theme, glassLight, 0.26f,
+                new[] { LiquidPalette.RoyalBlue, LiquidPalette.RoyalPurple }));
             // The five unit barrel glass is the tallest and widest of the set, so it sits
             // on its own centred row below the approved 2x2 composition rather than
             // squeezing a fifth silhouette into it.
             board.bottles.Add(BuildVessel(root.transform, "05 Beer Royal", beer,
-                new Vector2(0f, -5.10f), 0.60f, theme, glassLight, 0.26f,
-                new[] { Hex(0xF39A12), Hex(0x008E57), Hex(0x09A9E6),
-                    Hex(0x792DC4), Hex(0xF44F8D) }));
+                new Vector2(0f, -5.10f), theme, glassLight, 0.26f,
+                new[] { LiquidPalette.RoyalOrange, LiquidPalette.RoyalGreen,
+                    LiquidPalette.RoyalBlue, LiquidPalette.RoyalPurple,
+                    LiquidPalette.RoyalPink }));
 
             var note = new GameObject("HELP - Click source, then click target");
             note.transform.SetParent(root.transform, false);
@@ -427,14 +428,15 @@ public static class RoyalGlassLabBuilder
     }
 
     private static LiquidBottle BuildVessel(Transform parent, string name,
-        VesselProfile profile, Vector2 localPosition, float scale,
+        VesselProfile profile, Vector2 localPosition,
         GlassVisualTheme theme, Material glassLight, float glassLightIntensity,
         IReadOnlyList<Color> contents)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         go.transform.localPosition = new Vector3(localPosition.x, localPosition.y, 0f);
-        go.transform.localScale = Vector3.one * scale;
+        go.transform.localScale = profile.ShelfReferenceLocalScale;
+        go.transform.localRotation = profile.ShelfReferenceLocalRotation;
 
         var bottle = go.AddComponent<LiquidBottle>();
         bottle.profile = profile;

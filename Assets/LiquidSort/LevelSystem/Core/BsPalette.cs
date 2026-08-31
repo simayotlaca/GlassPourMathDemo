@@ -41,19 +41,19 @@ namespace BartenderSort.Core
         public void EnsureDefaults()
         {
             if (Colors.Count > 0) return;
-            void Add(string n, string hex)
+            void Add(string n, Color color)
             {
-                ColorUtility.TryParseHtmlString(hex, out var c);
-                Colors.Add(new Entry { Name = n, Color = c });
+                Colors.Add(new Entry { Name = n, Color = color });
             }
-            // Kokteyl renkleri
-            Add("Kırmızı", "#E8453C");
-            Add("Turuncu", "#F5893B");
-            Add("Sarı", "#F7CE46");
-            Add("Yeşil", "#5BC24B");
-            Add("Mavi", "#3E8EDE");
-            Add("Mor", "#7D32BF");
-            Add("Pembe", "#EE6FA8");
+            // RoyalGlassLab is the visual source of truth. Red has no lab sample yet;
+            // the other bodies are the exact dynamic colours used in that scene.
+            Add("Kırmızı", new Color32(0xE8, 0x45, 0x3C, 0xFF));
+            Add("Turuncu", LiquidSort.LiquidPalette.RoyalOrange);
+            Add("Sarı", new Color32(0xF3, 0xC9, 0x28, 0xFF));
+            Add("Yeşil", LiquidSort.LiquidPalette.RoyalGreen);
+            Add("Mavi", LiquidSort.LiquidPalette.RoyalBlue);
+            Add("Mor", LiquidSort.LiquidPalette.RoyalPurple);
+            Add("Pembe", LiquidSort.LiquidPalette.RoyalPink);
 
             // 12'ydi, 7'ye indirildi — ÖLÇÜLDÜ.
             //

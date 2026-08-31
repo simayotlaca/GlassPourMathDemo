@@ -54,6 +54,7 @@ namespace LiquidSort.Levels
         private Vector3 selectedHomePosition;
         private Quaternion selectedHomeRotation = Quaternion.identity;
         private Vector3 selectedHomeScale = Vector3.one;
+        private float selectedRoyalRelativeScale = 1f;
 
         private int activeOperationId;
         private bool deliveryPresentationActive;
@@ -593,6 +594,8 @@ namespace LiquidSort.Levels
             selectedHomePosition = home.Position;
             selectedHomeRotation = home.Rotation;
             selectedHomeScale = home.LocalScale;
+            selectedRoyalRelativeScale = VesselPresentationMath.RelativeToRoyalReference(
+                bottle.transform, bottle.profile);
             BsAudio.Instance?.Play(BsSfx.GlassPickup);
             NotifySelectionChanged(glassId);
         }
@@ -601,9 +604,28 @@ namespace LiquidSort.Levels
         {
             if (selectedBottle == null || Busy) return;
 
+            // Safe-area fitting runs after ordinary gameplay LateUpdates and may move or
+            // scale the complete composition after a glass was selected. Always ask the
+            // shelf for its current layout-derived world pose instead of animating towards
+            // a stale snapshot from the selection frame.
+            if (shelfView != null && selectedGlassId >= 0
+                && shelfView.TryGetSeatPose(selectedGlassId,
+                    out BartenderGlassSeatPose liveHome))
+            {
+                selectedHomePosition = liveHome.Position;
+                selectedHomeRotation = liveHome.Rotation;
+                selectedHomeScale = liveHome.LocalScale;
+                selectedRoyalRelativeScale = VesselPresentationMath.RelativeToRoyalReference(
+                    selectedBottle.transform, selectedBottle.profile);
+            }
+
             float follow = 1f - Mathf.Exp(-selectionSpeed * Time.unscaledDeltaTime);
-            Vector3 wanted = selectedHomePosition + selectedHomeRotation * Vector3.up
-                           * selectionLift;
+            float scaledLift = VesselPresentationMath.ReferenceDistance(
+                selectionLift, selectedRoyalRelativeScale);
+            Vector3 liftDirection = shelfView != null
+                ? shelfView.LayoutUpWorld
+                : Vector3.up;
+            Vector3 wanted = selectedHomePosition + liftDirection * scaledLift;
             selectedBottle.transform.position = Vector3.Lerp(
                 selectedBottle.transform.position, wanted, follow);
             BartenderInvalidMoveFeedback rejection =
@@ -629,6 +651,14 @@ namespace LiquidSort.Levels
             {
                 if (restorePose && (pourAnimator == null || !pourAnimator.Busy))
                 {
+                    if (shelfView != null && previousGlassId >= 0
+                        && shelfView.TryGetSeatPose(previousGlassId,
+                            out BartenderGlassSeatPose liveHome))
+                    {
+                        selectedHomePosition = liveHome.Position;
+                        selectedHomeRotation = liveHome.Rotation;
+                        selectedHomeScale = liveHome.LocalScale;
+                    }
                     bottle.transform.SetPositionAndRotation(
                         selectedHomePosition, selectedHomeRotation);
                     bottle.transform.localScale = selectedHomeScale;
@@ -641,6 +671,7 @@ namespace LiquidSort.Levels
             selectedHomePosition = default;
             selectedHomeRotation = Quaternion.identity;
             selectedHomeScale = Vector3.one;
+            selectedRoyalRelativeScale = 1f;
             if (previousGlassId >= 0) NotifySelectionChanged(-1);
         }
 

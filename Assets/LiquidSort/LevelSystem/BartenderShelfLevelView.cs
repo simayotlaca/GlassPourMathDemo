@@ -81,9 +81,11 @@ namespace LiquidSort.Levels
             public Transform footAnchor;
             [Tooltip("Direct front-art reference used to centre the complete row silhouette.")]
             public SpriteRenderer placementRenderer;
-            [Tooltip("Unscaled Royal source pose captured when the editor builder binds the pool.")]
+            [HideInInspector, Tooltip("Legacy scene data retained only so existing scenes deserialize. "
+                                   + "Runtime scale comes from VesselProfile.")]
             public Vector3 authoredLocalScale = Vector3.one;
-            [Tooltip("Royal source rotation captured alongside the scale.")]
+            [HideInInspector, Tooltip("Legacy scene data retained only so existing scenes deserialize. "
+                                   + "Runtime rotation comes from VesselProfile.")]
             public Quaternion authoredLocalRotation = Quaternion.identity;
         }
 
@@ -93,22 +95,21 @@ namespace LiquidSort.Levels
             public Transform FootAnchor;
             public SpriteRenderer PlacementRenderer;
             public GlassType Type;
-            public Vector3 AuthoredLocalScale;
-            public Quaternion AuthoredLocalRotation;
             public int GlassId = -1;
             public bool Assigned;
 
             /// <summary>
-            /// World pose the layout pass decided on. The entrance and reseat animations
-            /// only ever interpolate towards this value; they never invent a pose of their
-            /// own, so cancelling one mid-flight lands on the same static layout.
+            /// Layout-local pose the layout pass decided on. Keeping the canonical seat in
+            /// layout space is essential: the safe-area fitter may still move and uniformly
+            /// scale the whole composition after ordinary gameplay updates. World snapshots
+            /// would then point at yesterday's shelf even though the glass moved with it.
             /// </summary>
-            public Vector3 SeatPosition;
-            public Quaternion SeatRotation = Quaternion.identity;
+            public Vector3 SeatLayoutPosition;
+            public Quaternion SeatLayoutRotation = Quaternion.identity;
             public Vector3 SeatScale = Vector3.one;
             public bool Seated;
-            public Vector3 PreviousSeatPosition;
-            public Quaternion PreviousSeatRotation = Quaternion.identity;
+            public Vector3 PreviousLayoutPosition;
+            public Quaternion PreviousLayoutRotation = Quaternion.identity;
             public Vector3 PreviousSeatScale = Vector3.one;
             public bool HasPreviousSeat;
             public int Row;
@@ -226,8 +227,9 @@ namespace LiquidSort.Levels
                + "sorting order'ının üstüne çıkacak kadar büyük olmalı; iniş anında "
                + "bardağın kendi sıralaması geri verilir. 0 = kapalı.")]
         [SerializeField, Min(0)] private int entranceSortingBoost = 60;
-        [Tooltip("Rafa çarpma anındaki ezilme oranı. 0 = kapalı.")]
-        [SerializeField, Range(0f, 0.4f)] private float entranceLandingSquash = 0.13f;
+        [Tooltip("Kept at zero for Royal vessels: their authored silhouette must never be "
+               + "non-uniformly stretched when it reaches a shelf.")]
+        [SerializeField, Range(0f, 0.4f)] private float entranceLandingSquash;
         [Tooltip("Ezilmeden normal ölçüye dönüş süresi.")]
         [SerializeField, Min(0f)] private float entranceSettleDuration = 0.20f;
         [Tooltip("Raf tahtalarının ve direklerin açılma süresi. 0 = anında görünür.")]
@@ -290,6 +292,14 @@ namespace LiquidSort.Levels
         public string LastError { get; private set; }
         public int ActiveGlassCount => activeActors.Count;
         public int VisibleShelfRows => configuredRowCount;
+        public Vector3 LayoutUpWorld
+        {
+            get
+            {
+                Vector3 up = LayoutSpace.TransformVector(Vector3.up);
+                return up.sqrMagnitude > 0.00000001f ? up.normalized : Vector3.up;
+            }
+        }
         /// <summary>True while glasses are still walking towards their seats.</summary>
         public bool SeatAnimationPlaying => seatAnimation != null;
         /// <summary>
@@ -630,7 +640,7 @@ namespace LiquidSort.Levels
                 && actor != null && actor.Bottle != null && actor.Seated)
             {
                 pose = new BartenderGlassSeatPose(
-                    actor.SeatPosition, actor.SeatRotation, actor.SeatScale);
+                    SeatWorldPosition(actor), SeatWorldRotation(actor), actor.SeatScale);
                 return true;
             }
 
@@ -1073,16 +1083,19 @@ namespace LiquidSort.Levels
             for (int i = 0; i < source.Count; i++)
             {
                 GlassBinding binding = source[i];
+                VesselProfile profile = binding != null && binding.bottle != null
+                    ? binding.bottle.profile
+                    : null;
                 destination.Add(new GlassBinding
                 {
                     bottle = binding != null ? binding.bottle : null,
                     footAnchor = binding != null ? binding.footAnchor : null,
                     placementRenderer = binding != null ? binding.placementRenderer : null,
-                    authoredLocalScale = binding != null
-                        ? binding.authoredLocalScale
+                    authoredLocalScale = profile != null
+                        ? profile.ShelfReferenceLocalScale
                         : Vector3.one,
-                    authoredLocalRotation = binding != null
-                        ? binding.authoredLocalRotation
+                    authoredLocalRotation = profile != null
+                        ? profile.ShelfReferenceLocalRotation
                         : Quaternion.identity
                 });
             }
@@ -1111,9 +1124,7 @@ namespace LiquidSort.Levels
                     Bottle = bottle,
                     FootAnchor = binding.footAnchor,
                     PlacementRenderer = binding.placementRenderer,
-                    Type = type,
-                    AuthoredLocalScale = binding.authoredLocalScale,
-                    AuthoredLocalRotation = binding.authoredLocalRotation
+                    Type = type
                 });
             }
             reason = null;
@@ -1149,18 +1160,15 @@ namespace LiquidSort.Levels
                 reason = $"'{bottle.name}' doğrudan bağlı taban temas noktası eksik.";
                 return false;
             }
-            Vector3 authoredScale = binding.authoredLocalScale;
-            if (Mathf.Abs(authoredScale.x) < 0.0001f
-                || Mathf.Abs(authoredScale.y) < 0.0001f
-                || Mathf.Abs(authoredScale.z) < 0.0001f)
-            {
-                reason = $"'{bottle.name}' serialized authored scale değeri geçersiz.";
-                return false;
-            }
             if (bottle.profile == null || !bottle.profile.IsBaked
                 || bottle.profile.front == null)
             {
                 reason = $"'{bottle.name}' bake edilmiş Royal profile/front taşımıyor.";
+                return false;
+            }
+            if (bottle.profile.shelfReferenceScale <= 0f)
+            {
+                reason = $"'{bottle.name}' profile shelf reference scale değeri geçersiz.";
                 return false;
             }
             if (binding.placementRenderer == null
@@ -1253,7 +1261,9 @@ namespace LiquidSort.Levels
                 Layer layer = glass.Layers[i];
                 colorScratch.Add(layer.Hidden ? hiddenLayerColor : palette.ColorAt(layer.Color));
             }
-            bottle.capacity = BsRules.Capacity(glass.Type);
+            // The level supplies logical units; the selected vessel asset supplies the
+            // capacity and every waterline used to display them.
+            bottle.capacity = bottle.profile.capacity;
             bottle.SetUnits(colorScratch);
         }
 
@@ -1286,8 +1296,9 @@ namespace LiquidSort.Levels
             {
                 int rowCount = basePerRow + (row < remainder ? 1 : 0);
                 float spacing = ColumnSpacing(rowCount) * compositionScale;
-                Vector2 shelfSeat = ShelfSeatInLayout(row);
-                float firstX = shelfSeat.x - 0.5f * spacing * (rowCount - 1);
+                float shelfCenterX = ShelfCenterXInLayout(row);
+                float shelfSurfaceY = SurfaceY(configuredRowCount, row);
+                float firstX = shelfCenterX - 0.5f * spacing * (rowCount - 1);
                 int rowActorStart = actorIndex;
 
                 for (int column = 0; column < rowCount; column++, actorIndex++)
@@ -1296,9 +1307,9 @@ namespace LiquidSort.Levels
                     actor.Row = row;
                     actor.Column = column;
                     SeatActor(actor, firstX + column * spacing,
-                        shelfSeat.y - opticalSeatInset * compositionScale, scale);
+                        shelfSurfaceY - opticalSeatInset * compositionScale, scale);
                 }
-                CenterRowSilhouette(rowActorStart, rowCount, shelfSeat.x);
+                CenterRowSilhouette(rowActorStart, rowCount, shelfCenterX);
             }
 
             RecordSeatPoses();
@@ -1345,8 +1356,10 @@ namespace LiquidSort.Levels
                 Actor actor = activeActors[i];
                 Transform actorTransform = actor.Bottle.transform;
                 actor.HasPreviousSeat = actor.Seated;
-                actor.PreviousSeatPosition = actorTransform.position;
-                actor.PreviousSeatRotation = actorTransform.rotation;
+                actor.PreviousLayoutPosition = LayoutSpace.InverseTransformPoint(
+                    actorTransform.position);
+                actor.PreviousLayoutRotation = Quaternion.Inverse(LayoutSpace.rotation)
+                                             * actorTransform.rotation;
                 actor.PreviousSeatScale = actorTransform.localScale;
             }
         }
@@ -1361,18 +1374,27 @@ namespace LiquidSort.Levels
             {
                 Actor actor = activeActors[i];
                 Transform actorTransform = actor.Bottle.transform;
-                actor.SeatPosition = actorTransform.position;
-                actor.SeatRotation = actorTransform.rotation;
+                actor.SeatLayoutPosition = LayoutSpace.InverseTransformPoint(
+                    actorTransform.position);
+                actor.SeatLayoutRotation = Quaternion.Inverse(LayoutSpace.rotation)
+                                         * actorTransform.rotation;
                 actor.SeatScale = actorTransform.localScale;
                 actor.Seated = true;
             }
         }
 
+        private Vector3 SeatWorldPosition(Actor actor) =>
+            LayoutSpace.TransformPoint(actor.SeatLayoutPosition);
+
+        private Quaternion SeatWorldRotation(Actor actor) =>
+            LayoutSpace.rotation * actor.SeatLayoutRotation;
+
         private void SeatActor(Actor actor, float slotCenterX, float surfaceY, float scale)
         {
             Transform actorTransform = actor.Bottle.transform;
-            actorTransform.localScale = actor.AuthoredLocalScale * scale;
-            actorTransform.localRotation = actor.AuthoredLocalRotation;
+            VesselProfile profile = actor.Bottle.profile;
+            actorTransform.localScale = profile.ShelfReferenceLocalScale * scale;
+            actorTransform.localRotation = profile.ShelfReferenceLocalRotation;
 
             Vector3 desiredFoot = LayoutSpace.TransformPoint(
                 new Vector3(slotCenterX, surfaceY, glassPlaneZ));
@@ -1444,6 +1466,11 @@ namespace LiquidSort.Levels
             {
                 LiquidBottle bottle = activeActors[i].Bottle;
                 if (!bottle.gameObject.activeSelf) bottle.gameObject.SetActive(true);
+                // A level snapshot is an authoritative presentation boundary. Rebuild the
+                // renderer from the selected VesselProfile so pooled instances can never
+                // retain a stale RoyalLab/property-block interpretation from an earlier
+                // edit, level or preview.
+                bottle.Invalidate();
                 bottle.Refresh();
                 // RoyalGlassLab builds both halves explicitly. Pool activation used to
                 // refresh only the liquid mesh, leaving the non-serialized shell, shadow
@@ -1469,7 +1496,6 @@ namespace LiquidSort.Levels
             if (!CanAnimate || !animateEntrance || activeActors.Count == 0) return;
 
             OrderActorsForEntrance();
-            Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
             float total = MeasureEntranceFalls();
             if (!(total > 0f) || float.IsNaN(total) || float.IsInfinity(total))
             {
@@ -1479,10 +1505,10 @@ namespace LiquidSort.Levels
             }
 
             BeginShelfFade();
-            PrepareEntranceActors(layoutUp);
+            PrepareEntranceActors();
             seatAnimationDeadlineRealtime = Time.realtimeSinceStartupAsDouble
                                           + total + SeatAnimationWatchdogGrace;
-            seatAnimation = StartCoroutine(EntranceRoutine(layoutUp, total));
+            seatAnimation = StartCoroutine(EntranceRoutine(total));
         }
 
         /// <summary>
@@ -1498,9 +1524,9 @@ namespace LiquidSort.Levels
             {
                 Actor actor = activeActors[i];
                 moved = actor.HasPreviousSeat
-                    && ((actor.PreviousSeatPosition - actor.SeatPosition).sqrMagnitude > 1e-6f
-                        || Quaternion.Angle(actor.PreviousSeatRotation,
-                                            actor.SeatRotation) > 0.01f
+                    && ((actor.PreviousLayoutPosition - actor.SeatLayoutPosition).sqrMagnitude > 1e-6f
+                        || Quaternion.Angle(actor.PreviousLayoutRotation,
+                                            actor.SeatLayoutRotation) > 0.01f
                         || (actor.PreviousSeatScale - actor.SeatScale).sqrMagnitude > 1e-6f);
             }
             if (!moved) return;
@@ -1510,7 +1536,7 @@ namespace LiquidSort.Levels
             seatAnimation = StartCoroutine(ReseatRoutine());
         }
 
-        private IEnumerator EntranceRoutine(Vector3 layoutUp, float total)
+        private IEnumerator EntranceRoutine(float total)
         {
             try
             {
@@ -1518,6 +1544,7 @@ namespace LiquidSort.Levels
                 while (elapsed < total)
                 {
                     StepShelfFade(elapsed);
+                    Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
                     for (int i = 0; i < entranceOrder.Count; i++)
                     {
                         Actor actor = entranceOrder[i];
@@ -1583,8 +1610,9 @@ namespace LiquidSort.Levels
         /// them. Pool deactivation owns resource disposal; an entrance pose must not throw
         /// away generated glass art only to rebuild it a few frames later.
         /// </summary>
-        private void PrepareEntranceActors(Vector3 layoutUp)
+        private void PrepareEntranceActors()
         {
+            Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
             for (int i = 0; i < entranceOrder.Count; i++)
             {
                 Actor actor = entranceOrder[i];
@@ -1597,9 +1625,9 @@ namespace LiquidSort.Levels
 
                 DropEntranceSorting(actor);
                 Transform actorTransform = actor.Bottle.transform;
-                actorTransform.position = actor.SeatPosition
+                actorTransform.position = SeatWorldPosition(actor)
                     + layoutUp * actor.EntranceFallDistance;
-                actorTransform.rotation = actor.SeatRotation;
+                actorTransform.rotation = SeatWorldRotation(actor);
                 actorTransform.localScale = actor.SeatScale;
             }
         }
@@ -1613,9 +1641,9 @@ namespace LiquidSort.Levels
             {
                 // Kept active at the shared release line. Disabling here would dispose the
                 // generated shell and make the next release rebuild its CPU distance field.
-                actorTransform.position = actor.SeatPosition
+                actorTransform.position = SeatWorldPosition(actor)
                     + layoutUp * actor.EntranceFallDistance;
-                actorTransform.rotation = actor.SeatRotation;
+                actorTransform.rotation = SeatWorldRotation(actor);
                 actorTransform.localScale = actor.SeatScale;
                 return;
             }
@@ -1631,15 +1659,16 @@ namespace LiquidSort.Levels
                 LiftEntranceSorting(actor);
                 // Quadratic: the glass reads as dropped under gravity, not slid in.
                 float fall = time / actor.EntranceFallDuration;
-                actorTransform.position = actor.SeatPosition
+                actorTransform.position = SeatWorldPosition(actor)
                     + layoutUp * (actor.EntranceFallDistance * (1f - fall * fall));
-                actorTransform.rotation = actor.SeatRotation;
+                actorTransform.rotation = SeatWorldRotation(actor);
                 actorTransform.localScale = actor.SeatScale;
                 return;
             }
 
             DropEntranceSorting(actor);
-            actorTransform.SetPositionAndRotation(actor.SeatPosition, actor.SeatRotation);
+            actorTransform.SetPositionAndRotation(
+                SeatWorldPosition(actor), SeatWorldRotation(actor));
             actorTransform.localScale =
                 LandingScale(actor.SeatScale, time - actor.EntranceFallDuration);
         }
@@ -1695,10 +1724,12 @@ namespace LiquidSort.Levels
                         Actor actor = activeActors[i];
                         if (!actor.HasPreviousSeat) continue;
                         Transform actorTransform = actor.Bottle.transform;
-                        actorTransform.position = Vector3.Lerp(
-                            actor.PreviousSeatPosition, actor.SeatPosition, k);
-                        actorTransform.rotation = Quaternion.Slerp(
-                            actor.PreviousSeatRotation, actor.SeatRotation, k);
+                        Vector3 layoutPosition = Vector3.Lerp(
+                            actor.PreviousLayoutPosition, actor.SeatLayoutPosition, k);
+                        Quaternion layoutRotation = Quaternion.Slerp(
+                            actor.PreviousLayoutRotation, actor.SeatLayoutRotation, k);
+                        actorTransform.position = LayoutSpace.TransformPoint(layoutPosition);
+                        actorTransform.rotation = LayoutSpace.rotation * layoutRotation;
                         actorTransform.localScale = Vector3.Lerp(
                             actor.PreviousSeatScale, actor.SeatScale, k);
                     }
@@ -1729,7 +1760,7 @@ namespace LiquidSort.Levels
                 if (!actorObject.activeSelf) actorObject.SetActive(true);
                 Transform actorTransform = actor.Bottle.transform;
                 actorTransform.SetPositionAndRotation(
-                    actor.SeatPosition, actor.SeatRotation);
+                    SeatWorldPosition(actor), SeatWorldRotation(actor));
                 actorTransform.localScale = actor.SeatScale;
             }
         }
@@ -1950,11 +1981,11 @@ namespace LiquidSort.Levels
             plank.transform.position = LayoutSpace.TransformPoint(local);
         }
 
-        private Vector2 ShelfSeatInLayout(int row)
+        private float ShelfCenterXInLayout(int row)
         {
             Vector3 local = LayoutSpace.InverseTransformPoint(
                 shelfRows[row].seatAnchor.position);
-            return new Vector2(local.x, local.y);
+            return local.x;
         }
 
         private float SpriteHeightInLayout(SpriteRenderer renderer)
@@ -2046,8 +2077,9 @@ namespace LiquidSort.Levels
             {
                 glassIdByBottle.Remove(actor.Bottle);
                 actor.Bottle.SetUnits(null);
-                actor.Bottle.transform.localScale = actor.AuthoredLocalScale;
-                actor.Bottle.transform.localRotation = actor.AuthoredLocalRotation;
+                VesselProfile profile = actor.Bottle.profile;
+                actor.Bottle.transform.localScale = profile.ShelfReferenceLocalScale;
+                actor.Bottle.transform.localRotation = profile.ShelfReferenceLocalRotation;
                 actor.Bottle.gameObject.SetActive(false);
             }
             actor.GlassId = -1;
@@ -2167,8 +2199,13 @@ namespace LiquidSort.Levels
                 LiquidBottle bottle = binding != null ? binding.bottle : null;
                 if (bottle == null) continue;
                 bottle.SetUnits(null);
-                bottle.transform.localScale = binding.authoredLocalScale;
-                bottle.transform.localRotation = binding.authoredLocalRotation;
+                VesselProfile profile = bottle.profile;
+                bottle.transform.localScale = profile != null
+                    ? profile.ShelfReferenceLocalScale
+                    : Vector3.one;
+                bottle.transform.localRotation = profile != null
+                    ? profile.ShelfReferenceLocalRotation
+                    : Quaternion.identity;
                 bottle.gameObject.SetActive(false);
             }
         }

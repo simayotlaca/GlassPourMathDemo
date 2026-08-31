@@ -124,6 +124,8 @@ MonoBehaviour:
   mouthHalfWidth: 1.5976562
   supportLocal: {x: -0.009114583, y: -2.126302}
   hasSupportLocal: 1
+  shelfReferenceScale: 0.539
+  shelfReferenceRotationDegrees: 0
   visibleBottomLocal: 0.3111979
   hasVisibleLiquidFloor: 1
   visibleLiquidFloor: -0.571696

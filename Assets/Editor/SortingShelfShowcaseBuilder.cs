@@ -85,6 +85,7 @@ public static class SortingShelfShowcaseBuilder
     private const string ShelfPlankPath = ArtRoot + "/ShelfParts/ShelfPlank_Burgundy_v1.png";
     private const string ShelfPostPath = ArtRoot + "/ShelfParts/ShelfPost_BurgundyGold_v1.png";
     private const string CheckBadgePath = ArtRoot + "/CheckBadge_Clean.png";
+    private const string GlassLockPath = ArtRoot + "/Ui/Lock/GlassLock_Gold_Clean.png";
     private const string SkyPath = ArtRoot + "/UpperStage/UpperSkyBackdrop_v1.png";
     private const string ArchPath = ArtRoot + "/UpperStage/UpperStoneArch_v1.png";
     private const string CurtainPath = ArtRoot + "/UpperStage/UpperCurtainPair_v1.png";
@@ -410,7 +411,8 @@ public static class SortingShelfShowcaseBuilder
     private const float EntranceDropDuration = 0.32f;
     private const float EntranceGlassStagger = 0.055f;
     private const float EntranceRowStagger = 0.12f;
-    private const float EntranceLandingSquash = 0.13f;
+    // RoyalGlassLab silhouettes are canonical and may move, but must not be squashed.
+    private const float EntranceLandingSquash = 0f;
     private const float EntranceSettleDuration = 0.20f;
     private const float ShelfFadeDuration = 0.22f;
     private const float ReseatDuration = 0.22f;
@@ -599,7 +601,7 @@ public static class SortingShelfShowcaseBuilder
             {
                 BartenderShelfLevelView.GlassBinding binding = pool[i];
                 Rect visual = SpriteVisualBounds(binding.placementRenderer.sprite);
-                Vector3 authored = binding.authoredLocalScale;
+                Vector3 authored = binding.bottle.profile.ShelfReferenceLocalScale;
                 solve.TallestGlass = Mathf.Max(solve.TallestGlass,
                     visual.height * Mathf.Abs(authored.y));
                 solve.WidestGlass = Mathf.Max(solve.WidestGlass,
@@ -661,7 +663,8 @@ public static class SortingShelfShowcaseBuilder
         ChromaBoundsCache.Clear();
         foreach (string path in new[]
                  {
-                     ShelfPlankPath, ShelfPostPath, CheckBadgePath, SkyPath, ArchPath,
+                     ShelfPlankPath, ShelfPostPath, CheckBadgePath, GlassLockPath,
+                     SkyPath, ArchPath,
                      CurtainPath, ColumnPath, RailBasePath,
                      PortalBackPath, PortalFrontPath, PortalOccluderPath, PortalSidePath
                  })
@@ -894,6 +897,7 @@ public static class SortingShelfShowcaseBuilder
         public readonly Sprite Plank = Load<Sprite>(ShelfPlankPath);
         public readonly Sprite Post = Load<Sprite>(ShelfPostPath);
         public readonly Sprite CheckBadge = Load<Sprite>(CheckBadgePath);
+        public readonly Sprite GlassLock = Load<Sprite>(GlassLockPath);
         public readonly Sprite Sky = Load<Sprite>(SkyPath);
         public readonly Sprite Arch = Load<Sprite>(ArchPath);
         public readonly Sprite Curtain = Load<Sprite>(CurtainPath);
@@ -1480,6 +1484,12 @@ public static class SortingShelfShowcaseBuilder
             throw new InvalidOperationException(source.name +
                 " is not a complete RoyalGlassLab vessel.");
 
+        // A level clone inherits component/material configuration from RoyalGlassLab,
+        // while its canonical rest pose comes from the same VesselProfile asset used by
+        // the lab. Source-scene transforms are intentionally not part of the contract.
+        go.transform.localScale = bottle.profile.ShelfReferenceLocalScale;
+        go.transform.localRotation = bottle.profile.ShelfReferenceLocalRotation;
+
         bottle.capacity = bottle.profile.capacity;
         bottle.SetUnits(null);
         bottle.Refresh();
@@ -1526,8 +1536,8 @@ public static class SortingShelfShowcaseBuilder
             bottle = bottle,
             footAnchor = foot.transform,
             placementRenderer = placementRenderer,
-            authoredLocalScale = go.transform.localScale,
-            authoredLocalRotation = go.transform.localRotation
+            authoredLocalScale = bottle.profile.ShelfReferenceLocalScale,
+            authoredLocalRotation = bottle.profile.ShelfReferenceLocalRotation
         };
         go.SetActive(false);
         return binding;
@@ -1545,7 +1555,7 @@ public static class SortingShelfShowcaseBuilder
         foreach (DeliveryBadgePresenter.BadgeBinding badge in badges)
         {
             float badgeHeight = SpriteVisualBounds(badge.badgeRenderer.sprite).height;
-            float inherited = Mathf.Abs(badge.bottle.transform.localScale.y)
+            float inherited = badge.bottle.profile.ShelfReferenceScale
                               * solve.ScaleTwoRow;
             float local = targetWorldHeight
                           / Mathf.Max(0.0001f, badgeHeight * inherited);
@@ -2116,7 +2126,7 @@ public static class SortingShelfShowcaseBuilder
 
         rig.Badges = host.AddComponent<DeliveryBadgePresenter>();
         rig.Badges.ConfigureSceneBindings(rig.Controller, rig.ShelfView, delivery.Portal,
-            rig.Interaction, badges);
+            rig.Interaction, badges, glassLockSprite: art.GlassLock);
 
         rig.Strip = host.AddComponent<OrderStripPresenter>();
         rig.Strip.ConfigureSceneBindings(rig.Controller, rig.ShelfView, strip.Cards, icons);

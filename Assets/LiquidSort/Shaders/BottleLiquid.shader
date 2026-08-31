@@ -20,6 +20,10 @@ Shader "LiquidSort/BottleLiquid"
         // One shared curve avoids a gap, dark seam or two overlapping ellipses.
         _InnerCurve ("Inner Junction Curve", Range(0,1)) = 1.0
         _SurfaceScale ("Exposed Surface Depth Scale", Range(0,1)) = 1.0
+        // A local-space inset changes size on screen with the vessel. Expressing this
+        // one in pixels keeps the same fine glass/liquid separation in RoyalGlassLab
+        // and in the smaller SortingShelf presentation without changing the waterline.
+        _CapWallInset ("Top Face Wall Inset (pixels)", Range(0,3)) = 1.25
         // Measured separately from the cap, because they are not the same quantity.
         // Reference junction sags 14px on a 143px chord: 0.098 of the chord. On a narrow
         // bottle that happens to equal the cap depth, which is why one constant looked
@@ -166,6 +170,7 @@ Shader "LiquidSort/BottleLiquid"
             float _Bulge;
             float _InnerCurve;
             float _SurfaceScale;
+            float _CapWallInset;
             float _InnerBulge;
             float _InnerMax;
             float _BulgeMax;
@@ -316,7 +321,24 @@ Shader "LiquidSort/BottleLiquid"
                 float4 topInfo = _BandInfo[topIndex];
                 float topHalfChord = max(topInfo.z, 1e-4);
                 float topChord = topHalfChord * 2.0;
-                float topAcross = saturate(abs(lx - topInfo.y) / topHalfChord);
+
+                // BandInfo keeps the exact baked chord because it is part of the volume
+                // calculation. Only the exposed face is pulled away from the glass. The
+                // derivative converts the authored pixel inset to liquid-local units, so
+                // a scaled-down shelf glass retains the same visible clearance as Royal.
+                float localUnitsPerPixel = length(float2(ddx(lx), ddy(lx)));
+                float capWallInset = min(
+                    localUnitsPerPixel * max(_CapWallInset, 0.0),
+                    topHalfChord * 0.15);
+                float capHalfChord = max(topHalfChord - capWallInset, 1e-4);
+                float capEdgeDistance = capHalfChord - abs(lx - topInfo.y);
+                float capEdgeAA = max(
+                    fwidth(capEdgeDistance) * 0.75,
+                    topChord * 0.0015);
+                float capCoverage = smoothstep(
+                    -capEdgeAA, capEdgeAA, capEdgeDistance);
+
+                float topAcross = saturate(abs(lx - topInfo.y) / capHalfChord);
                 float topEllipse = sqrt(saturate(1.0 - topAcross * topAcross));
                 float topHalfDepth = min(topChord * max(_Bulge, 0.001), _BulgeMax)
                                    * saturate(_SurfaceScale);
@@ -396,18 +418,29 @@ Shader "LiquidSort/BottleLiquid"
                 float surfaceDistance = ly - nearTop;
                 float surfaceAA = max(fwidth(surfaceDistance) * 0.85, topChord * 0.0015);
                 float surface = smoothstep(-surfaceAA, surfaceAA, surfaceDistance);
+                surface *= capCoverage;
 
                 // Flat bodies keep the interior mask exactly. The top face does not:
                 // the vessel's mouth is open, so its back rim belongs above the interior
                 // outline, tucked under the drawn glass rim. Sampling the mask at the
                 // near rim rather than at the fragment extrudes the waterline chord
                 // upwards, which is precisely the silhouette that half of the ellipse
-                // needs, and it costs one extra texture read instead of a second mask.
+                // needs. Two neighbouring taps erode only that exposed face by the
+                // screen-stable inset; the body still reaches the physical inner wall.
+                float2 quadSize = max(_QuadSize, float2(1e-4, 1e-4));
                 float bodyMask = tex2D(_MaskTex, _MaskUV.xy + i.uv * _MaskUV.zw).a;
 
                 float rise = max(0.0, ly - nearTop);
-                float2 shift = float2(-rise * sa, -rise * ca) / max(_QuadSize, float2(1e-4, 1e-4));
-                float surfaceMask = tex2D(_MaskTex, _MaskUV.xy + (i.uv + shift) * _MaskUV.zw).a;
+                float2 shift = float2(-rise * sa, -rise * ca) / quadSize;
+                float2 surfaceUv = i.uv + shift;
+                float2 capInsetUv = float2(ca, -sa) * capWallInset / quadSize;
+                float surfaceMask = tex2D(
+                    _MaskTex, _MaskUV.xy + surfaceUv * _MaskUV.zw).a;
+                float surfaceMaskLeft = tex2D(
+                    _MaskTex, _MaskUV.xy + (surfaceUv - capInsetUv) * _MaskUV.zw).a;
+                float surfaceMaskRight = tex2D(
+                    _MaskTex, _MaskUV.xy + (surfaceUv + capInsetUv) * _MaskUV.zw).a;
+                surfaceMask = min(surfaceMask, min(surfaceMaskLeft, surfaceMaskRight));
 
                 float mask = lerp(bodyMask, surfaceMask, surface);
                 clip(mask - (1.0 / 255.0));
@@ -417,7 +450,6 @@ Shader "LiquidSort/BottleLiquid"
                 // the neighbouring sample already falls outside the vessel this fragment
                 // is up against the wall, whatever shape that wall has at this height.
                 // Unlike _EdgeShade this needs no assumption that the vessel is a box.
-                float2 quadSize = max(_QuadSize, float2(1e-4, 1e-4));
                 float2 sideStep = float2(_WallWidth, 0.0) / quadSize;
                 float2 floorStep = float2(0.0, _WallWidth * 1.5) / quadSize;
                 float openLeft = tex2D(_MaskTex, _MaskUV.xy + (i.uv - sideStep) * _MaskUV.zw).a;
@@ -494,7 +526,7 @@ Shader "LiquidSort/BottleLiquid"
                     saturate(_FarRim * farRim));
 
                 // _ShineX and _ShineWidth are now chord-local top-glint controls.
-                float capX = (lx - topInfo.y) / topHalfChord;
+                float capX = (lx - topInfo.y) / capHalfChord;
                 float glintX = saturate(1.0 - abs(capX - _ShineX) / max(_ShineWidth, 1e-4));
                 float glintY = saturate(1.0 - abs(capT - 0.34) / 0.085);
                 float glint = glintX * glintX * glintY * glintY * surface;

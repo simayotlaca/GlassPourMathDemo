@@ -300,21 +300,26 @@ namespace LiquidSort
                 Pose targetPose = ResolvePose(target);
                 float sourceScale = UniformScale(source.transform);
                 float targetScaleY = Mathf.Abs(target.transform.lossyScale.y);
+                float royalRelativeScale = VesselPresentationMath.RelativeToRoyalReference(
+                    source.transform, source.profile);
 
                 // Tilt towards the target: mouth to the left means a positive Z rotation.
                 float sign = target.transform.position.x < source.transform.position.x ? 1f : -1f;
+                float homeLocalTilt = SignedDegrees(source.transform.localEulerAngles.z);
                 Vector2 selectedMouth = source.PourMouthLocal(target.transform.position.x);
                 Vector3 mouthLocal = new Vector3(selectedMouth.x, selectedMouth.y, 0f);
                 Vector3 mouthOffset = ScaledLocalOffset(source.transform, mouthLocal) * carryScale;
 
-                float tilt = sign * Mathf.Min(sourcePose.maximumTilt,
-                    source.SpillAngle() + sourcePose.extraTilt);
+                float tiltDelta = sign * Mathf.Min(sourcePose.maximumTilt,
+                    source.SpillAngle() + sourcePose.extraTilt) - homeLocalTilt;
                 Vector3 anchor = target.MouthWorld
                                  + Vector3.up * (targetPose.receiveClearance * targetScaleY);
-                Vector3 destination = anchor - Quaternion.Euler(0f, 0f, tilt) * mouthOffset;
+                Quaternion tiltedRotation = TiltFromHome(homeRotation, tiltDelta);
+                Vector3 destination = anchor - tiltedRotation * mouthOffset;
 
                 yield return LiftAndCarry(operationId, source, start, homeScale, anchor,
-                    mouthOffset, destination, tilt, sourcePose.carryArc * sourceScale);
+                    mouthOffset, destination, tiltedRotation,
+                    sourcePose.carryArc * sourceScale);
                 if (!OperationCanContinue(operationId)) yield break;
 
                 // Only rendering is staged. Source and receiver logical stacks stay at
@@ -325,13 +330,14 @@ namespace LiquidSort
 
                 stream.Begin(source, target, color,
                     sourcePose.streamWidth * sourceScale,
-                    sourcePose.streamTipWidth * sourceScale);
+                    sourcePose.streamTipWidth * sourceScale,
+                    royalRelativeScale);
 
                 float targetFrom = target.DisplayVolume;
                 float transferDuration = Mathf.Max(0.05f, unitTime * amount);
                 yield return Drain(operationId, source, target, amount, anchor, mouthOffset,
-                    sign, tilt, sourcePose.extraTilt, sourcePose.maximumTilt, targetFrom,
-                    transferDuration);
+                    homeRotation, homeLocalTilt, sign, tiltDelta, sourcePose.extraTilt,
+                    sourcePose.maximumTilt, targetFrom, transferDuration);
                 if (!OperationCanContinue(operationId)) yield break;
 
                 // The tail is frozen in world space by StopEmitting, so the vessel may
@@ -373,12 +379,12 @@ namespace LiquidSort
         /// </summary>
         private IEnumerator LiftAndCarry(int operationId, LiquidBottle source, Vector3 start,
             Vector3 homeScale, Vector3 anchor, Vector3 mouthOffset, Vector3 destination,
-            float tilt, float arc)
+            Quaternion tiltedRotation, float arc)
         {
             carryDriven = source.transform;
             carryStartPosition = start;
             carryStartRotation = source.transform.rotation;
-            carryEndRotation = Quaternion.Euler(0f, 0f, tilt);
+            carryEndRotation = tiltedRotation;
             carryStartScale = homeScale;
             carryEndScale = homeScale * carryScale;
             carryAnchor = anchor;
@@ -414,7 +420,7 @@ namespace LiquidSort
             if (!OperationCanContinue(operationId)) yield break;
 
             carryDriven = null;
-            source.transform.SetPositionAndRotation(destination, Quaternion.Euler(0f, 0f, tilt));
+            source.transform.SetPositionAndRotation(destination, tiltedRotation);
             source.transform.localScale = carryEndScale;
         }
 
@@ -455,11 +461,12 @@ namespace LiquidSort
         /// bottle has to be turned further as it empties.
         /// </summary>
         private IEnumerator Drain(int operationId, LiquidBottle source, LiquidBottle target,
-            int amount, Vector3 anchor, Vector3 mouthOffset, float sign, float startTilt,
-            float extraTilt, float maximumTilt, float targetFrom, float duration)
+            int amount, Vector3 anchor, Vector3 mouthOffset, Quaternion homeRotation,
+            float homeLocalTilt, float sign, float startTiltDelta, float extraTilt,
+            float maximumTilt, float targetFrom, float duration)
         {
             float sourceFrom = source.DisplayVolume;
-            float currentTilt = startTilt;
+            float currentTiltDelta = startTiltDelta;
             float elapsed = 0f;
             bool impacted = false;
             bool emissionClosed = false;
@@ -492,9 +499,11 @@ namespace LiquidSort
                     emissionClosed = true;
                 }
 
-                float wanted = sign * Mathf.Min(maximumTilt, source.SpillAngle() + extraTilt);
-                currentTilt = Mathf.Lerp(currentTilt, wanted, 1f - Mathf.Exp(-tiltFollow * Time.deltaTime));
-                Quaternion rotation = Quaternion.Euler(0f, 0f, currentTilt);
+                float wantedTiltDelta = sign * Mathf.Min(
+                    maximumTilt, source.SpillAngle() + extraTilt) - homeLocalTilt;
+                currentTiltDelta = Mathf.Lerp(currentTiltDelta, wantedTiltDelta,
+                    1f - Mathf.Exp(-tiltFollow * Time.deltaTime));
+                Quaternion rotation = TiltFromHome(homeRotation, currentTiltDelta);
                 source.transform.SetPositionAndRotation(anchor - rotation * mouthOffset, rotation);
                 yield return null;
             }
@@ -537,8 +546,8 @@ namespace LiquidSort
             float travel = total - settle;
             float drop = SettleDropWorld(source);
             float rockDegrees = Mathf.Clamp(settleRock, 0.5f, 0.8f);
-            Quaternion rockRotation = Quaternion.AngleAxis(
-                -pourSign * rockDegrees, Vector3.forward) * homeRotation;
+            Quaternion rockRotation = TiltFromHome(
+                homeRotation, -pourSign * rockDegrees);
             Sequence sequence = DOTween.Sequence().SetRecyclable(true).SetTarget(source.transform);
             sequence.Append(source.transform.DOMove(home, travel).SetEase(returnEase).SetRecyclable(true));
             sequence.Join(source.transform.DORotateQuaternion(homeRotation, travel)
@@ -787,8 +796,18 @@ namespace LiquidSort
 
         private static float UniformScale(Transform value)
         {
-            Vector3 scale = value.lossyScale;
-            return Mathf.Max(0.001f, (Mathf.Abs(scale.x) + Mathf.Abs(scale.y)) * 0.5f);
+            return VesselPresentationMath.PlanarWorldScale(value);
+        }
+
+        private static Quaternion TiltFromHome(Quaternion homeRotation, float degrees) =>
+            homeRotation * Quaternion.AngleAxis(degrees, Vector3.forward);
+
+        private static float SignedDegrees(float degrees)
+        {
+            degrees %= 360f;
+            if (degrees > 180f) degrees -= 360f;
+            if (degrees < -180f) degrees += 360f;
+            return degrees;
         }
 
         private static Vector3 ScaledLocalOffset(Transform owner, Vector3 local)
