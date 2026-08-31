@@ -808,11 +808,9 @@ namespace LiquidSort
             WaterlineForFrontEdge(UnitFrontEdgeLevelUpright(volume), SurfaceScale(volume));
 
         /// <summary>
-        /// A partially filled vessel owns only the matching share of the exposed top-face
-        /// depth. Keeping a full ellipse on a half-filled wide coupe makes its raised back
-        /// edge consume most of the empty half even though the front edge is correct.
-        /// Covered junctions deliberately stay full-depth, so a band's visible front edge
-        /// remains fixed when another colour lands on it.
+        /// The Royal reference keeps the exposed ellipse at its full authored perspective
+        /// depth even for a one-unit fill. Volume changes the stable front-edge waterline,
+        /// while the top-face depth remains part of the vessel's visual identity.
         /// </summary>
         private float SurfaceScale(float volume) =>
             LiquidSurfaceContract.ExposedSurfaceScale(volume, capacity);
@@ -840,8 +838,8 @@ namespace LiquidSort
         /// Front-edge level of the nth cumulative unit. This is the lower, viewer-facing
         /// edge of the exposed top ellipse and the identically directed visible edge of a
         /// covered colour boundary. The raised back half of the exposed ellipse is surface
-        /// perspective, not extra colour height; its partial-fill depth is applied by
-        /// <see cref="SurfaceScale"/> without moving this stable front edge.
+        /// perspective, not extra colour height. The full-depth cap is anchored around
+        /// this stable front edge so adding liquid never shifts an existing boundary.
         ///
         /// Positions depend only on the unit index, so a colour never moves when another
         /// lands on top of it. Profiled vessels divide their baked optical-height domain,

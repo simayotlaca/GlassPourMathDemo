@@ -33,16 +33,19 @@ namespace LiquidSort.Levels
     /// </summary>
     public static class BartenderProgressService
     {
-        public const int DefaultStartingCoins = 500;
-        public const int MaxLives = 5;
-        public const int WinCoinReward = 50;
-        public const int FailureContinueCoinCost = 100;
+        public const int DefaultStartingCoins = BartenderProgressTuning.StartingCoins;
+        public const int MaxLives = BartenderProgressTuning.MaximumLives;
+        public const int WinCoinReward = BartenderProgressTuning.CoinsPerWin;
+        public const int FailureContinueCoinCost =
+            BartenderProgressTuning.PaidContinueCoinCost;
         public static readonly TimeSpan LifeRegenerationInterval = TimeSpan.FromMinutes(10d);
 
         private const int CurrentVersion = 2;
         private const int SettlementHistoryLimit = 64;
         private static readonly long RefreshRetryIntervalTicks = TimeSpan.FromSeconds(5d).Ticks;
-        private const string SaveFileName = "bartender_progress_v1.json";
+        private const string ProductionSaveFileName = "bartender_progress_v1.json";
+        private const string EditorTestSaveFilePrefix =
+            "bartender_progress_editor_test_v";
         private const string LegacyCoinsKey = "LiquidSort.Bartender.Coins";
         private const string LegacyProgressKey = "LiquidSort.Bartender.NextLevelSlot";
 
@@ -564,18 +567,28 @@ namespace LiquidSort.Levels
         private static void EnsureLoaded()
         {
             if (loaded) return;
+            bool isolatedEditorProfile =
+                BartenderProgressTuning.IsolatedEditorTestProfileEnabled;
             ProgressData loadedData = TryLoad(SavePath);
             if (loadedData == null) loadedData = TryLoad(SavePath + ".tmp");
             if (loadedData == null) loadedData = TryLoad(SavePath + ".bak");
             if (loadedData == null)
             {
-                loadedData = new ProgressData
-                {
-                    Coins = Mathf.Max(0,
-                        PlayerPrefs.GetInt(LegacyCoinsKey, DefaultStartingCoins)),
-                    NextUnlockedCampaignSlot = Mathf.Max(0,
-                        PlayerPrefs.GetInt(LegacyProgressKey, 0)),
-                };
+                loadedData = isolatedEditorProfile
+                    ? new ProgressData
+                    {
+                        Coins = BartenderProgressTuning.InitialCoins,
+                        Lives = BartenderProgressTuning.InitialLives,
+                        NextUnlockedCampaignSlot =
+                            BartenderProgressTuning.InitialCampaignSlot,
+                    }
+                    : new ProgressData
+                    {
+                        Coins = Mathf.Max(0,
+                            PlayerPrefs.GetInt(LegacyCoinsKey, DefaultStartingCoins)),
+                        NextUnlockedCampaignSlot = Mathf.Max(0,
+                            PlayerPrefs.GetInt(LegacyProgressKey, 0)),
+                    };
             }
 
             long nowTicks = DateTime.UtcNow.Ticks;
@@ -650,7 +663,11 @@ namespace LiquidSort.Levels
         }
 
         private static string SavePath => Path.Combine(
-            Application.persistentDataPath, SaveFileName);
+            Application.persistentDataPath,
+            BartenderProgressTuning.IsolatedEditorTestProfileEnabled
+                ? EditorTestSaveFilePrefix
+                  + BartenderProgressTuning.EditorTestSaveSuffix + ".json"
+                : ProductionSaveFileName);
 
         private static ProgressData TryLoad(string path)
         {

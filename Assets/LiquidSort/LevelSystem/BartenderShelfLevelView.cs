@@ -49,7 +49,7 @@ namespace LiquidSort.Levels
         public const int MaximumColumnsPerRow = 4;
         // Current portrait framing needs this much clearance above the two-row top shelf
         // for the complete Royal glass art (including its shadow) to start off-camera.
-        private const float MinimumEntranceDropHeight = 8.00f;
+        private const float MinimumEntranceDropHeight = 7.60f;
         // A presentation animation is cosmetic. If Unity drops its coroutine or a single
         // frame stalls, the canonical seated board must win and release the input lease.
         private const double SeatAnimationWatchdogGrace = 0.75d;
@@ -76,7 +76,8 @@ namespace LiquidSort.Levels
         {
             [Tooltip("A scene-native RoyalGlassLab vessel root.")]
             public LiquidBottle bottle;
-            [Tooltip("Hand-authored contact point at the visual centre of the glass foot.")]
+            [Tooltip("Runtime marker mirrored from the VesselProfile support point. Its saved "
+                   + "scene position is never used as layout authority.")]
             public Transform footAnchor;
             [Tooltip("Direct front-art reference used to centre the complete row silhouette.")]
             public SpriteRenderer placementRenderer;
@@ -154,22 +155,24 @@ namespace LiquidSort.Levels
         // Keeping the authored furniture pose serialized prevents repeated level changes
         // from multiplying scale into the already-scaled transforms.
         [SerializeField, HideInInspector]
-        private Vector3 authoredPlankLocalScale = new Vector3(1.55f, 0.85f, 1f);
+        private Vector3 authoredPlankLocalScale = new Vector3(1.55f, 1.10f, 1f);
         [SerializeField, HideInInspector]
         private Vector3 authoredPostLocalScale = new Vector3(0.72f, 0.44f, 1f);
         [SerializeField, HideInInspector] private float authoredPostCenterX = 3.02f;
 
         [Header("Balanced layout")]
         [Tooltip("Top/bottom shelf-surface heights while two rows are visible.")]
-        [SerializeField] private Vector2 twoRowSurfaceY = new Vector2(0.80f, -4.15f);
+        [SerializeField] private Vector2 twoRowSurfaceY =
+            new Vector2(-1.5215104f, -4.10151f);
         [Tooltip("Top/middle/bottom shelf-surface heights while three rows are visible.")]
-        [SerializeField] private Vector3 threeRowSurfaceY = new Vector3(1.65f, -1.30f, -4.25f);
+        [SerializeField] private Vector3 threeRowSurfaceY =
+            new Vector3(-0.6615103f, -2.3815103f, -4.10151f);
         [Tooltip("Centre-to-centre spacing while a row contains two glasses.")]
-        [SerializeField, Min(0.1f)] private float twoAcrossColumnSpacing = 2.60f;
+        [SerializeField, Min(0.1f)] private float twoAcrossColumnSpacing = 2.8475f;
         [Tooltip("Centre-to-centre spacing while a row contains three glasses.")]
-        [SerializeField, Min(0.1f)] private float threeAcrossColumnSpacing = 2.18f;
+        [SerializeField, Min(0.1f)] private float threeAcrossColumnSpacing = 1.8983334f;
         [Tooltip("Centre-to-centre spacing while a row contains four glasses.")]
-        [SerializeField, Min(0.1f)] private float compactColumnSpacing = 1.60f;
+        [SerializeField, Min(0.1f)] private float compactColumnSpacing = 1.42375f;
         // Ölçek iki eksenli bir tablodur: KAÇ SATIR (yükseklik bütçesi) x KAÇ SÜTUN
         // (genişlik bütçesi). Tek bir "dört sütunlu" değeri iki satırlık bir levelı da
         // üç satırlık bir levelın dar yüksekliğine mahkûm ediyordu; 30 levelin 7'si tam
@@ -182,20 +185,20 @@ namespace LiquidSort.Levels
         // aynı bardakla, sadece daha geniş boşluklarla doldurur.
         [Tooltip("Board scale while two rows are visible and no row holds four glasses. "
                + "Solved by the editor builder; every glass on the board wears it.")]
-        [SerializeField, Min(0.1f)] private float twoRowSpaciousGlassScale = 0.7438862f;
+        [SerializeField, Min(0.1f)] private float twoRowSpaciousGlassScale = 0.78791803f;
         [Tooltip("Board scale while three rows are visible and no row holds four glasses.")]
-        [SerializeField, Min(0.1f)] private float threeRowSpaciousGlassScale = 0.4335593f;
+        [SerializeField, Min(0.1f)] private float threeRowSpaciousGlassScale = 0.43527383f;
         [Tooltip("Board scale once any row holds four glasses, inside the two-row layout.")]
-        [SerializeField, Min(0.1f)] private float fourAcrossGlassScale = 0.6721417f;
+        [SerializeField, Min(0.1f)] private float fourAcrossGlassScale = 0.7101505f;
         [Tooltip("Board scale once any row holds four glasses, inside the three-row layout.")]
-        [SerializeField, Min(0.1f)] private float fourAcrossThreeRowGlassScale = 0.4335593f;
+        [SerializeField, Min(0.1f)] private float fourAcrossThreeRowGlassScale = 0.43527383f;
         [Tooltip("Small optical overlap that seats the vessel artwork into the plank.")]
         [SerializeField, Min(0f)] private float opticalSeatInset = 0.02f;
         [SerializeField] private float glassPlaneZ;
         [Tooltip("Uniform furniture-and-glass scale used when a third shelf is visible. "
                + "The bottom shelf surface remains anchored while the composition contracts.")]
         [SerializeField, Range(0.80f, 1f)]
-        private float threeRowCompositionScale = 0.95f;
+        private float threeRowCompositionScale = 1f;
 
         [Header("Post fitting")]
         [Tooltip("Share of the upper plank height hidden behind a vertical post.")]
@@ -1373,8 +1376,26 @@ namespace LiquidSort.Levels
 
             Vector3 desiredFoot = LayoutSpace.TransformPoint(
                 new Vector3(slotCenterX, surfaceY, glassPlaneZ));
-            Vector3 rootToFoot = actor.FootAnchor.position - actorTransform.position;
+            Vector3 rootToFoot = AssetSupportWorld(actor) - actorTransform.position;
             actorTransform.position = desiredFoot - rootToFoot;
+        }
+
+        /// <summary>
+        /// Resolves the shelf contact from the current vessel asset after its final board
+        /// scale/rotation is applied. The serialized marker is updated only for consumers
+        /// such as the delivery portal; it never supplies the coordinate itself.
+        /// </summary>
+        private static Vector3 AssetSupportWorld(Actor actor)
+        {
+            VesselProfile profile = actor.Bottle.profile;
+            Vector2 support = profile.SupportLocal;
+            Transform assetSpace = actor.PlacementRenderer != null
+                ? actor.PlacementRenderer.transform
+                : actor.Bottle.transform;
+            Vector3 world = assetSpace.TransformPoint(
+                new Vector3(support.x, support.y, 0f));
+            if (actor.FootAnchor != null) actor.FootAnchor.position = world;
+            return world;
         }
 
         private void CenterRowSilhouette(int start, int count, float shelfCenterX)
@@ -1424,6 +1445,11 @@ namespace LiquidSort.Levels
                 LiquidBottle bottle = activeActors[i].Bottle;
                 if (!bottle.gameObject.activeSelf) bottle.gameObject.SetActive(true);
                 bottle.Refresh();
+                // RoyalGlassLab builds both halves explicitly. Pool activation used to
+                // refresh only the liquid mesh, leaving the non-serialized shell, shadow
+                // and glass-light outputs to appear a frame later (or remain absent in an
+                // edit-mode preview). Keep the gameplay contract identical to the source.
+                bottle.GetComponent<BottleShell>()?.Refresh();
             }
         }
 
@@ -1541,7 +1567,8 @@ namespace LiquidSort.Levels
                 // Measured at the foot, not at the transform root: the root can sit anywhere
                 // inside the artwork, and it is the bottom of the glass that has to clear the
                 // top of the frame before the drop starts.
-                float footY = LayoutSpace.InverseTransformPoint(actor.FootAnchor.position).y;
+                float footY = LayoutSpace.InverseTransformPoint(
+                    AssetSupportWorld(actor)).y;
                 actor.EntranceFallDistance = Mathf.Max(0.01f, releaseY - footY);
                 actor.EntranceFallDuration = entranceDropDuration
                     * Mathf.Sqrt(actor.EntranceFallDistance / effectiveDropHeight);

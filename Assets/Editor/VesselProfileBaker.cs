@@ -213,6 +213,7 @@ public static class VesselProfileBaker
         profile.interiorBounds = PolygonBounds(polygon);
         profile.mouthLocal = fit.Mouth;
         profile.mouthHalfWidth = fit.MouthHalfWidth;
+        BakeSupportLocal(profile, readableFront);
         profile.visibleBottomLocal = fit.VisibleBottom;
         profile.polygonArea = VesselFillMath.Area(polygon);
 
@@ -228,6 +229,53 @@ public static class VesselProfileBaker
         Debug.Log($"{profile.name}: baked {profile.interiorPolygon.Length} interior points, " +
                   $"{AngleSteps}x{FillSteps} tilt table, {UprightSteps} upright samples.", profile);
         return true;
+    }
+
+    /// <summary>
+    /// Stores the visible bottom of the front artwork in the profile. Gameplay seating
+    /// can then follow the vessel asset directly instead of a marker's saved scene pose.
+    /// The body centre follows the traced mouth x so handled/asymmetric glasses stand on
+    /// their actual base rather than the full texture rectangle's centre.
+    /// </summary>
+    private static void BakeSupportLocal(VesselProfile profile, Sprite front)
+    {
+        Texture2D texture = front != null ? front.texture : null;
+        if (texture == null)
+        {
+            profile.hasSupportLocal = false;
+            return;
+        }
+
+        Color32[] pixels = texture.GetPixels32();
+        Rect rect = front.rect;
+        int xStart = Mathf.Clamp(Mathf.FloorToInt(rect.xMin), 0, texture.width - 1);
+        int xEnd = Mathf.Clamp(Mathf.CeilToInt(rect.xMax), 1, texture.width);
+        int yStart = Mathf.Clamp(Mathf.FloorToInt(rect.yMin), 0, texture.height - 1);
+        int yEnd = Mathf.Clamp(Mathf.CeilToInt(rect.yMax), 1, texture.height);
+        int bottomPixel = yEnd;
+
+        for (int y = yStart; y < yEnd; y++)
+        {
+            int row = y * texture.width;
+            for (int x = xStart; x < xEnd; x++)
+            {
+                if (pixels[row + x].a < 8) continue;
+                bottomPixel = y;
+                break;
+            }
+            if (bottomPixel != yEnd) break;
+        }
+
+        if (bottomPixel == yEnd)
+        {
+            profile.hasSupportLocal = false;
+            return;
+        }
+
+        float ppu = Mathf.Max(1f, front.pixelsPerUnit);
+        float bottom = (bottomPixel - rect.yMin - front.pivot.y) / ppu;
+        profile.supportLocal = new Vector2(profile.mouthLocal.x, bottom);
+        profile.hasSupportLocal = true;
     }
 
     private static Sprite LoadSprite(string path, string spriteName)

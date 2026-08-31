@@ -85,6 +85,11 @@ namespace LiquidSort
         public Vector2 mouthLocal;
         [Tooltip("Half width of an open rim. Zero means a single centred mouth.")]
         public float mouthHalfWidth;
+        [Tooltip("Baked contact point where this vessel's visible artwork stands on a shelf. "
+               + "It belongs to the asset, so scene placement can never redefine the foot.")]
+        public Vector2 supportLocal;
+        [Tooltip("True when supportLocal was measured from the front sprite's visible alpha.")]
+        public bool hasSupportLocal;
         [Tooltip("Height under which the drawing hides the liquid behind its own outline.")]
         public float visibleBottomLocal;
         [Tooltip("True after the baker produced the automatic optical-height table for this artwork.")]
@@ -135,6 +140,20 @@ namespace LiquidSort
         public bool IsBaked => interiorPolygon != null && interiorPolygon.Length >= 3
                                && tilted != null && tilted.IsValid
                                && upright != null && upright.IsValid;
+
+        /// <summary>
+        /// Asset-authored shelf contact. Older profiles safely fall back to the sprite's
+        /// lower bound, but baked Royal profiles use the trimmed visible-alpha point.
+        /// </summary>
+        public Vector2 SupportLocal
+        {
+            get
+            {
+                if (hasSupportLocal) return supportLocal;
+                float bottom = front != null ? front.bounds.min.y : interiorBounds.yMin;
+                return new Vector2(mouthLocal.x, bottom);
+            }
+        }
 
         /// <summary>
         /// Small art-specific corrections for a pour. A coupe should not be lifted or

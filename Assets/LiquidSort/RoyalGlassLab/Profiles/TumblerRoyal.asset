@@ -73,6 +73,8 @@ MonoBehaviour:
   polygonArea: 3.2572916
   mouthLocal: {x: 0, y: 1.3671875}
   mouthHalfWidth: 0.62369794
+  supportLocal: {x: 0, y: -1.5572916}
+  hasSupportLocal: 1
   visibleBottomLocal: -1.2864584
   hasVisibleLiquidFloor: 1
   visibleLiquidFloor: -1.4925944
@@ -84,7 +86,7 @@ MonoBehaviour:
   surfaceAllowance: 0.8
   evenBandHeights: 1
   singleUnitSurfaceLift: 0
-  innerJunctionCurve: 0.72
+  innerJunctionCurve: 1
   innerJunctionDepth: 0.098
   lockJunctionLayoutToLogicalVolume: 0
   tilted:

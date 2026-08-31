@@ -44,16 +44,16 @@ namespace LiquidSort
         };
 
         /// <summary>
-        /// Share of the exposed top-face depth owned by the currently displayed volume.
-        /// One unit therefore uses 1/capacity on every vessel, while a full vessel uses 1.
+        /// Royal's exposed top face keeps its authored full ellipse at every non-empty
+        /// volume. The unit waterline still rises with volume; only the perspective depth
+        /// remains stable, matching the approved one-unit source appearance.
         /// </summary>
-        public static float ExposedSurfaceScale(float displayVolume, int capacity) =>
-            Mathf.Clamp01(displayVolume / Mathf.Max(1, capacity));
+        public static float ExposedSurfaceScale(float displayVolume, int capacity) => 1f;
 
         /// <summary>
         /// Fails closed when a replacement material no longer honours the runtime
-        /// contract. A missing property must never degrade silently into a full-depth
-        /// surface on every partially filled vessel.
+        /// contract. Keeping the property in the handshake prevents replacement shaders
+        /// from silently interpreting the approved full-depth value differently.
         /// </summary>
         public static bool TryValidate(Material material, out string reason)
         {

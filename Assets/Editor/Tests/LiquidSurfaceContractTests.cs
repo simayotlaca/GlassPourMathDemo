@@ -7,17 +7,17 @@ namespace LiquidSort.Tests.EditMode
 {
     /// <summary>
     /// Guards the C# -> shader handshake for every authored vessel. These tests exist
-    /// because losing _SurfaceScale once made every partial fill use a full-depth top face
-    /// while all profile assets still looked correctly configured in the Inspector.
+    /// because the approved Royal one-unit top face is part of the C# -> shader contract,
+    /// not a material default that can silently change between the Lab and gameplay.
     /// </summary>
     public sealed class LiquidSurfaceContractTests
     {
         [TestCase(1, 1f)]
-        [TestCase(2, 0.5f)]
-        [TestCase(3, 1f / 3f)]
-        [TestCase(4, 0.25f)]
-        [TestCase(5, 0.2f)]
-        public void One_unit_owns_one_capacity_share_of_surface_depth(
+        [TestCase(2, 1f)]
+        [TestCase(3, 1f)]
+        [TestCase(4, 1f)]
+        [TestCase(5, 1f)]
+        public void One_unit_keeps_the_approved_full_surface_depth(
             int capacity, float expected)
         {
             Assert.That(
@@ -62,7 +62,7 @@ namespace LiquidSort.Tests.EditMode
         }
 
         [Test]
-        public void Every_authored_profile_publishes_volume_scaled_surface_to_renderer()
+        public void Every_authored_profile_publishes_approved_surface_to_renderer()
         {
             List<VesselProfile> profiles = LoadProfiles();
             var colors = new List<Color>(LiquidBottle.MaxBands);
@@ -78,8 +78,6 @@ namespace LiquidSort.Tests.EditMode
                     bottle.profile = profile;
                     bottle.capacity = profile.capacity;
                     float previousLevel = float.NegativeInfinity;
-                    float firstFarEdge = 0f;
-                    float lastFarEdge = 0f;
 
                     for (int units = 1; units <= profile.capacity; units++)
                     {
@@ -99,7 +97,7 @@ namespace LiquidSort.Tests.EditMode
                         renderer.GetPropertyBlock(propertyBlock);
                         float actual = propertyBlock.GetFloat(
                             LiquidSurfaceContract.SurfaceScaleId);
-                        float expected = units / (float)profile.capacity;
+                        float expected = 1f;
                         Assert.That(actual, Is.EqualTo(expected).Within(0.00001f),
                             $"{profile.name}, {units}/{profile.capacity} units");
 
@@ -131,22 +129,11 @@ namespace LiquidSort.Tests.EditMode
                             + $"{units - 1} to {units} units.");
                         previousLevel = level;
 
-                        float chord = bandInfo[0].z * 2f;
-                        float capHalfDepth = Mathf.Min(
-                            chord * profile.surfaceBulge,
-                            profile.interiorBounds.height * profile.maxCapDepth)
-                            * expected;
-                        float farEdge = level + capHalfDepth;
-                        if (units == 1) firstFarEdge = farEdge;
-                        lastFarEdge = farEdge;
                     }
 
                     Assert.That(previousLevel,
                         Is.LessThanOrEqualTo(profile.upright.ceilingY + 0.0001f),
                         $"{profile.name} full waterline exceeded its baked ceiling.");
-                    if (profile.capacity > 1)
-                        Assert.That(firstFarEdge, Is.LessThan(lastFarEdge),
-                            $"{profile.name} partial top face consumed full-fill headroom.");
                 }
                 finally
                 {

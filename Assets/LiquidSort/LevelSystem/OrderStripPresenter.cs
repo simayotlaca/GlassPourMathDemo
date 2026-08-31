@@ -56,6 +56,7 @@ namespace LiquidSort.Levels
         private Action controllerSnapshotSubscription;
         private Action<BartenderLevelState> levelStateSubscription;
         private Action<BartenderDeliveryReceipt> deliveredSubscription;
+        private Action<float> timeBoostedSubscription;
         private Action<BartenderDeliveryReceipt> deliveryFinishedSubscription;
         private bool iconsPublished;
         private readonly OrderStripEventBus eventBus = new OrderStripEventBus();
@@ -954,11 +955,17 @@ namespace LiquidSort.Levels
                         if (IsCurrentControllerSubscription(source, generation))
                             HandleDelivered(receipt);
                     };
+                    timeBoostedSubscription = seconds =>
+                    {
+                        if (IsCurrentControllerSubscription(source, generation))
+                            HandleTimeBoosted(seconds);
+                    };
                     subscribedController.LevelLoaded += levelLoadedSubscription;
                     subscribedController.OrdersChanged += controllerSnapshotSubscription;
                     subscribedController.BoardChanged += controllerSnapshotSubscription;
                     subscribedController.StateChanged += levelStateSubscription;
                     subscribedController.Delivered += deliveredSubscription;
+                    subscribedController.TimeBoosted += timeBoostedSubscription;
                 }
             }
 
@@ -995,12 +1002,14 @@ namespace LiquidSort.Levels
                 subscribedController.BoardChanged -= controllerSnapshotSubscription;
                 subscribedController.StateChanged -= levelStateSubscription;
                 subscribedController.Delivered -= deliveredSubscription;
+                subscribedController.TimeBoosted -= timeBoostedSubscription;
             }
             subscribedController = null;
             levelLoadedSubscription = null;
             controllerSnapshotSubscription = null;
             levelStateSubscription = null;
             deliveredSubscription = null;
+            timeBoostedSubscription = null;
         }
 
         private void UnsubscribeView()
@@ -1043,6 +1052,32 @@ namespace LiquidSort.Levels
         private void HandleDelivered(BartenderDeliveryReceipt receipt)
         {
             eventBus.Publish(OrderStripSignal.Delivery(receipt));
+        }
+
+        private void HandleTimeBoosted(float seconds)
+        {
+            if (controller == null || cards == null
+                || presentationState.State != BsOrderStripState.Ready
+                || controller.State != BartenderLevelState.Playing
+                || controller.CurrentLevel == null
+                || !controller.CurrentLevel.AllowTimedOrders
+                || float.IsNaN(seconds) || float.IsInfinity(seconds) || seconds <= 0f)
+                return;
+
+            int slotCount = ActiveSlotCount();
+            for (int slot = 0; slot < slotCount; slot++)
+            {
+                OrderCardView card = cards[slot];
+                if (card == null || card.Model == null || card.Model.TimeLimit <= 0f
+                    || !controller.TryGetOrderTimeRemaining(
+                        slot, out float remaining, out float duration))
+                    continue;
+
+                // Deadline controller'da zaten commit edildi. Önce authoritative değeri
+                // projekte et, sonra yalnız geçici sunum katmanını oynat.
+                card.SetTimer(remaining, duration, true);
+                card.PlayTimeBoostFeedback(seconds);
+            }
         }
 
         private void HandleDeliveryFinished(BartenderDeliveryReceipt receipt)

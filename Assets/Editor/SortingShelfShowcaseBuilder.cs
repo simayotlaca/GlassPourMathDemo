@@ -296,20 +296,19 @@ public static class SortingShelfShowcaseBuilder
     private const float BakedUpperStageBottomBleed = 0.30f;
     private static float BakedUpperStageBottomY =>
         DeliveryRailY - BakedUpperStageBottomBleed;
-    private const float OrderStripCenterY = 1.15f;
+    private const float OrderStripCenterY = 1.46f;
     private const float OrderCardWidth = 1.52f;
     private const float OrderCardHeight = 1.80f;
     private const float OrderCardSpacing = 2.06f;
     /// <summary>
-    /// Uniform blow-up of the finished card. Bounded by the gold clip, which overhangs
-    /// the card's own top edge by 0.125 units: at 1.15 the clip stops 0.027 under the
-    /// service rail while the card's bottom stays 0.044 clear of the tallest glass below.
+    /// Uniform blow-up of the finished card. The restored 1.46 centre keeps the enlarged
+    /// card clear of the manually approved top-row Royal vessels and the service rail.
     /// </summary>
     private const float OrderCardScale = 1.15f;
-    // The cards finish at y=0.25; starting the playfield just below them keeps the
-    // authored 0.01-unit breathing room instead of making the layout solver reject
-    // the otherwise valid upper-stage composition.
-    private const float PlayfieldTopY = 0.24f;
+    // Recovered from the manually approved shelf composition. This is the ceiling used
+    // for both the two-row and three-row budgets, so changing it silently moves every
+    // seat and changes every fitted glass scale.
+    private const float PlayfieldTopY = 0.54f;
     private const float PlayfieldBottomY = -4.62f;
     private const float BottomBarCenterY = -5.32f;
     private const float BottomButtonDiameter = 1.24f;
@@ -319,33 +318,25 @@ public static class SortingShelfShowcaseBuilder
 
     private const float ShelfScaleX = 1.55f;
     /// <summary>
-    /// Plank thickness multiplier. At 1.10 the drawn plank read as a 0.52-unit slab -
-    /// a third of the height of the glasses standing on it. 0.85 brings it to 0.40, the
-    /// proportion the reference shelf keeps, and hands the reclaimed height back to the
-    /// vessels through the same budget every other number here goes through.
+    /// Plank thickness multiplier from the manually approved shelf composition.
     /// </summary>
-    private const float ShelfScaleY = 0.85f;
+    private const float ShelfScaleY = 1.10f;
     private const float PostScaleX = 0.72f;
     // Kept independent from the fitted post height. SpriteRenderer's sliced mode grows
     // only the purple centre, so this remains the authored size of both gold collars.
     private const float PostCapScaleY = 0.44f;
     private const float PostCenterX = 3.02f;
     /// <summary>
-    /// When the third shelf appears, furniture, spacing and glasses contract together
-    /// around the fixed bottom-shelf surface. Five percent is visible without making the
-    /// Royal artwork read like a different set of assets.
+    /// Preserve the measured three-row furniture and vessel pose without a second
+    /// contraction pass.
     /// </summary>
-    private const float ThreeRowCompositionScale = 0.95f;
+    private const float ThreeRowCompositionScale = 1f;
     /// <summary>
-    /// The share of its own cell a vessel is allowed to occupy, on BOTH axes. This
-    /// replaces the two absolute clearances the solve used to carry. Absolute gaps are
-    /// the wrong unit here: a fixed 0.14 above a glass is a tenth of the two-row slot
-    /// but an eighth of the three-row one, so the air around a glass silently changed
-    /// meaning with the row count. A ratio keeps the same optical breathing room at
-    /// every row and column count, and it is the one number to turn when the whole
-    /// shelf should read a touch tighter or a touch airier.
+    /// Measured gap between the top of a Royal vessel and the plank above it.
     /// </summary>
-    private const float GlassCellFill = 0.88f;
+    private const float RowClearance = 0.14f;
+    /// <summary>Measured gap between neighbouring Royal vessels.</summary>
+    private const float ColumnClearance = 0.10f;
     /// <summary>
     /// Ceiling on the derived glass scale. A four-glass level has height to spare and
     /// would otherwise blow the vessels up past the size their artwork was drawn for.
@@ -415,7 +406,7 @@ public static class SortingShelfShowcaseBuilder
     // ---- Animation timing -------------------------------------------------------
 
     private const bool EntranceEnabled = true;
-    private const float EntranceDropHeight = 8.00f;
+    private const float EntranceDropHeight = 7.60f;
     private const float EntranceDropDuration = 0.32f;
     private const float EntranceGlassStagger = 0.055f;
     private const float EntranceRowStagger = 0.12f;
@@ -587,12 +578,10 @@ public static class SortingShelfShowcaseBuilder
         PlayfieldTopY - SlotHeight(rows) * (row + 1) + plankBand;
 
     /// <summary>
-    /// Height a vessel may reach on a plank: the clear air between its own surface and
-    /// the underside of the plank above, taken at <see cref="GlassCellFill"/>. The
-    /// remainder is the visible gap the reference art keeps over every glass.
+    /// Height a vessel may reach on a plank while keeping the approved overhead gap.
     /// </summary>
     private static float GlassHeightBudget(int rows, float plankBand) =>
-        (SlotHeight(rows) - plankBand) * GlassCellFill;
+        SlotHeight(rows) - plankBand - RowClearance;
 
     private static ShelfSolve SolveLayout(
         float plankVisualHeight, float postVisualWidth,
@@ -654,12 +643,10 @@ public static class SortingShelfShowcaseBuilder
 
     /// <summary>
     /// Scale at which the widest vessel still fits one cell of an
-    /// <paramref name="across"/>-glass row. The row is seated in equal cells of
-    /// InnerWidth/across, so a cell filled to <see cref="GlassCellFill"/> leaves the
-    /// same proportional gap between neighbours whether the row holds two or four.
+    /// <paramref name="across"/>-glass row after reserving the approved neighbour gap.
     /// </summary>
     private static float WidthFit(ShelfSolve solve, int across) =>
-        solve.InnerWidth / across * GlassCellFill / solve.WidestGlass;
+        (solve.InnerWidth / across - ColumnClearance) / solve.WidestGlass;
 
     private static float Clamp(float scale) =>
         Mathf.Clamp(scale, 0.15f, MaximumGlassScale);
@@ -765,6 +752,9 @@ public static class SortingShelfShowcaseBuilder
 
             Transform glasses = Folder(worldContent,
                 $"03 Glasses - Manual Royal Pools ({ExpectedPoolSize})");
+            // This folder is the layout origin. A scene-only offset here moves every
+            // correctly seated Royal vessel away from its solved shelf surface.
+            glasses.localPosition = Vector3.zero;
             var badges = new List<DeliveryBadgePresenter.BadgeBinding>(ExpectedPoolSize);
             List<BartenderShelfLevelView.GlassBinding> shots = BuildVesselPool(
                 shotSource, glasses, "01 Shot Pool - 4 Direct Scene Objects", "Shot",
@@ -1512,7 +1502,8 @@ public static class SortingShelfShowcaseBuilder
         Rect visual = SpriteVisualBounds(bottle.profile.front);
         var foot = new GameObject("Glass Foot Anchor - Direct Link");
         foot.transform.SetParent(go.transform, false);
-        foot.transform.localPosition = new Vector3(bottle.mouthLocal.x, visual.yMin, 0f);
+        Vector2 support = bottle.profile.SupportLocal;
+        foot.transform.localPosition = new Vector3(support.x, support.y, 0f);
 
         // The tick has to be a CHILD of the vessel: LiquidBottle.SetSortingOffset and the
         // portal's sandwich both walk GetComponentsInChildren, so parenting it here is what

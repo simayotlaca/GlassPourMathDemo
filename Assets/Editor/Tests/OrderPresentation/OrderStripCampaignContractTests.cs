@@ -70,6 +70,48 @@ namespace LiquidSort.Tests.EditMode
             }
         }
 
+        [Test]
+        public void Timed_order_schedule_matches_levels_fifteen_to_thirty()
+        {
+            BsLevel[] levels = Resources.LoadAll<BsLevel>("Levels");
+
+            for (int levelIndex = 1; levelIndex <= 30; levelIndex++)
+            {
+                BsLevel level = FindLevel(levels, levelIndex);
+                Assert.That(level, Is.Not.Null,
+                    $"Campaign must contain Level {levelIndex}.");
+                Assert.That(level.Orders, Is.Not.Null.And.Not.Empty,
+                    $"Level {levelIndex} must have an authored order deck.");
+
+                bool timed = levelIndex >= 15;
+                Assert.That(level.AllowTimedOrders, Is.EqualTo(timed),
+                    $"Level {levelIndex} timed-order feature gate drifted.");
+
+                float expectedSeconds = levelIndex <= 14
+                    ? 0f
+                    : levelIndex <= 20
+                        ? 30f
+                        : levelIndex <= 25 ? 40f : 45f;
+
+                for (int orderIndex = 0; orderIndex < level.Orders.Count; orderIndex++)
+                {
+                    OrderDef order = level.Orders[orderIndex];
+                    Assert.That(order, Is.Not.Null,
+                        $"Level {levelIndex} order [{orderIndex}] must not be null.");
+                    Assert.That(float.IsNaN(order.TimeLimit)
+                                || float.IsInfinity(order.TimeLimit), Is.False,
+                        $"Level {levelIndex} order [{orderIndex}] timer must be finite.");
+                    Assert.That(order.TimeLimit, Is.EqualTo(expectedSeconds),
+                        $"Level {levelIndex} order [{orderIndex}] timer schedule drifted.");
+                    if (timed)
+                    {
+                        Assert.That(order.TimeLimit, Is.GreaterThan(0f),
+                            $"Level {levelIndex} order [{orderIndex}] must be timed.");
+                    }
+                }
+            }
+        }
+
         private static BsLevel FindLevel(IReadOnlyList<BsLevel> levels, int index)
         {
             for (int i = 0; i < levels.Count; i++)

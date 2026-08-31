@@ -293,9 +293,10 @@ public static class RoyalGlassLabBuilder
         profile.stemFootToonStrength = 0f;
         profile.bottomRimGlassLight = 0f;
         profile.liquidBounceScale = 0f;
-        // Covered colour junctions are shallower than the exposed top disc in the
-        // original treatment: 0.098 / 0.135 ~= 0.72.
-        profile.innerJunctionCurve = 0.72f;
+        // Keep the measured Royal Lab junction contract verbatim. The authored preview
+        // was approved at full curve with a separately shallow 0.098 chord depth; scaling
+        // both values made gameplay bottles flatter than the source scene.
+        profile.innerJunctionCurve = 1f;
         profile.clipRightInterior = clipRightInterior;
         profile.rightInteriorXAtY0 = rightInteriorXAtY0;
         profile.rightInteriorSlope = rightInteriorSlope;

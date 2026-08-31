@@ -30,6 +30,10 @@ namespace LiquidSort.Levels
         private const string TimerClockResource = "Ui/OrderTimer/Ui_OrderTimerClock";
         private const string TimerFillResource = "Ui/OrderTimer/Ui_OrderTimerFill";
         private const string RuntimeTimerName = "Order Timer - Runtime";
+        private const string TimeBoostFeedbackName = "Time Boost Feedback";
+
+        private static readonly Color TimeBoostFlashColor =
+            new Color32(0x78, 0xFF, 0xB0, 0xFF);
 
         private static GameObject cachedTimerViewPrefab;
         private static bool timerViewLoadAttempted;
@@ -61,8 +65,8 @@ namespace LiquidSort.Levels
         [SerializeField] private RectTransform rt = null;
         [SerializeField] private CanvasGroup canvasGroup = null;
         [SerializeField] private Image background = null;
-        [Tooltip("Eşleşme yandığında boyanan kenar. Arka plan değil kenar seçildi: "
-               + "kart zaten renk katmanları taşıyor, arka planı boyamak onları bozardı.")]
+        [Tooltip("Eşleşmede kısa parlayan kenar. Arka plan değil kenar seçildi: kart "
+               + "zaten renk katmanları taşıyor, arka planı boyamak onları bozardı.")]
         [SerializeField] private Image edge = null;
         [SerializeField] private Image icon = null;
         [SerializeField] private Image kindBadge = null;
@@ -95,8 +99,15 @@ namespace LiquidSort.Levels
         [Tooltip("İki nokta arasındaki merkez mesafesi, kart piksel biriminde.")]
         [SerializeField, Min(0f)] private float chipSpacing = 34f;
 
+        [Header("Tamamlanma parıltısı")]
+        [Tooltip("Tamamlanan siparişin kısa süre görünen net, sıcak ışık çizgisi.")]
+        [SerializeField] private Color completionLineColor =
+            new Color32(0xFF, 0xF4, 0xD0, 0xFF);
+        [Tooltip("Parlak çizginin sönerken geçtiği sıcak altın ton.")]
+        [SerializeField] private Color completionGlowColor =
+            new Color32(0xFF, 0xBD, 0x3E, 0xFF);
+
         [Header("Durum renkleri")]
-        [SerializeField] private Color goodColor = new Color(0.30f, 0.80f, 0.42f, 1f);
         [SerializeField] private Color accentColor = new Color(0.95f, 0.68f, 0.20f, 1f);
         [SerializeField] private Color badColor = new Color(0.85f, 0.28f, 0.24f, 1f);
         [SerializeField] private Color layerBadgeColor = new Color32(0xE8, 0x8B, 0x3C, 0xFF);
@@ -118,19 +129,32 @@ namespace LiquidSort.Levels
         private uint lifecycleRevision;
         private uint tickRevision;
         private uint edgeRevision;
+        private uint timeBoostRevision;
         private Tween lifecycleTween;
         private Tween visibilityTween;
         private Tween edgeTween;
         private Tween tickTween;
+        private Tween timeBoostTween;
         private Vector3 authoredScale = Vector3.one;
+        private Vector3 authoredEdgeScale = Vector3.one;
         private Vector3 authoredTickScale = Vector3.one;
         private Vector3 authoredTimerScale = Vector3.one;
         private Vector2 restingAnchoredPosition;
         private int shownTimerSecond = -1;
         private float urgentTimerKick;
+        private float timeBoostPulse;
+        private float timeBoostFlash;
         private bool timerFillGeometryCaptured;
         private float timerFillFullWidth;
         private float timerFillLeftEdge;
+        private Color timerFillBaseColor = Color.white;
+        private Image timerClock;
+        private Color timerClockBaseColor = Color.white;
+        private RectTransform timeBoostFeedbackRoot;
+        private CanvasGroup timeBoostFeedbackCanvasGroup;
+        private TextMeshProUGUI timeBoostFeedbackLabel;
+        private Text timeBoostFeedbackLegacyLabel;
+        private Vector2 timeBoostFeedbackBasePosition;
         private BsPalette palette;
         private readonly Dictionary<GlassType, GlassIcon> iconByType =
             new Dictionary<GlassType, GlassIcon>(5);
@@ -169,6 +193,9 @@ namespace LiquidSort.Levels
                 restingAnchoredPosition = rt.anchoredPosition;
                 restPositionInitialized = true;
             }
+            authoredEdgeScale = edge != null
+                ? edge.rectTransform.localScale
+                : Vector3.one;
             authoredTickScale = tickBadge != null
                 ? tickBadge.rectTransform.localScale
                 : Vector3.one;
@@ -176,8 +203,9 @@ namespace LiquidSort.Levels
                 ? timerRoot.localScale
                 : Vector3.one;
             CaptureTimerFillGeometry();
-            if (edge != null) edge.color = Transparent(goodColor);
+            CaptureTimerArtState();
             highlighted = false;
+            CanonicalizeCompletionEdge();
             desiredVisible = false;
             presentationState.Dispatch(BsOrderCardTrigger.InitializeHidden);
             CanonicalizeVisibility(false);
@@ -215,6 +243,7 @@ namespace LiquidSort.Levels
             if (!initialized) Initialize(palette);
 
             bool orderChanged = !SameOrder(Model, order);
+            if (orderChanged) CancelTimeBoostFeedback();
             Model = order;
             bool has = order != null;
 
@@ -224,10 +253,9 @@ namespace LiquidSort.Levels
             if (background != null) background.color = has ? Color.white : emptySlotColor;
             if (orderChanged)
             {
+                highlighted = false;
                 CancelEdgeTween();
                 CancelTickTween();
-                if (edge != null) edge.color = Transparent(goodColor);
-                highlighted = false;
             }
             if (emptyLabel != null) emptyLabel.gameObject.SetActive(!has);
 
@@ -247,6 +275,7 @@ namespace LiquidSort.Levels
                 description.text = order.Describe(palette);
 
             bool timed = timedOrdersEnabled && order.TimeLimit > 0f;
+            if (!timed) CancelTimeBoostFeedback();
             if (timed) EnsureTimerVisuals();
             if (timerRoot != null) timerRoot.gameObject.SetActive(timed);
             if (!timed || orderChanged) ResetTimerVisual();
@@ -389,6 +418,8 @@ namespace LiquidSort.Levels
             if (canvasGroup == null) return;
             if (!initialized) Initialize(palette);
 
+            if (!visible) CancelTimeBoostFeedback();
+
             desiredVisible = visible;
             bool lifecycleBoundary = presentationState.State
                                      == BsOrderCardState.Uninitialized
@@ -474,10 +505,10 @@ namespace LiquidSort.Levels
             SetTimerProgress(t);
 
             bool critical = safeRemaining > 0f && safeRemaining <= timerCriticalSeconds;
-            if (timerFill != null)
-                timerFill.color = critical
-                    ? timerCriticalColor
-                    : t <= timerWarningRatio ? timerWarningColor : timerNormalColor;
+            timerFillBaseColor = critical
+                ? timerCriticalColor
+                : t <= timerWarningRatio ? timerWarningColor : timerNormalColor;
+            ApplyTimerFeedbackColors();
 
             int second = Mathf.CeilToInt(safeRemaining);
             if (second != shownTimerSecond)
@@ -489,14 +520,14 @@ namespace LiquidSort.Levels
 
             if (!critical || !motionAllowed)
             {
-                ResetTimerMotion();
+                urgentTimerKick = 0f;
+                ApplyTimerMotion();
                 return;
             }
 
             // Yalnız son beş saniye: her saniye değişiminde tek, küçük bir vurgu.
             // Sürekli nefes/sallama yok; bardak çizimi ve teslim animasyonu sakin kalır.
-            float scale = 1f + urgentTimerKick * 0.055f;
-            timerRoot.localScale = authoredTimerScale * scale;
+            ApplyTimerMotion();
             urgentTimerKick = Mathf.MoveTowards(
                 urgentTimerKick, 0f, Time.unscaledDeltaTime * 7.5f);
         }
@@ -505,7 +536,93 @@ namespace LiquidSort.Levels
         /// Teslim/presentation gecikmesinde değer başka slota ait olabilir; sayıyı
         /// değiştirmeden yalnız son-saniye vurgusunu dinlenme pozuna döndürür.
         /// </summary>
-        public void SuspendTimerEmphasis() => ResetTimerMotion();
+        public void SuspendTimerEmphasis()
+        {
+            CancelTimeBoostFeedback();
+            ResetTimerMotion();
+        }
+
+        /// <summary>
+        /// Başarılı +süre satın alımını gerçek deadline'dan bağımsız, geçici bir katman
+        /// olarak sunar. Üst üste çağrılar önceki nesli öldürür; sayı/fill değeri her zaman
+        /// presenter'ın çağırdığı <see cref="SetTimer(float,float,bool)"/> tarafından sürülür.
+        /// </summary>
+        public void PlayTimeBoostFeedback(float seconds)
+        {
+            if (float.IsNaN(seconds) || float.IsInfinity(seconds) || seconds <= 0f
+                || Model == null || Model.TimeLimit <= 0f || !desiredVisible
+                || presentationState.State != BsOrderCardState.Visible
+                || !isActiveAndEnabled || !gameObject.activeInHierarchy)
+                return;
+
+            EnsureTimerVisuals();
+            if (timerRoot == null || !timerRoot.gameObject.activeSelf
+                || !EnsureTimeBoostFeedbackVisuals())
+                return;
+
+            uint revision = InvalidateTimeBoostTween();
+            SetTimeBoostFeedbackText(seconds);
+            timeBoostFeedbackRoot.gameObject.SetActive(true);
+            timeBoostFeedbackRoot.anchoredPosition = timeBoostFeedbackBasePosition;
+            timeBoostFeedbackRoot.localScale = Vector3.one * 0.86f;
+            timeBoostFeedbackCanvasGroup.alpha = 0f;
+            timeBoostPulse = 0f;
+            timeBoostFlash = 0f;
+            ApplyTimerMotion();
+            ApplyTimerFeedbackColors();
+
+            Sequence sequence = DOTween.Sequence()
+                .SetTarget(timeBoostFeedbackRoot).SetUpdate(true).SetRecyclable(true);
+            sequence.Append(DOTween.To(
+                    () => timeBoostPulse,
+                    value =>
+                    {
+                        timeBoostPulse = value;
+                        ApplyTimerMotion();
+                    }, 1f, 0.12f)
+                .SetEase(Ease.OutQuad).SetRecyclable(true));
+            sequence.Join(DOTween.To(
+                    () => timeBoostFlash,
+                    value =>
+                    {
+                        timeBoostFlash = value;
+                        ApplyTimerFeedbackColors();
+                    }, 1f, 0.10f)
+                .SetEase(Ease.OutQuad).SetRecyclable(true));
+            sequence.Join(timeBoostFeedbackCanvasGroup.DOFade(1f, 0.10f)
+                .SetEase(Ease.OutQuad).SetRecyclable(true));
+            sequence.AppendInterval(0.16f);
+            sequence.Append(DOTween.To(
+                    () => timeBoostPulse,
+                    value =>
+                    {
+                        timeBoostPulse = value;
+                        ApplyTimerMotion();
+                    }, 0f, 0.28f)
+                .SetEase(Ease.OutCubic).SetRecyclable(true));
+            sequence.Join(DOTween.To(
+                    () => timeBoostFlash,
+                    value =>
+                    {
+                        timeBoostFlash = value;
+                        ApplyTimerFeedbackColors();
+                    }, 0f, 0.32f)
+                .SetEase(Ease.OutQuad).SetRecyclable(true));
+            sequence.Join(timeBoostFeedbackCanvasGroup.DOFade(0f, 0.32f)
+                .SetEase(Ease.InQuad).SetRecyclable(true));
+            sequence.Insert(0f, timeBoostFeedbackRoot.DOAnchorPosY(
+                    timeBoostFeedbackBasePosition.y + 27f, 0.60f)
+                .SetEase(Ease.OutCubic).SetRecyclable(true));
+            sequence.Insert(0f, timeBoostFeedbackRoot.DOScale(1.06f, 0.18f)
+                .SetEase(Ease.OutBack).SetRecyclable(true));
+
+            timeBoostTween = sequence;
+            sequence.OnComplete(() => CompleteTimeBoostTween(sequence, revision))
+                .OnKill(() => ForgetTimeBoostTween(sequence, revision));
+        }
+
+        /// <summary>Level/pause/lifecycle sınırlarında geçici +süre katmanını temizler.</summary>
+        public void CancelTimeBoostFeedback() => InvalidateTimeBoostTween();
 
         /// <summary>
         /// Presenter'ın sabit slot koordinatını karta verir. Kart görünümleri teslimde
@@ -519,6 +636,15 @@ namespace LiquidSort.Levels
             restPositionInitialized = true;
             if (!snap || rt == null) return;
 
+            // Kuyruktan çıkan gizli view aynı değerde bir siparişle yeniden kullanılabilir.
+            // Değer eşitliği SetOrder'da assignment değişimini sakladığı için, eski teslim
+            // parıltısını burada — yeni kart dağıtılmadan hemen önce — kesin olarak temizle.
+            if (!desiredVisible)
+            {
+                highlighted = false;
+                CancelEdgeTween();
+            }
+
             InvalidateLifecycleTweens();
             presentationState.Dispatch(desiredVisible
                 ? BsOrderCardTrigger.ResetVisible
@@ -531,6 +657,7 @@ namespace LiquidSort.Levels
         /// <summary>Yeni siparişi sağdan dağıtır; sprite veya ek pivot gerektirmez.</summary>
         public Tween PlayDealIn(float delay = 0f)
         {
+            CancelTimeBoostFeedback();
             if (rt == null || canvasGroup == null) return null;
             if (!isActiveAndEnabled || !gameObject.activeInHierarchy)
             {
@@ -565,6 +692,7 @@ namespace LiquidSort.Levels
         /// <summary>Teslim damgası okunduktan sonra kartı kuyruktan çıkarır.</summary>
         public Tween PlayQueueExit(float duration)
         {
+            CancelTimeBoostFeedback();
             if (rt == null || canvasGroup == null) return null;
 
             desiredVisible = false;
@@ -598,6 +726,7 @@ namespace LiquidSort.Levels
         /// </summary>
         public Tween PlayQueueShift(Vector2 destination, float duration, float delay)
         {
+            CancelTimeBoostFeedback();
             if (rt == null) return null;
             desiredVisible = true;
             uint revision = InvalidateLifecycleTweens();
@@ -623,8 +752,14 @@ namespace LiquidSort.Levels
         /// </summary>
         public void ShowDelivered()
         {
-            ResetTimerMotion();
+            SuspendTimerEmphasis();
             if (timerRoot != null) timerRoot.gameObject.SetActive(false);
+
+            // Eşleşme işareti eskiden tam opak yeşil olarak bütün portal sunumu boyunca
+            // kartta kalıyordu. Teslim beat'inde onu tek kullanımlık sıcak bir ışık
+            // çizgisine çevir: hızlıca belirginleşsin, tick okunurken doğal biçimde sönsün.
+            highlighted = false;
+            PlayCompletionEdgePulse();
 
             desiredVisible = true;
             uint poseRevision = InvalidateLifecycleTweens();
@@ -672,7 +807,7 @@ namespace LiquidSort.Levels
         }
 
         /// <summary>
-        /// Bu siparişi karşılayan bir bardak var mı — kenarı yakar.
+        /// Bu siparişi karşılayan bir bardak var mı — parlayıp ince bir kenar izi bırakır.
         ///
         /// NEDEN GEREKLİ: bardak ✓ alıyordu ama HANGİ siparişi karşıladığı hiçbir yerde
         /// görünmüyordu. Üç kart varken oyuncu bunu tahmin etmek zorunda kalıyor ve
@@ -681,39 +816,80 @@ namespace LiquidSort.Levels
         /// </summary>
         public void SetHighlighted(bool on)
         {
-            bool edgeCanonical = edge == null || (on
-                ? Approximately(edge.color, goodColor)
-                : Approximately(edge.color, Transparent(goodColor)));
-            if (highlighted == on && edgeCanonical && !IsTweenActive(edgeTween)) return;
+            if (highlighted == on) return;
             highlighted = on;
 
-            if (edge != null)
-            {
-                uint edgeTweenRevision = InvalidateEdgeTween();
-                Color target = on ? goodColor : Transparent(goodColor);
-                Tween tween = edge.DOColor(target, 0.18f)
-                    .SetEase(Ease.OutQuad).SetUpdate(true).SetRecyclable(true);
-                edgeTween = tween;
-                tween.OnComplete(() => CompleteEdgeTween(
-                        tween, edgeTweenRevision, target))
-                    .OnKill(() => ForgetEdgeTween(tween, edgeTweenRevision));
-            }
+            if (on) PlayCompletionEdgePulse();
+            else FadeCompletionEdge();
 
             if (!on || rt == null || presentationState.State
                 != BsOrderCardState.Visible || IsTweenActive(lifecycleTween)) return;
             uint revision = InvalidateLifecycleTweens();
             Sequence sequence = DOTween.Sequence()
                 .SetTarget(rt).SetUpdate(true).SetRecyclable(true)
-                .Append(rt.DOScale(authoredScale * 1.06f, 0.12f)
-                    .SetEase(Ease.OutQuad).SetRecyclable(true))
-                .Append(rt.DOScale(authoredScale, 0.16f)
-                    .SetEase(Ease.OutBack).SetRecyclable(true));
+                .Append(rt.DOScale(authoredScale * 1.025f, 0.11f)
+                    .SetEase(Ease.OutCubic).SetRecyclable(true))
+                .Append(rt.DOScale(authoredScale, 0.20f)
+                    .SetEase(Ease.InOutSine).SetRecyclable(true));
             TrackPosePulse(sequence, revision);
+        }
+
+        /// <summary>
+        /// Placeholder kenarı kalıcı bir renge boyamak yerine kısa bir ışık izi oynatır.
+        /// Çizgi fildişi-altın arasında parlar. Eşleşmede ince bir altın iz kalır;
+        /// teslimde aynı efekt bütünüyle transparana oturur.
+        /// </summary>
+        private void PlayCompletionEdgePulse()
+        {
+            if (edge == null) return;
+
+            uint revision = InvalidateEdgeTween();
+            RectTransform lineRect = edge.rectTransform;
+            Color lineWarm = WithAlpha(completionGlowColor, 0.62f);
+            Color lineRest = CompletionEdgeRestColor();
+
+            Sequence sequence = DOTween.Sequence()
+                .SetTarget(edge).SetUpdate(true).SetRecyclable(true)
+                .Append(edge.DOColor(completionLineColor, 0.10f)
+                    .SetEase(Ease.OutSine).SetRecyclable(true))
+                .Join(lineRect.DOScale(authoredEdgeScale * 1.012f, 0.14f)
+                    .SetEase(Ease.OutCubic).SetRecyclable(true))
+                .Append(edge.DOColor(lineWarm, 0.14f)
+                    .SetEase(Ease.OutQuad).SetRecyclable(true))
+                .AppendInterval(0.06f)
+                .Append(edge.DOColor(lineRest, 0.36f)
+                    .SetEase(Ease.InSine).SetRecyclable(true))
+                .Join(lineRect.DOScale(authoredEdgeScale, 0.36f)
+                    .SetEase(Ease.OutSine).SetRecyclable(true));
+
+            TrackCompletionEdge(sequence, revision);
+        }
+
+        /// <summary>Eşleşme geri alınırsa o anki ışığı kesmeden kısa biçimde söndürür.</summary>
+        private void FadeCompletionEdge()
+        {
+            if (edge == null) return;
+
+            if (edge.color.a <= 0.002f)
+            {
+                CancelEdgeTween();
+                return;
+            }
+
+            uint revision = InvalidateEdgeTween();
+            Sequence sequence = DOTween.Sequence()
+                .SetTarget(edge).SetUpdate(true).SetRecyclable(true)
+                .Append(edge.DOFade(0f, 0.22f)
+                    .SetEase(Ease.InSine).SetRecyclable(true))
+                .Join(edge.rectTransform.DOScale(authoredEdgeScale, 0.22f)
+                    .SetEase(Ease.OutSine).SetRecyclable(true));
+            TrackCompletionEdge(sequence, revision);
         }
 
         /// <summary>Kartı elle verilmiş dinlenme pozuna döndürür ve tween'leri keser.</summary>
         public void ResetPose()
         {
+            CancelTimeBoostFeedback();
             InvalidateLifecycleTweens();
             presentationState.Dispatch(desiredVisible
                 ? BsOrderCardTrigger.ResetVisible
@@ -730,10 +906,8 @@ namespace LiquidSort.Levels
                 tickBadge.rectTransform.localScale = authoredTickScale;
                 tickBadge.gameObject.SetActive(false);
             }
-            CancelEdgeTween();
-            if (edge != null)
-                edge.color = Transparent(goodColor);
             highlighted = false;
+            CancelEdgeTween();
             ResetTimerVisual();
         }
 
@@ -748,8 +922,10 @@ namespace LiquidSort.Levels
 
         private void OnDisable()
         {
+            CancelTimeBoostFeedback();
             InvalidateLifecycleTweens();
             InvalidateTickTween();
+            highlighted = false;
             CancelEdgeTween();
             presentationState.Dispatch(BsOrderCardTrigger.Disable);
             if (rt != null)
@@ -763,8 +939,6 @@ namespace LiquidSort.Levels
                 tickBadge.rectTransform.localScale = authoredTickScale;
                 tickBadge.gameObject.SetActive(false);
             }
-            if (edge != null) edge.color = Transparent(goodColor);
-            highlighted = false;
             ResetTimerVisual();
         }
 
@@ -826,6 +1000,14 @@ namespace LiquidSort.Levels
                 });
         }
 
+        private void TrackCompletionEdge(Sequence sequence, uint revision)
+        {
+            if (sequence == null) return;
+            edgeTween = sequence;
+            sequence.OnComplete(() => CompleteEdgeTween(sequence, revision))
+                .OnKill(() => ForgetEdgeTween(sequence, revision));
+        }
+
         private uint InvalidateLifecycleTweens()
         {
             lifecycleRevision++;
@@ -849,6 +1031,32 @@ namespace LiquidSort.Levels
 
         private void CancelTickTween() => InvalidateTickTween();
 
+        private uint InvalidateTimeBoostTween()
+        {
+            timeBoostRevision++;
+            Tween old = timeBoostTween;
+            timeBoostTween = null;
+            KillTween(old);
+            CanonicalizeTimeBoostFeedback();
+            return timeBoostRevision;
+        }
+
+        private void CompleteTimeBoostTween(Tween tween, uint revision)
+        {
+            if (revision != timeBoostRevision
+                || !ReferenceEquals(timeBoostTween, tween)) return;
+            timeBoostTween = null;
+            CanonicalizeTimeBoostFeedback();
+        }
+
+        private void ForgetTimeBoostTween(Tween tween, uint revision)
+        {
+            if (revision != timeBoostRevision
+                || !ReferenceEquals(timeBoostTween, tween)) return;
+            timeBoostTween = null;
+            CanonicalizeTimeBoostFeedback();
+        }
+
         private uint InvalidateEdgeTween()
         {
             edgeRevision++;
@@ -858,19 +1066,24 @@ namespace LiquidSort.Levels
             return edgeRevision;
         }
 
-        private void CancelEdgeTween() => InvalidateEdgeTween();
+        private void CancelEdgeTween()
+        {
+            InvalidateEdgeTween();
+            CanonicalizeCompletionEdge();
+        }
 
-        private void CompleteEdgeTween(Tween tween, uint revision, Color target)
+        private void CompleteEdgeTween(Tween tween, uint revision)
         {
             if (revision != edgeRevision || !ReferenceEquals(edgeTween, tween)) return;
             edgeTween = null;
-            if (edge != null) edge.color = target;
+            CanonicalizeCompletionEdge();
         }
 
         private void ForgetEdgeTween(Tween tween, uint revision)
         {
-            if (revision == edgeRevision && ReferenceEquals(edgeTween, tween))
-                edgeTween = null;
+            if (revision != edgeRevision || !ReferenceEquals(edgeTween, tween)) return;
+            edgeTween = null;
+            CanonicalizeCompletionEdge();
         }
 
         private void CompleteVisibilityTween(Tween tween, uint revision, bool visible)
@@ -908,6 +1121,19 @@ namespace LiquidSort.Levels
                 rt.anchoredPosition = restingAnchoredPosition;
         }
 
+        private void CanonicalizeCompletionEdge()
+        {
+            if (edge != null)
+            {
+                edge.color = CompletionEdgeRestColor();
+                edge.rectTransform.localScale = authoredEdgeScale;
+            }
+        }
+
+        private Color CompletionEdgeRestColor() => highlighted
+            ? WithAlpha(completionGlowColor, 0.16f)
+            : Transparent(completionLineColor);
+
         private void CanonicalizeVisibility(bool visible)
         {
             if (canvasGroup == null) return;
@@ -935,28 +1161,52 @@ namespace LiquidSort.Levels
         private static bool HasActiveTween(Tween first, Tween second) =>
             IsTweenActive(first) || IsTweenActive(second);
 
-        private static bool Approximately(Color first, Color second)
-        {
-            const float epsilon = 0.002f;
-            return Mathf.Abs(first.r - second.r) <= epsilon
-                   && Mathf.Abs(first.g - second.g) <= epsilon
-                   && Mathf.Abs(first.b - second.b) <= epsilon
-                   && Mathf.Abs(first.a - second.a) <= epsilon;
-        }
-
         private void ResetTimerVisual()
         {
             shownTimerSecond = -1;
             ResetTimerMotion();
             SetTimerText(string.Empty);
             SetTimerProgress(1f);
-            if (timerFill != null) timerFill.color = timerNormalColor;
+            timerFillBaseColor = timerNormalColor;
+            ApplyTimerFeedbackColors();
         }
 
         private void ResetTimerMotion()
         {
             urgentTimerKick = 0f;
-            if (timerRoot != null) timerRoot.localScale = authoredTimerScale;
+            ApplyTimerMotion();
+        }
+
+        private void ApplyTimerMotion()
+        {
+            if (timerRoot == null) return;
+            float scale = 1f + urgentTimerKick * 0.055f + timeBoostPulse * 0.105f;
+            timerRoot.localScale = authoredTimerScale * scale;
+        }
+
+        private void ApplyTimerFeedbackColors()
+        {
+            float flash = Mathf.Clamp01(timeBoostFlash);
+            if (timerFill != null)
+                timerFill.color = Color.Lerp(
+                    timerFillBaseColor, TimeBoostFlashColor, flash * 0.82f);
+            if (timerClock != null)
+                timerClock.color = Color.Lerp(
+                    timerClockBaseColor, TimeBoostFlashColor, flash * 0.88f);
+        }
+
+        private void CanonicalizeTimeBoostFeedback()
+        {
+            timeBoostPulse = 0f;
+            timeBoostFlash = 0f;
+            ApplyTimerMotion();
+            ApplyTimerFeedbackColors();
+            if (timeBoostFeedbackRoot == null) return;
+            timeBoostFeedbackRoot.anchoredPosition = timeBoostFeedbackBasePosition;
+            timeBoostFeedbackRoot.localScale = Vector3.one;
+            if (timeBoostFeedbackCanvasGroup != null)
+                timeBoostFeedbackCanvasGroup.alpha = 0f;
+            timeBoostFeedbackRoot.gameObject.SetActive(false);
         }
 
         private void SetTimerText(string value)
@@ -984,6 +1234,109 @@ namespace LiquidSort.Levels
             fillRect.anchoredPosition = position;
         }
 
+        private bool EnsureTimeBoostFeedbackVisuals()
+        {
+            if (timerRoot == null) return false;
+            if (timeBoostFeedbackRoot != null && timeBoostFeedbackCanvasGroup != null
+                && (timeBoostFeedbackLabel != null
+                    || timeBoostFeedbackLegacyLabel != null))
+                return true;
+
+            Transform existing = timerRoot.Find(TimeBoostFeedbackName);
+            if (existing != null && TryBindTimeBoostFeedback(existing)) return true;
+
+            Component source = timerLabel != null
+                ? (Component)timerLabel
+                : timerLegacyLabel;
+            if (source == null) return false;
+
+            GameObject instance = Instantiate(source.gameObject, timerRoot, false);
+            instance.name = TimeBoostFeedbackName;
+            RectTransform feedbackRoot = instance.transform as RectTransform;
+            if (feedbackRoot == null)
+            {
+                Destroy(instance);
+                return false;
+            }
+
+            CanvasGroup group = instance.GetComponent<CanvasGroup>();
+            if (group == null) group = instance.AddComponent<CanvasGroup>();
+            timeBoostFeedbackRoot = feedbackRoot;
+            timeBoostFeedbackCanvasGroup = group;
+            timeBoostFeedbackLabel = instance.GetComponent<TextMeshProUGUI>();
+            timeBoostFeedbackLegacyLabel = instance.GetComponent<Text>();
+            if (timeBoostFeedbackLabel == null && timeBoostFeedbackLegacyLabel == null)
+            {
+                Destroy(instance);
+                timeBoostFeedbackRoot = null;
+                timeBoostFeedbackCanvasGroup = null;
+                return false;
+            }
+
+            RectTransform sourceRoot = source.transform as RectTransform;
+            timeBoostFeedbackBasePosition = sourceRoot != null
+                ? sourceRoot.anchoredPosition + new Vector2(0f, 9f)
+                : new Vector2(0f, 9f);
+            timeBoostFeedbackRoot.anchoredPosition = timeBoostFeedbackBasePosition;
+            timeBoostFeedbackRoot.SetAsLastSibling();
+            ConfigureTimeBoostFeedbackLabel();
+            timeBoostFeedbackCanvasGroup.alpha = 0f;
+            instance.SetActive(false);
+            return true;
+        }
+
+        private bool TryBindTimeBoostFeedback(Transform candidate)
+        {
+            RectTransform feedbackRoot = candidate as RectTransform;
+            if (feedbackRoot == null) return false;
+            TextMeshProUGUI tmp = candidate.GetComponent<TextMeshProUGUI>();
+            Text legacy = candidate.GetComponent<Text>();
+            if (tmp == null && legacy == null) return false;
+
+            CanvasGroup group = candidate.GetComponent<CanvasGroup>();
+            if (group == null) group = candidate.gameObject.AddComponent<CanvasGroup>();
+            timeBoostFeedbackRoot = feedbackRoot;
+            timeBoostFeedbackCanvasGroup = group;
+            timeBoostFeedbackLabel = tmp;
+            timeBoostFeedbackLegacyLabel = legacy;
+            Component source = timerLabel != null ? (Component)timerLabel : timerLegacyLabel;
+            RectTransform sourceRoot = source != null ? source.transform as RectTransform : null;
+            timeBoostFeedbackBasePosition = sourceRoot != null
+                ? sourceRoot.anchoredPosition + new Vector2(0f, 9f)
+                : feedbackRoot.anchoredPosition;
+            ConfigureTimeBoostFeedbackLabel();
+            CanonicalizeTimeBoostFeedback();
+            return true;
+        }
+
+        private void ConfigureTimeBoostFeedbackLabel()
+        {
+            if (timeBoostFeedbackLabel != null)
+            {
+                timeBoostFeedbackLabel.raycastTarget = false;
+                timeBoostFeedbackLabel.color = TimeBoostFlashColor;
+                timeBoostFeedbackLabel.alignment = TextAlignmentOptions.Center;
+            }
+            if (timeBoostFeedbackLegacyLabel != null)
+            {
+                timeBoostFeedbackLegacyLabel.raycastTarget = false;
+                timeBoostFeedbackLegacyLabel.color = TimeBoostFlashColor;
+                timeBoostFeedbackLegacyLabel.alignment = TextAnchor.MiddleCenter;
+            }
+        }
+
+        private void SetTimeBoostFeedbackText(float seconds)
+        {
+            float rounded = Mathf.Round(seconds);
+            string amount = Mathf.Approximately(seconds, rounded)
+                ? Mathf.RoundToInt(seconds).ToString()
+                : seconds.ToString("0.#");
+            string value = "+" + amount + " sn";
+            if (timeBoostFeedbackLabel != null) timeBoostFeedbackLabel.text = value;
+            if (timeBoostFeedbackLegacyLabel != null)
+                timeBoostFeedbackLegacyLabel.text = value;
+        }
+
         private void CaptureTimerFillGeometry()
         {
             timerFillGeometryCaptured = false;
@@ -997,6 +1350,18 @@ namespace LiquidSort.Levels
             timerFillFullWidth = width;
             timerFillLeftEdge = fillRect.anchoredPosition.x - width * fillRect.pivot.x;
             timerFillGeometryCaptured = true;
+        }
+
+        private void CaptureTimerArtState()
+        {
+            timerFillBaseColor = timerFill != null ? timerFill.color : timerNormalColor;
+            if (timerRoot != null && timerClock == null)
+            {
+                Transform clock = timerRoot.Find("Clock");
+                timerClock = clock != null ? clock.GetComponent<Image>() : null;
+            }
+            if (timerClock != null) timerClockBaseColor = timerClock.color;
+            ApplyTimerFeedbackColors();
         }
 
         /// <summary>
@@ -1076,14 +1441,15 @@ namespace LiquidSort.Levels
 
             if (cachedTimerClock != null)
             {
-                Image clock = CreateTimerImage("Clock", root, cachedTimerClock,
+                timerClock = CreateTimerImage("Clock", root, cachedTimerClock,
                     new Vector2(-51f, 0f), new Vector2(24f, 24f));
-                clock.preserveAspect = true;
+                timerClock.preserveAspect = true;
             }
 
             timerLegacyLabel = CreateTimerLabel("Seconds", root,
                 new Vector2(28f, 4.5f), new Vector2(66f, 15f));
 
+            CaptureTimerArtState();
             root.gameObject.SetActive(false);
         }
 
@@ -1127,6 +1493,7 @@ namespace LiquidSort.Levels
             RectTransform root = candidate as RectTransform;
             Transform fillNode = candidate.Find("Fill Lane/Fill");
             Transform secondsNode = candidate.Find("Seconds");
+            Transform clockNode = candidate.Find("Clock");
             Image fill = fillNode != null ? fillNode.GetComponent<Image>() : null;
             Text legacy = secondsNode != null ? secondsNode.GetComponent<Text>() : null;
             TextMeshProUGUI tmp = secondsNode != null
@@ -1139,8 +1506,10 @@ namespace LiquidSort.Levels
             timerFill = fill;
             timerLegacyLabel = legacy;
             timerLabel = tmp;
+            timerClock = clockNode != null ? clockNode.GetComponent<Image>() : null;
             authoredTimerScale = root.localScale;
             CaptureTimerFillGeometry();
+            CaptureTimerArtState();
             return true;
         }
 
@@ -1240,6 +1609,10 @@ namespace LiquidSort.Levels
             return true;
         }
 
-        private static Color Transparent(Color c) => new Color(c.r, c.g, c.b, 0f);
+        private static Color WithAlpha(Color color, float alpha) =>
+            new Color(color.r, color.g, color.b,
+                Mathf.Clamp01(color.a * alpha));
+
+        private static Color Transparent(Color c) => WithAlpha(c, 0f);
     }
 }

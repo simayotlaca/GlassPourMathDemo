@@ -216,7 +216,14 @@ namespace LiquidSort
             built = false;
         }
 
-        private void LateUpdate()
+        private void LateUpdate() => Refresh();
+
+        /// <summary>
+        /// Ensures the Royal shell layers exist without regenerating immutable art when
+        /// a pooled bottle is refreshed more than once. Public so the shelf can make the
+        /// source scene's liquid+shell build contract deterministic in the activation frame.
+        /// </summary>
+        public void Refresh()
         {
             LiquidBottle current = GetComponent<LiquidBottle>();
             int wantedHash = SettingsHash(current);
