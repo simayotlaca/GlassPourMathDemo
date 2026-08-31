@@ -325,8 +325,8 @@ namespace LiquidSort.Levels
 
         private void ToggleVibration()
         {
-            BartenderSettingsStore.ToggleVibration();
-            RefreshSettings();
+            BartenderProgressService.HardReset();
+            UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex);
         }
 
         private void ShowNotice(string message)

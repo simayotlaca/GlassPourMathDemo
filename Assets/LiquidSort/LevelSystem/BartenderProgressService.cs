@@ -504,6 +504,16 @@ namespace LiquidSort.Levels
             BartenderProgressRuntimeDriver.ResetRegistration();
         }
 
+        public static void HardReset()
+        {
+            ResetStaticState();
+            UnityEngine.PlayerPrefs.DeleteAll();
+            try { if (System.IO.File.Exists(SavePath)) System.IO.File.Delete(SavePath); } catch { }
+            try { if (System.IO.File.Exists(SavePath + ".tmp")) System.IO.File.Delete(SavePath + ".tmp"); } catch { }
+            try { if (System.IO.File.Exists(SavePath + ".bak")) System.IO.File.Delete(SavePath + ".bak"); } catch { }
+            loaded = false;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void LoadBeforeFirstScene() => EnsureLoaded();
 

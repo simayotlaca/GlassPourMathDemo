@@ -249,8 +249,8 @@ namespace LiquidSort.Levels
         public void ToggleVibration()
         {
             PlaySettingsClickFallback(vibrationButton);
-            BartenderSettingsStore.ToggleVibration();
-            ApplySettingsMarks();
+            BartenderProgressService.HardReset();
+            UnityEngine.SceneManagement.SceneManager.LoadScene(UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex);
         }
 
         private static void PlaySettingsClickFallback(Button source)
