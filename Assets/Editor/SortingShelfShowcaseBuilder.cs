@@ -556,6 +556,16 @@ public static class SortingShelfShowcaseBuilder
         public float ScaleFourInTwoRows;
         public float ScaleFourInThreeRows;
 
+        /// <summary>
+        /// The one scale every board actually wears. BartenderShelfLevelView no longer
+        /// picks between the four solved budgets - it takes their minimum, so the vessel
+        /// is the same size on every level. Editor-side measurements that have to predict
+        /// the on-screen glass size must read this rather than the roomiest two-row budget.
+        /// </summary>
+        public float FixedBoardScale => Mathf.Min(
+            Mathf.Min(ScaleTwoRow, ScaleThreeRow),
+            Mathf.Min(ScaleFourInTwoRows, ScaleFourInThreeRows));
+
         public string Describe() =>
             $"plankBand={PlankBand:0.###}\ntallestGlass={TallestGlass:0.###}\n"
             + $"widestGlass={WidestGlass:0.###}\ninnerWidth={InnerWidth:0.###}\n"
@@ -1556,7 +1566,7 @@ public static class SortingShelfShowcaseBuilder
         {
             float badgeHeight = SpriteVisualBounds(badge.badgeRenderer.sprite).height;
             float inherited = badge.bottle.profile.ShelfReferenceScale
-                              * solve.ScaleTwoRow;
+                              * solve.FixedBoardScale;
             float local = targetWorldHeight
                           / Mathf.Max(0.0001f, badgeHeight * inherited);
             badge.authoredLocalScale = new Vector3(local, local, 1f);
