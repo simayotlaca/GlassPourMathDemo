@@ -7,6 +7,28 @@ using UnityEngine;
 namespace LiquidSort.Levels
 {
     /// <summary>
+    /// Immutable world-space rest pose authored by the current shelf layout. Selection,
+    /// pour and cancellation all return to this pose instead of treating a transient
+    /// animated transform as the glass's new home.
+    /// </summary>
+    public readonly struct BartenderGlassSeatPose
+    {
+        public Vector3 Position { get; }
+        public Quaternion Rotation { get; }
+        public Vector3 LocalScale { get; }
+
+        public BartenderGlassSeatPose(Vector3 position, Quaternion rotation,
+                                      Vector3 localScale)
+        {
+            Position = position;
+            Rotation = rotation;
+            LocalScale = localScale;
+        }
+
+        public Vector3 Up => Rotation * Vector3.up;
+    }
+
+    /// <summary>
     /// Binds the scene-independent Bartender level model to a hand-authored shelf scene.
     /// Every glass, plank and post is an Inspector reference. This component never creates
     /// a GameObject, instantiates a prefab or searches the scene at runtime.
@@ -75,9 +97,11 @@ namespace LiquidSort.Levels
             /// own, so cancelling one mid-flight lands on the same static layout.
             /// </summary>
             public Vector3 SeatPosition;
+            public Quaternion SeatRotation = Quaternion.identity;
             public Vector3 SeatScale = Vector3.one;
             public bool Seated;
             public Vector3 PreviousSeatPosition;
+            public Quaternion PreviousSeatRotation = Quaternion.identity;
             public Vector3 PreviousSeatScale = Vector3.one;
             public bool HasPreviousSeat;
             public int Row;
@@ -211,6 +235,7 @@ namespace LiquidSort.Levels
         private Coroutine seatAnimation;
         private object synchronizationDeferralOwner;
         private bool deferredSynchronizationPending;
+        private int entranceLockRevision = -1;
 
         /// <summary>
         /// Glass the controller reported as delivered on the notification that immediately
@@ -221,6 +246,7 @@ namespace LiquidSort.Levels
 
         private BartenderLevelController subscribedController;
         private BsLevel presentedLevel;
+        private int presentedBoardRevision = -1;
         private bool actorCacheBuilt;
         private int configuredColumns = 1;
         private int configuredRowCount;
@@ -300,6 +326,11 @@ namespace LiquidSort.Levels
         /// </summary>
         public bool RefreshFromController()
         {
+            return RefreshFromController(false);
+        }
+
+        private bool RefreshFromController(bool allowDeliveryPresentation)
+        {
             if (controller == null)
                 return Reject("BartenderLevelController Inspector referansı eksik.");
             BsLevel level = controller.CurrentLevel;
@@ -312,8 +343,27 @@ namespace LiquidSort.Levels
             }
 
             if (!ReferenceEquals(presentedLevel, level) || !Ready)
-                return TryPresent(level, snapshot, controller.Palette);
-            return TrySynchronize(snapshot, controller.Palette);
+            {
+                bool presented = TryPresent(level, snapshot, controller.Palette);
+                if (!presented) return false;
+                presentedBoardRevision = controller.BoardRevision;
+                if (seatAnimation == null) return true;
+
+                int revision = controller.BoardRevision;
+                if (controller.TryAcquirePresentationLock(this, revision))
+                {
+                    entranceLockRevision = revision;
+                    return true;
+                }
+
+                StopSeatAnimation();
+                SnapActorsToSeat();
+                return true;
+            }
+            bool synchronized = TrySynchronize(snapshot, controller.Palette,
+                                                allowDeliveryPresentation);
+            if (synchronized) presentedBoardRevision = controller.BoardRevision;
+            return synchronized;
         }
 
         /// <summary>
@@ -514,6 +564,25 @@ namespace LiquidSort.Levels
         }
 
         /// <summary>
+        /// Returns the layout-owned rest pose for an active glass. This is the only home
+        /// pose presentation code may use; the live transform can be raised, carried or
+        /// settling and is therefore not authoritative.
+        /// </summary>
+        public bool TryGetSeatPose(int glassId, out BartenderGlassSeatPose pose)
+        {
+            if (actorByGlassId.TryGetValue(glassId, out Actor actor)
+                && actor != null && actor.Bottle != null && actor.Seated)
+            {
+                pose = new BartenderGlassSeatPose(
+                    actor.SeatPosition, actor.SeatRotation, actor.SeatScale);
+                return true;
+            }
+
+            pose = default;
+            return false;
+        }
+
+        /// <summary>
         /// Is there still an unassigned scene vessel of this type? The +glass booster asks
         /// before it commits: the pool is a hand-authored, finite set of scene objects, and
         /// a domain glass with no vessel behind it rejects the whole presentation.
@@ -541,6 +610,21 @@ namespace LiquidSort.Levels
             owner != null && ReferenceEquals(synchronizationDeferralOwner, owner);
 
         /// <summary>
+        /// Drops an owned deferral without touching the currently presented round. This is
+        /// reserved for callbacks whose round token has gone stale: their only remaining
+        /// authority is to release their own lease.
+        /// </summary>
+        public bool DropSynchronizationDeferral(object owner)
+        {
+            if (owner == null || !ReferenceEquals(synchronizationDeferralOwner, owner))
+                return false;
+
+            synchronizationDeferralOwner = null;
+            deferredSynchronizationPending = false;
+            return true;
+        }
+
+        /// <summary>
         /// Ends a deferral owned by <paramref name="owner"/> and reconciles the scene from
         /// the controller snapshot. Safe to call after either a completed or cancelled pour.
         /// </summary>
@@ -555,7 +639,9 @@ namespace LiquidSort.Levels
             deferredSynchronizationPending = false;
             if (!refresh) return true;
             if (!isActiveAndEnabled) return false;
-            return RefreshFromController();
+            bool ownsCommittedRevision = controller != null
+                && controller.IsPresentationLockOwnedBy(owner, controller.BoardRevision);
+            return RefreshFromController(ownsCommittedRevision);
         }
 
         /// <summary>
@@ -683,7 +769,23 @@ namespace LiquidSort.Levels
                 return;
             }
             BsBoard snapshot = controller != null ? controller.Board : null;
-            TryPresent(level, snapshot, controller != null ? controller.Palette : null);
+            bool presented = TryPresent(
+                level, snapshot, controller != null ? controller.Palette : null);
+            if (!presented || controller == null) return;
+
+            int revision = controller.BoardRevision;
+            presentedBoardRevision = revision;
+            if (seatAnimation == null) return;
+            if (controller.TryAcquireLoadPresentationLock(this, revision))
+            {
+                entranceLockRevision = revision;
+                return;
+            }
+
+            // An entrance without its timer/command lease would consume gameplay time and
+            // could race another command. Fail visually closed on the exact authored seat.
+            StopSeatAnimation();
+            SnapActorsToSeat();
         }
 
         /// <summary>
@@ -705,7 +807,15 @@ namespace LiquidSort.Levels
                 return;
             }
             if (!Ready || controller == null || controller.CurrentLevel == null) return;
-            TrySynchronize(controller.Board, controller.Palette);
+            // Load publishes LevelLoaded and then BoardChanged for the same revision. The
+            // former already built the complete shelf and started its entrance; replaying
+            // the latter would stop that coroutine before its first frame.
+            if (presentedBoardRevision == controller.BoardRevision) return;
+            // A direct domain mutation is reconciled immediately. Portal animation is
+            // reserved for EndSynchronizationDeferralAndRefresh after the exact revision
+            // lock has been acquired by its presentation owner.
+            if (TrySynchronize(controller.Board, controller.Palette, false))
+                presentedBoardRevision = controller.BoardRevision;
         }
 
         private void HandleStateChanged(BartenderLevelState state)
@@ -715,7 +825,8 @@ namespace LiquidSort.Levels
                 ClearPresentation();
         }
 
-        private bool TrySynchronize(BsBoard snapshot, BsPalette palette)
+        private bool TrySynchronize(BsBoard snapshot, BsPalette palette,
+                                    bool allowDeliveryPresentation)
         {
             if (snapshot == null) return Reject("Board snapshot boş.");
             if (palette == null || palette.Count == 0)
@@ -725,6 +836,7 @@ namespace LiquidSort.Levels
             // must not be able to fly a second glass through the arch.
             int deliveredGlassId = pendingDeliveryGlassId;
             pendingDeliveryGlassId = -1;
+            if (!allowDeliveryPresentation) deliveredGlassId = -1;
 
             activeActors.Clear();
             for (int i = 0; i < snapshot.Glasses.Count; i++)
@@ -885,6 +997,7 @@ namespace LiquidSort.Levels
             actorByGlassId.Clear();
             glassIdByBottle.Clear();
             presentedLevel = null;
+            presentedBoardRevision = -1;
             Ready = false;
         }
 
@@ -1137,6 +1250,7 @@ namespace LiquidSort.Levels
                 Transform actorTransform = actor.Bottle.transform;
                 actor.HasPreviousSeat = actor.Seated;
                 actor.PreviousSeatPosition = actorTransform.position;
+                actor.PreviousSeatRotation = actorTransform.rotation;
                 actor.PreviousSeatScale = actorTransform.localScale;
             }
         }
@@ -1152,6 +1266,7 @@ namespace LiquidSort.Levels
                 Actor actor = activeActors[i];
                 Transform actorTransform = actor.Bottle.transform;
                 actor.SeatPosition = actorTransform.position;
+                actor.SeatRotation = actorTransform.rotation;
                 actor.SeatScale = actorTransform.localScale;
                 actor.Seated = true;
             }
@@ -1256,6 +1371,8 @@ namespace LiquidSort.Levels
                 Actor actor = activeActors[i];
                 moved = actor.HasPreviousSeat
                     && ((actor.PreviousSeatPosition - actor.SeatPosition).sqrMagnitude > 1e-6f
+                        || Quaternion.Angle(actor.PreviousSeatRotation,
+                                            actor.SeatRotation) > 0.01f
                         || (actor.PreviousSeatScale - actor.SeatScale).sqrMagnitude > 1e-6f);
             }
             if (!moved) return;
@@ -1265,27 +1382,41 @@ namespace LiquidSort.Levels
 
         private IEnumerator EntranceRoutine()
         {
-            Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
-            float total = MeasureEntranceFalls();
-
-            float elapsed = 0f;
-            while (elapsed < total)
+            try
             {
-                StepShelfFade(elapsed);
-                for (int i = 0; i < entranceOrder.Count; i++)
-                {
-                    Actor actor = entranceOrder[i];
-                    StepEntranceActor(actor, elapsed - actor.EntranceDelay, layoutUp);
-                }
-                yield return null;
-                // Unscaled so a paused board or a timeScale tweak cannot strand a glass
-                // halfway to its seat.
-                elapsed += Time.unscaledDeltaTime;
-            }
+                Vector3 layoutUp = LayoutSpace.TransformVector(Vector3.up);
+                float total = MeasureEntranceFalls();
 
-            seatAnimation = null;
-            FinishShelfFade();
-            SnapActorsToSeat();
+                float elapsed = 0f;
+                while (elapsed < total)
+                {
+                    StepShelfFade(elapsed);
+                    for (int i = 0; i < entranceOrder.Count; i++)
+                    {
+                        Actor actor = entranceOrder[i];
+                        StepEntranceActor(actor, elapsed - actor.EntranceDelay, layoutUp);
+                    }
+                    yield return null;
+                    // Unscaled so a paused board or a timeScale tweak cannot strand a glass
+                    // halfway to its seat.
+                    elapsed += Time.unscaledDeltaTime;
+                }
+            }
+            finally
+            {
+                seatAnimation = null;
+                try
+                {
+                    FinishShelfFade();
+                    SnapActorsToSeat();
+                }
+                finally
+                {
+                    // Exceptions and normal completion obey the same lease cleanup. Explicit
+                    // StopCoroutine still calls StopSeatAnimation as an idempotent fallback.
+                    ReleaseEntrancePresentationLock();
+                }
+            }
         }
 
         /// <summary>
@@ -1324,6 +1455,7 @@ namespace LiquidSort.Levels
                 // Held off-stage while it waits its turn, so an idle glass is never left
                 // hanging over the shelf.
                 if (actorObject.activeSelf) actorObject.SetActive(false);
+                actorTransform.rotation = actor.SeatRotation;
                 actorTransform.localScale = actor.SeatScale;
                 return;
             }
@@ -1342,12 +1474,13 @@ namespace LiquidSort.Levels
                 float fall = time / actor.EntranceFallDuration;
                 actorTransform.position = actor.SeatPosition
                     + layoutUp * (actor.EntranceFallDistance * (1f - fall * fall));
+                actorTransform.rotation = actor.SeatRotation;
                 actorTransform.localScale = actor.SeatScale;
                 return;
             }
 
             DropEntranceSorting(actor);
-            actorTransform.position = actor.SeatPosition;
+            actorTransform.SetPositionAndRotation(actor.SeatPosition, actor.SeatRotation);
             actorTransform.localScale =
                 LandingScale(actor.SeatScale, time - actor.EntranceFallDuration);
         }
@@ -1402,6 +1535,8 @@ namespace LiquidSort.Levels
                     Transform actorTransform = actor.Bottle.transform;
                     actorTransform.position = Vector3.Lerp(
                         actor.PreviousSeatPosition, actor.SeatPosition, k);
+                    actorTransform.rotation = Quaternion.Slerp(
+                        actor.PreviousSeatRotation, actor.SeatRotation, k);
                     actorTransform.localScale = Vector3.Lerp(
                         actor.PreviousSeatScale, actor.SeatScale, k);
                 }
@@ -1426,8 +1561,10 @@ namespace LiquidSort.Levels
                 if (actor.Bottle == null || !actor.Seated) continue;
                 GameObject actorObject = actor.Bottle.gameObject;
                 if (!actorObject.activeSelf) actorObject.SetActive(true);
-                actor.Bottle.transform.position = actor.SeatPosition;
-                actor.Bottle.transform.localScale = actor.SeatScale;
+                Transform actorTransform = actor.Bottle.transform;
+                actorTransform.SetPositionAndRotation(
+                    actor.SeatPosition, actor.SeatRotation);
+                actorTransform.localScale = actor.SeatScale;
             }
         }
 
@@ -1441,6 +1578,15 @@ namespace LiquidSort.Levels
             for (int i = 0; i < activeActors.Count; i++)
                 DropEntranceSorting(activeActors[i]);
             FinishShelfFade();
+            ReleaseEntrancePresentationLock();
+        }
+
+        private void ReleaseEntrancePresentationLock()
+        {
+            int revision = entranceLockRevision;
+            entranceLockRevision = -1;
+            if (controller != null && revision >= 0)
+                controller.ReleasePresentationLock(this, revision);
         }
 
         private void OrderActorsForEntrance()

@@ -20,6 +20,8 @@ namespace LiquidSort.Levels
         [SerializeField] private BartenderLevelController controller;
         [SerializeField] private BartenderShelfLevelView shelfView;
         [SerializeField] private PourAnimator pourAnimator;
+        [Tooltip("Round-token owner. Empty resolves the BartenderSession on this rig.")]
+        [SerializeField] private BartenderSession session;
 
         [Header("Host scene")]
         [Tooltip("Optional. A portable prefab resolves Camera.main when this is empty.")]
@@ -37,6 +39,8 @@ namespace LiquidSort.Levels
         private LiquidBottle selectedBottle;
         private int selectedGlassId = -1;
         private Vector3 selectedHomePosition;
+        private Quaternion selectedHomeRotation = Quaternion.identity;
+        private Vector3 selectedHomeScale = Vector3.one;
 
         private int activeOperationId;
         private bool deliveryPresentationActive;
@@ -46,6 +50,9 @@ namespace LiquidSort.Levels
         private BartenderLevelController transactionController;
         private BartenderShelfLevelView transactionView;
         private PourAnimator transactionAnimator;
+        private BartenderSession transactionSession;
+        private BsRoundToken transactionRoundToken;
+        private bool hasTransactionRoundToken;
 
         public int SelectedGlassId => selectedGlassId;
         public bool Busy => activeOperationId != 0 || deliveryPresentationActive
@@ -54,11 +61,13 @@ namespace LiquidSort.Levels
         public BartenderLevelController Controller => controller;
         public BartenderShelfLevelView ShelfView => shelfView;
         public PourAnimator Animator => pourAnimator;
+        public BartenderSession Session => session;
 
         public void Configure(BartenderLevelController levelController,
                               BartenderShelfLevelView view,
                               PourAnimator animator,
-                              Camera sceneCamera = null)
+                              Camera sceneCamera = null,
+                              BartenderSession roundSession = null)
         {
             CancelAndFinishPresentation();
             Unsubscribe();
@@ -66,6 +75,7 @@ namespace LiquidSort.Levels
             controller = levelController;
             shelfView = view;
             pourAnimator = animator;
+            session = roundSession;
             inputCamera = sceneCamera;
             ResolveDependencies();
             if (isActiveAndEnabled) Subscribe();
@@ -95,7 +105,6 @@ namespace LiquidSort.Levels
 
         private void Update()
         {
-            AdoptExternalDeliveryPresentation();
             AnimateSelection();
             if (!CanReadPointer() || !TryReadPointerDown(out Vector2 screenPoint)) return;
             if (IsPointerOverUi()) return;
@@ -114,8 +123,15 @@ namespace LiquidSort.Levels
             LastRejection = null;
             ResolveDependencies();
 
-            if (controller == null || shelfView == null || pourAnimator == null)
-                return Reject("Gameplay rig controller/view/animator bağlantısı eksik.",
+            if (controller == null || shelfView == null || pourAnimator == null
+                || session == null)
+                return Reject("Gameplay rig controller/view/animator/session bağlantısı eksik.",
+                              out rejectionReason);
+            if (!ReferenceEquals(session.Controller, controller))
+                return Reject("Tur FSM'i farklı bir level controller'a bağlı.",
+                              out rejectionReason);
+            if (!session.AcceptsInput)
+                return Reject("Tur FSM'i şu anda gameplay komutu kabul etmiyor.",
                               out rejectionReason);
             if (!shelfView.Ready || shelfView.SeatAnimationPlaying
                 || shelfView.DeliveryPlaying || Busy || controller.PresentationLocked)
@@ -129,9 +145,10 @@ namespace LiquidSort.Levels
             PourResult rule = controller.CanPour(sourceGlassId, targetGlassId);
             if (!rule.Success) return Reject(rule.Reason, out rejectionReason);
 
-            Vector3 home = source == selectedBottle
-                ? selectedHomePosition
-                : source.transform.position;
+            if (!shelfView.TryGetSeatPose(sourceGlassId,
+                    out BartenderGlassSeatPose home))
+                return Reject("Kaynak bardağın raf oturma pozu bulunamadı.",
+                              out rejectionReason);
 
             if (!shelfView.TryBeginSynchronizationDeferral(this))
                 return Reject("Bardak görünümü başka bir senkronizasyonu bekliyor.",
@@ -162,6 +179,8 @@ namespace LiquidSort.Levels
                 return Reject(domainRejection, out rejectionReason);
             }
 
+            CaptureTransactionRoundToken(transactionToken);
+
             // TryPour synchronously notifies every listener. One of them may disable or
             // reconfigure this bridge; in that case its lifecycle cleanup already reconciled
             // the committed move and continuing here would orphan a new lock.
@@ -171,7 +190,7 @@ namespace LiquidSort.Levels
                 bool stillOwnsTransaction = activeTransactionToken == transactionToken;
                 if (stillOwnsTransaction)
                 {
-                    FinishPresentationTransaction(true);
+                    FinishPresentationTransaction(IsTransactionRoundCurrent());
                     ClearSelection(true);
                 }
                 LastRejection = "Dökme kaydedildi; sahne değiştiği için sonuç anında gösterildi.";
@@ -195,7 +214,8 @@ namespace LiquidSort.Levels
             try
             {
                 animationStarted = selectedAnimator.TryStartPour(
-                    source, target, receipt.Amount, home.y, false);
+                    source, target, receipt.Amount, home.Position, home.Rotation,
+                    home.LocalScale, false);
             }
             catch (Exception exception)
             {
@@ -228,8 +248,14 @@ namespace LiquidSort.Levels
             LastRejection = null;
             ResolveDependencies();
 
-            if (controller == null || shelfView == null)
-                return Reject("Gameplay rig controller/view bağlantısı eksik.",
+            if (controller == null || shelfView == null || session == null)
+                return Reject("Gameplay rig controller/view/session bağlantısı eksik.",
+                              out rejectionReason);
+            if (!ReferenceEquals(session.Controller, controller))
+                return Reject("Tur FSM'i farklı bir level controller'a bağlı.",
+                              out rejectionReason);
+            if (!session.AcceptsInput)
+                return Reject("Tur FSM'i şu anda gameplay komutu kabul etmiyor.",
                               out rejectionReason);
             if (!shelfView.Ready || shelfView.SeatAnimationPlaying
                 || shelfView.DeliveryPlaying || Busy || controller.PresentationLocked)
@@ -272,6 +298,8 @@ namespace LiquidSort.Levels
                 return Reject(domainRejection, out rejectionReason);
             }
 
+            CaptureTransactionRoundToken(transactionToken);
+
             // Delivered/BoardChanged are synchronous. If a listener reconfigured this rig,
             // its lifecycle cleanup already reconciled the committed board and there is no
             // safe object left on which to start a portal presentation.
@@ -279,7 +307,8 @@ namespace LiquidSort.Levels
                                         deferredView, selectedAnimator))
             {
                 bool stillOwnsTransaction = activeTransactionToken == transactionToken;
-                if (stillOwnsTransaction) FinishPresentationTransaction(true);
+                if (stillOwnsTransaction)
+                    FinishPresentationTransaction(IsTransactionRoundCurrent());
                 LastRejection = "Teslim kaydedildi; sahne değiştiği için sonuç anında gösterildi.";
                 rejectionReason = LastRejection;
                 return true;
@@ -328,7 +357,10 @@ namespace LiquidSort.Levels
         private bool CanReadPointer()
         {
             return controller != null && shelfView != null && pourAnimator != null
+                && session != null
+                && ReferenceEquals(session.Controller, controller)
                 && controller.State == BartenderLevelState.Playing
+                && session.AcceptsInput
                 && !controller.PresentationLocked
                 && shelfView.Ready
                 && !shelfView.SeatAnimationPlaying
@@ -414,9 +446,14 @@ namespace LiquidSort.Levels
             }
 
             ClearSelection(true);
+            if (!shelfView.TryGetSeatPose(glassId,
+                    out BartenderGlassSeatPose home))
+                return;
             selectedBottle = bottle;
             selectedGlassId = glassId;
-            selectedHomePosition = bottle.transform.position;
+            selectedHomePosition = home.Position;
+            selectedHomeRotation = home.Rotation;
+            selectedHomeScale = home.LocalScale;
         }
 
         private void AnimateSelection()
@@ -424,9 +461,14 @@ namespace LiquidSort.Levels
             if (selectedBottle == null || Busy) return;
 
             float follow = 1f - Mathf.Exp(-selectionSpeed * Time.unscaledDeltaTime);
-            Vector3 wanted = selectedHomePosition + Vector3.up * selectionLift;
+            Vector3 wanted = selectedHomePosition + selectedHomeRotation * Vector3.up
+                           * selectionLift;
             selectedBottle.transform.position = Vector3.Lerp(
                 selectedBottle.transform.position, wanted, follow);
+            selectedBottle.transform.rotation = Quaternion.Slerp(
+                selectedBottle.transform.rotation, selectedHomeRotation, follow);
+            selectedBottle.transform.localScale = Vector3.Lerp(
+                selectedBottle.transform.localScale, selectedHomeScale, follow);
 
             BottleShell shell = selectedBottle.GetComponent<BottleShell>();
             if (shell != null)
@@ -439,19 +481,25 @@ namespace LiquidSort.Levels
             if (bottle != null)
             {
                 if (restorePose && (pourAnimator == null || !pourAnimator.Busy))
-                    bottle.transform.position = selectedHomePosition;
+                {
+                    bottle.transform.SetPositionAndRotation(
+                        selectedHomePosition, selectedHomeRotation);
+                    bottle.transform.localScale = selectedHomeScale;
+                }
                 BottleShell shell = bottle.GetComponent<BottleShell>();
                 if (shell != null) shell.highlight = 0f;
             }
             selectedBottle = null;
             selectedGlassId = -1;
             selectedHomePosition = default;
+            selectedHomeRotation = Quaternion.identity;
+            selectedHomeScale = Vector3.one;
         }
 
         private void HandlePourFinished(int operationId, PourOutcome outcome)
         {
             if (operationId != activeOperationId) return;
-            FinishPresentationTransaction(true);
+            FinishPresentationTransaction(IsTransactionRoundCurrent());
         }
 
         private void FinishPresentationTransaction(bool refresh)
@@ -465,13 +513,21 @@ namespace LiquidSort.Levels
             transactionView = null;
             transactionController = null;
             transactionAnimator = null;
+            transactionSession = null;
+            transactionRoundToken = default;
+            hasTransactionRoundToken = false;
             activeTransactionToken = 0;
 
             try
             {
                 if (finishingView != null
                     && finishingView.IsSynchronizationDeferredBy(this))
-                    finishingView.EndSynchronizationDeferralAndRefresh(this, refresh);
+                {
+                    if (refresh)
+                        finishingView.EndSynchronizationDeferralAndRefresh(this, true);
+                    else
+                        finishingView.DropSynchronizationDeferral(this);
+                }
             }
             catch (Exception exception)
             {
@@ -499,6 +555,9 @@ namespace LiquidSort.Levels
             transactionController = ownerController;
             transactionView = ownerView;
             transactionAnimator = ownerAnimator;
+            transactionSession = session;
+            transactionRoundToken = default;
+            hasTransactionRoundToken = false;
             lockedRevision = -1;
             deliveryPresentationActive = false;
             return activeTransactionToken;
@@ -512,10 +571,28 @@ namespace LiquidSort.Levels
             && ReferenceEquals(transactionController, ownerController)
             && ReferenceEquals(transactionView, ownerView)
             && ReferenceEquals(transactionAnimator, ownerAnimator)
+            && ReferenceEquals(transactionSession, session)
             && ReferenceEquals(controller, ownerController)
             && ReferenceEquals(shelfView, ownerView)
             && ReferenceEquals(pourAnimator, ownerAnimator)
+            && IsTransactionRoundCurrent()
             && ownerView != null && ownerView.IsSynchronizationDeferredBy(this);
+
+        private void CaptureTransactionRoundToken(int token)
+        {
+            if (token == 0 || activeTransactionToken != token
+                || transactionSession == null) return;
+            transactionRoundToken = transactionSession.CurrentToken;
+            hasTransactionRoundToken = true;
+        }
+
+        private bool IsTransactionRoundCurrent()
+        {
+            return !hasTransactionRoundToken
+                || (transactionSession != null
+                    && ReferenceEquals(session, transactionSession)
+                    && transactionSession.IsTokenCurrent(transactionRoundToken));
+        }
 
         private void CancelAndFinishPresentation()
         {
@@ -526,7 +603,7 @@ namespace LiquidSort.Levels
                 ? transactionView.DeliveryPortal
                 : null;
             if (activePortal != null) activePortal.CancelAll();
-            FinishPresentationTransaction(true);
+            FinishPresentationTransaction(IsTransactionRoundCurrent());
         }
 
         private void HandleLevelLoaded(BsLevel _) => ClearSelection(true);
@@ -545,33 +622,9 @@ namespace LiquidSort.Levels
         private void HandleDeliveryPresentationFinished()
         {
             if (!deliveryPresentationActive) return;
+            // A stale callback may only clean up its own lease; it must never refresh a
+            // replacement round. Delivery already refreshed before the portal started.
             FinishPresentationTransaction(false);
-        }
-
-        /// <summary>
-        /// A badge or future UI may commit through the controller directly. Its BoardChanged
-        /// notification starts the same shelf portal before this component's Update runs. Take
-        /// ownership here so those entry points receive the same bounce-length presentation
-        /// lock as a body tap, without coupling them back to this input component.
-        /// </summary>
-        private void AdoptExternalDeliveryPresentation()
-        {
-            if (controller == null || shelfView == null || !shelfView.DeliveryPlaying
-                || deliveryPresentationActive || activeOperationId != 0
-                || activeTransactionToken != 0 || controller.PresentationLocked)
-                return;
-
-            int revision = controller.BoardRevision;
-            BeginPresentationTransaction(controller, shelfView, pourAnimator);
-            if (!controller.TryAcquirePresentationLock(this, revision))
-            {
-                FinishPresentationTransaction(false);
-                return;
-            }
-
-            lockedRevision = revision;
-            deliveryPresentationActive = true;
-            ClearSelection(true);
         }
 
         private Camera ResolveCamera()
@@ -586,6 +639,7 @@ namespace LiquidSort.Levels
             if (controller == null && shelfView != null) controller = shelfView.Controller;
             if (controller == null) controller = GetComponent<BartenderLevelController>();
             if (pourAnimator == null) pourAnimator = GetComponent<PourAnimator>();
+            if (session == null) session = GetComponent<BartenderSession>();
         }
 
         private void Subscribe()

@@ -176,6 +176,33 @@ namespace LiquidSort
         public bool TryStartPour(LiquidBottle source, LiquidBottle target, int amount,
             float homeY = float.NaN, bool requireColorMatch = true)
         {
+            Vector3 homePosition = source != null ? source.transform.position : Vector3.zero;
+            Quaternion homeRotation = source != null
+                ? source.transform.rotation
+                : Quaternion.identity;
+            Vector3 homeScale = source != null ? source.transform.localScale : Vector3.one;
+            if (!float.IsNaN(homeY)) homePosition.y = homeY;
+            return TryStartPourInternal(source, target, amount, homePosition,
+                homeRotation, homeScale, requireColorMatch);
+        }
+
+        /// <summary>
+        /// Starts a transfer with an explicit, layout-owned return pose. Shelf gameplay
+        /// must use this overload because the live source transform may already contain
+        /// selection lift or another transient presentation offset.
+        /// </summary>
+        public bool TryStartPour(LiquidBottle source, LiquidBottle target, int amount,
+            Vector3 homePosition, Quaternion homeRotation, Vector3 homeLocalScale,
+            bool requireColorMatch = true)
+        {
+            return TryStartPourInternal(source, target, amount, homePosition,
+                homeRotation, homeLocalScale, requireColorMatch);
+        }
+
+        private bool TryStartPourInternal(LiquidBottle source, LiquidBottle target, int amount,
+            Vector3 homePosition, Quaternion homeRotation, Vector3 homeLocalScale,
+            bool requireColorMatch)
+        {
             if (stream == null && isActiveAndEnabled) AwakeInternal();
             if (Busy || completingOperation || !isActiveAndEnabled
                 || source == null || target == null
@@ -214,10 +241,9 @@ namespace LiquidSort
             requireMatchingColors = requireColorMatch;
             activeSourceModelVersion = source.ModelVersion;
             activeTargetModelVersion = target.ModelVersion;
-            activeHome = source.transform.position;
-            if (!float.IsNaN(homeY)) activeHome.y = homeY;
-            activeHomeRotation = source.transform.rotation;
-            activeHomeScale = source.transform.localScale;
+            activeHome = homePosition;
+            activeHomeRotation = homeRotation;
+            activeHomeScale = homeLocalScale;
 
             ActiveOperationId = operationId;
             Phase = PourPhase.Carry;

@@ -112,22 +112,14 @@ namespace BartenderSort.Core
         [Header("Level özellikleri")]
         public bool AllowHiddenColors = false;   // L10+
         /// <summary>
-        /// Sureli siparis mekanigi. 2026-08-24'te TAMAMEN KAPATILDI.
-        ///
-        /// Bayrak L15+ levellerde acikti ama HICBIR levelda gercek TimeLimit
-        /// yoktu -- yani mekanik zaten oyunda degildi, yalnizca konfigurasyonda
-        /// acikti. Olu konfigurasyon bir sure sonra "bu calisiyor mu" sorusunu
-        /// dogurur ve kimse cevabini bilmez.
-        ///
-        /// KOD BILEREK DURUYOR (BsGame.Update sayaci, OrderCardView.SetTimer,
-        /// BsSolver dogrulamasi, level editor alani). Ilerde eklenmek
-        /// istenirse bayragi acmak ve siparislere TimeLimit vermek yetiyor.
-        /// Silmedik cunku yeniden yazmak, kapali birakmaktan pahali.
+        /// Sureli siparis mekaniginin level kapisi. Yalniz bu bayrak acikken ve
+        /// ilgili OrderDef.TimeLimit sifirdan buyukken controller geri sayar.
+        /// Kampanyanin L15+ assetleri bu mekanigi bilerek kullanir.
         /// </summary>
         public bool AllowTimedOrders = false;
 
         /// <summary>
-        /// Kapali feature'in siparis verisinde gizli bir sure birakmasini engeller.
+        /// Bayrak kapaliyken siparis verisinde gizli bir sure birakilmasini engeller.
         /// Runtime'da bayrak yine asil guvenlik kapisidir; bu normalizasyon asset ve
         /// editor verisini de ayni invariantta tutar.
         /// </summary>

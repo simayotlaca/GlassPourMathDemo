@@ -159,6 +159,16 @@ namespace LiquidSort.Levels
         /// </summary>
         public bool PresentationLocked => presentationLockOwner != null;
 
+        /// <summary>
+        /// Read-only ownership check for presentation adapters. A view may start an
+        /// animated reconciliation only when the exact owner holds the exact board
+        /// revision; a direct domain caller therefore cannot accidentally start an
+        /// unlocked portal flight.
+        /// </summary>
+        public bool IsPresentationLockOwnedBy(object owner, int committedRevision) =>
+            owner != null && ReferenceEquals(presentationLockOwner, owner)
+            && presentationLockRevision == committedRevision;
+
         public event Action<BsLevel> LevelLoaded;
         public event Action BoardChanged;
         public event Action OrdersChanged;
@@ -325,6 +335,24 @@ namespace LiquidSort.Levels
 
             presentationLockOwner = owner;
             presentationLockRevision = committedRevision;
+            return true;
+        }
+
+        /// <summary>
+        /// LevelLoaded listeners run while the load command is still publishing its
+        /// snapshot, so the normal acquisition gate is intentionally closed there. The
+        /// level view may use this narrow entry point to keep timers and follow-up commands
+        /// frozen until its entrance presentation has seated the exact loaded revision.
+        /// </summary>
+        public bool TryAcquireLoadPresentationLock(object owner, int loadedRevision)
+        {
+            if (owner == null || presentationLockOwner != null
+                || !commandInProgress || !notificationInProgress
+                || loadedRevision != BoardRevision)
+                return false;
+
+            presentationLockOwner = owner;
+            presentationLockRevision = loadedRevision;
             return true;
         }
 

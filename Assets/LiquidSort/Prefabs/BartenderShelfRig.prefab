@@ -5755,6 +5755,7 @@ MonoBehaviour:
   controller: {fileID: 4833464789410625492}
   shelfView: {fileID: 3621465157651367380}
   pourAnimator: {fileID: 2440596469045103306}
+  session: {fileID: 3119683315873435403}
   inputCamera: {fileID: 0}
   pickPadding: 0.22
   selectionLift: 0.16

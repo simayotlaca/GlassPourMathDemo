@@ -45,7 +45,7 @@ namespace LiquidSort.Levels
         [SerializeField] private BartenderLevelController controller;
         [SerializeField] private BartenderShelfLevelView shelfView;
         [SerializeField] private PortalDeliveryAnimator deliveryPortal;
-        [Tooltip("Opsiyonel. Dökme sürerken teslim kabul edilmesin diye okunur.")]
+        [Tooltip("Rozet tesliminin atomik deferral + presentation-lock kapısı.")]
         [SerializeField] private BartenderPourInteraction pourInteraction;
         [Tooltip("Opsiyonel. Boşken Camera.main çözülür.")]
         [SerializeField] private Camera inputCamera;
@@ -175,6 +175,18 @@ namespace LiquidSort.Levels
             if (shelfView == null)
             {
                 reason = "BartenderShelfLevelView Inspector referansı eksik.";
+                return false;
+            }
+            if (tapDelivers && pourInteraction == null)
+            {
+                reason = "Rozet teslimi açık ama BartenderPourInteraction bağlantısı eksik.";
+                return false;
+            }
+            if (pourInteraction != null
+                && (pourInteraction.Controller != controller
+                    || pourInteraction.ShelfView != shelfView))
+            {
+                reason = "Rozet ve pour interaction aynı controller/view rig'ine bağlı değil.";
                 return false;
             }
             for (int i = 0; i < badges.Count; i++)
@@ -386,24 +398,27 @@ namespace LiquidSort.Levels
         }
 
         /// <summary>
-        /// Programmatic entry point, mirroring the pour bridge. Kural motoru tek yetke:
-        /// burada yalnızca komut gönderilir, animasyonu view'in Delivered kancası başlatır.
+        /// Programmatic entry point. Animated delivery has one gateway: the interaction
+        /// opens view deferral, commits the domain command and acquires the exact revision
+        /// lock before allowing the portal presentation to start.
         /// </summary>
         public bool TryDeliver(int glassId, out string rejectionReason)
         {
             rejectionReason = null;
             LastRejection = null;
-            if (controller == null)
+            ResolveDependencies();
+            if (pourInteraction == null)
             {
-                LastRejection = "BartenderLevelController bağlantısı eksik.";
+                LastRejection = "BartenderPourInteraction teslim kapısı eksik.";
                 rejectionReason = LastRejection;
                 return false;
             }
-            if (controller.TryDeliver(glassId, out _, out string reason)) return true;
 
-            LastRejection = reason;
+            bool delivered = pourInteraction.TryCommitAndAnimateDelivery(
+                glassId, out string reason);
+            LastRejection = delivered ? null : reason;
             rejectionReason = reason;
-            return false;
+            return delivered;
         }
 
         private bool CanAcceptTap()
@@ -414,7 +429,7 @@ namespace LiquidSort.Levels
                 && !shelfView.DeliveryPlaying
                 && !shelfView.SynchronizationDeferred
                 && !controller.PresentationLocked
-                && (pourInteraction == null || !pourInteraction.Busy);
+                && pourInteraction != null && !pourInteraction.Busy;
         }
 
         /// <summary>
@@ -490,6 +505,8 @@ namespace LiquidSort.Levels
         {
             if (shelfView == null) shelfView = GetComponent<BartenderShelfLevelView>();
             if (controller == null && shelfView != null) controller = shelfView.Controller;
+            if (pourInteraction == null)
+                pourInteraction = GetComponent<BartenderPourInteraction>();
         }
 
         private void BuildCache()

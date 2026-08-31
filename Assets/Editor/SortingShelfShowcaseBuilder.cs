@@ -1430,7 +1430,8 @@ public static class SortingShelfShowcaseBuilder
         // Camera stays outside the portable rig. Empty resolves Camera.main in whichever
         // scene receives it, avoiding a cross-scene object reference in the prefab.
         rig.Interaction = host.AddComponent<BartenderPourInteraction>();
-        rig.Interaction.Configure(rig.Controller, rig.ShelfView, rig.Animator);
+        rig.Interaction.Configure(
+            rig.Controller, rig.ShelfView, rig.Animator, null, rig.Session);
 
         rig.Badges = host.AddComponent<DeliveryBadgePresenter>();
         rig.Badges.ConfigureSceneBindings(rig.Controller, rig.ShelfView, delivery.Portal,
@@ -2013,7 +2014,8 @@ public static class SortingShelfShowcaseBuilder
                 "The portable pour animator/stream link is incomplete.");
         if (rig.Interaction == null || rig.Interaction.Controller != rig.Controller
             || rig.Interaction.ShelfView != rig.ShelfView
-            || rig.Interaction.Animator != rig.Animator)
+            || rig.Interaction.Animator != rig.Animator
+            || rig.Interaction.Session != rig.Session)
             throw new InvalidOperationException(
                 "The Bartender pour interaction is not linked to the rig.");
         if (!rig.ShelfView.ValidateFullCampaignBindings(out string bindingError))
@@ -2262,8 +2264,13 @@ public static class SortingShelfShowcaseBuilder
             PourStream[] streams = prefabRoot.GetComponentsInChildren<PourStream>(true);
             BartenderPourInteraction[] interactions =
                 prefabRoot.GetComponentsInChildren<BartenderPourInteraction>(true);
+            BartenderSession[] sessions =
+                prefabRoot.GetComponentsInChildren<BartenderSession>(true);
+            DeliveryBadgePresenter[] badges =
+                prefabRoot.GetComponentsInChildren<DeliveryBadgePresenter>(true);
             if (controllers.Length != 1 || views.Length != 1 || animators.Length != 1
-                || streams.Length != 1 || interactions.Length != 1)
+                || streams.Length != 1 || interactions.Length != 1
+                || sessions.Length != 1 || badges.Length != 1)
                 throw new InvalidOperationException(
                     "Portable Bartender prefab gameplay components are incomplete or duplicated.");
 
@@ -2276,11 +2283,15 @@ public static class SortingShelfShowcaseBuilder
                 || animator.stream != stream
                 || interaction.Controller != controller
                 || interaction.ShelfView != view
-                || interaction.Animator != animator)
+                || interaction.Animator != animator
+                || interaction.Session != sessions[0]
+                || sessions[0].Controller != controller)
                 throw new InvalidOperationException(
                     "Portable Bartender prefab has a broken internal gameplay reference.");
             if (!view.ValidateFullCampaignBindings(out string bindingError))
                 throw new InvalidOperationException(bindingError);
+            if (!badges[0].ValidateBindings(out string badgeError))
+                throw new InvalidOperationException(badgeError);
 
             LiquidBottle[] bottles =
                 prefabRoot.GetComponentsInChildren<LiquidBottle>(true);

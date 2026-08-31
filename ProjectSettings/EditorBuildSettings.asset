@@ -6,10 +6,10 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/LiquidSort/LiquidSortDemo.unity
-    guid: cb65a1b3298fc4c56a33b6824f889fdc
-  - enabled: 1
     path: Assets/LiquidSort/SortingShelfShowcase.unity
     guid: f40a541a68d44473ba89324d2de57c3d
+  - enabled: 1
+    path: Assets/LiquidSort/LiquidSortDemo.unity
+    guid: cb65a1b3298fc4c56a33b6824f889fdc
   m_configObjects: {}
   m_UseUCBPForAssetBundles: 0

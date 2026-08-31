@@ -34,8 +34,10 @@ Hedef sahnede `MainCamera` etiketli bir kamera bulunmalı ve bu kamera `Default`
 görmelidir. Prefab kökünü `(0, 0, 0)` konumunda, `(1, 1, 1)` ölçekte kullanın.
 
 Raf oyununda bir bardağa, ardından hedef bardağa dokunmak dökme işlemini başlatır.
-Sipariş arayüzü ayrı bir tüketicidir; teslim butonu/gesture'ı
-`BartenderLevelController.TryDeliver` çağırmalıdır. Inspector'daki
+Sipariş arayüzü ayrı bir tüketicidir; portal animasyonu olan teslim butonu/gesture'ı
+yalnız `BartenderPourInteraction.TryCommitAndAnimateDelivery` çağırmalıdır. Controller'ın
+`TryDeliver` metodu domain/test katmanı içindir; onu doğrudan çağırmak view deferral ve
+revision presentation-lock zincirini atlar. Inspector'daki
 `Resume Saved Progress` açıksa tamamlanmış bir kampanya kaydı Play modunda boş
 `CampaignComplete` görünümü üretebilir; sabit bir test seviyesi için bu seçeneği kapatıp
 `Starting Level Number` değerini ayarlayın.
@@ -52,6 +54,9 @@ Sipariş arayüzü ayrı bir tüketicidir; teslim butonu/gesture'ı
 - `VesselProfileBaker`: yeni veya güncellenen bardak profilini üretme
 
 `WaterSortBoard` ile Bartender zincirini aynı rig kökünde birlikte kullanmayın.
+Prefab kendi controller/session ve otomatik kampanya yüklemesini de taşır. Başka bir
+oyunun mevcut FSM/level coordinator'ına entegre ederken prefabı ikinci otorite olarak
+çalıştırmak yerine yalnız presentation katmanını bir adapter üzerinden bağlayın.
 
 Aktif profillerin `front`, `traceSource`, materyal veya bake tablolarını eski deneme
 asset'leriyle değiştirmeyin. Yeni bir bardak eklerken ayrı bir `VesselProfile` oluşturup

@@ -19,8 +19,8 @@ namespace LiquidSort.Levels
     ///
     /// Aynalama yine de bedava değil, asıl kazancı veriyor: <see cref="CurrentToken"/>.
     /// Teslim animasyonu ~0.87 sn sürüyor; level o sırada yenilenirse uçuştan dönen
-    /// gecikmeli callback artık bayat token'ından tanınabiliyor. Bugün bu savunma
-    /// yalnızca PortalDeliveryAnimator.CancelAll() çağrısına asılı duruyor.
+    /// gecikmeli callback artık bayat token'ından tanınabiliyor. Sunum köprüsü bu token'ı
+    /// tüketir; bayat callback yalnız kendi kilidini bırakır, yeni turu yenileyemez.
     ///
     /// Yetki devri sonraki adım ve tek tek yapılmalı; her biri controller tarafında bir
     /// şeyin kapatılmasını gerektiriyor, hiçbiri bu dosyadan tek başına çözülemez.

@@ -42,11 +42,18 @@ both systems own rules, while only the Bartender chain matches this shelf/campai
 
 The prefab carries pointer selection, legal pour commits, synchronization deferral,
 presentation locking, `PourAnimator`, and its authored `PourStream`. Order UI is a separate
-consumer and must call `BartenderLevelController.TryDeliver`; the rig does not guess a
-delivery gesture. With `resumeSavedProgress` enabled, the controller uses PlayerPrefs key
+consumer; any delivery with portal presentation must call
+`BartenderPourInteraction.TryCommitAndAnimateDelivery`. Calling
+`BartenderLevelController.TryDeliver` directly is reserved for headless/domain use because
+it bypasses view deferral and the revision-owned presentation lock. With
+`resumeSavedProgress` enabled, the controller uses PlayerPrefs key
 `LiquidSort.Bartender.NextLevelSlot`. A completed save therefore opens in
 `CampaignComplete`; disable resume and choose `startingLevelNumber` for a deterministic
 integration scene.
+
+The portable prefab also owns a controller, mirrored session and automatic campaign load.
+When a host game already has an FSM/level coordinator, adapt the presentation layer to that
+authority instead of running the prefab controller as a second source of truth.
 
 ## Adding or changing a vessel
 

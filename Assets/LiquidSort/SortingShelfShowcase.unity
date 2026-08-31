@@ -2140,6 +2140,7 @@ MonoBehaviour:
   controller: {fileID: 112935202}
   shelfView: {fileID: 112935200}
   pourAnimator: {fileID: 112935203}
+  session: {fileID: 112935201}
   inputCamera: {fileID: 0}
   pickPadding: 0.22
   selectionLift: 0.16
