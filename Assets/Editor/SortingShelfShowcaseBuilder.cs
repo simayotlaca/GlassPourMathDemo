@@ -85,6 +85,26 @@ public static class SortingShelfShowcaseBuilder
     private const string OrderCardChipRimPath =
         OrderCardArtRoot + "/OrderCard_ColorPip_Rim_Gold.png";
 
+    private const string SettingsArtRoot = "Assets/LiquidSort/Settings/Art";
+    private const string SettingsPanelPath =
+        SettingsArtRoot + "/SettingsButton_Panel_Blue.png";
+    private const string SettingsFramePath =
+        SettingsArtRoot + "/SettingsButton_Frame_Gold.png";
+    private const string SettingsIconPath =
+        SettingsArtRoot + "/SettingsButton_Icon_SettingsCombined.png";
+    private const string SettingsSoundPath =
+        SettingsArtRoot + "/SettingsButton_Icon_Sound.png";
+    private const string SettingsMusicPath =
+        SettingsArtRoot + "/SettingsButton_Icon_Music.png";
+    private const string SettingsVibrationPath =
+        SettingsArtRoot + "/SettingsButton_Icon_Vibration.png";
+    private const string SettingsExitPath =
+        SettingsArtRoot + "/SettingsButton_Icon_Exit.png";
+    private const string SettingsMuteSlashPath =
+        SettingsArtRoot + "/SettingsButton_Overlay_MuteSlash.png";
+    private const string SettingsClickPath =
+        "Assets/Resources/Audio/SFX_ButtonClick.ogg";
+
     private const string ShotProfilePath =
         "Assets/LiquidSort/RoyalGlassLab/Profiles/ShotRoyal.asset";
     private const string CocktailProfilePath =
@@ -112,6 +132,13 @@ public static class SortingShelfShowcaseBuilder
     private const float CameraHalfHeight = 6.00f;
     private const int DesignWidth = 720;
     private const int DesignHeight = 1280;
+    // Exact 2/3 projection of the source 1080x1920 GameplayPauseCanvas:
+    // 138 button, 22 right margin, 150 top inset, 156 vertical step, 762 card.
+    private const float SettingsButtonSize = 92f;
+    private const float SettingsRightInset = 14.666667f;
+    private const float SettingsTopInset = 100f;
+    private const float SettingsButtonStep = 104f;
+    private const float SettingsCardHeight = 508f;
     private const float FrameHalfWidth =
         CameraHalfHeight * DesignWidth / (float)DesignHeight;      // 3.375
     /// <summary>World units per design pixel; the HUD canvases are scaled by this.</summary>
@@ -216,8 +243,6 @@ public static class SortingShelfShowcaseBuilder
     private static readonly Color ButtonGlyph = Hex(0xFFF6E2);
     private static readonly Color BadgeFace = Hex(0x3A2380);
     private static readonly Color BadgeText = Hex(0xFFF1CF);
-    private static readonly Color OverlayDim = new Color(0.03f, 0.01f, 0.08f, 0.78f);
-
     private const int ExpectedPoolSize =
         BartenderShelfLevelView.FullCampaignShotPoolSize
         + BartenderShelfLevelView.FullCampaignCocktailPoolSize
@@ -465,7 +490,12 @@ public static class SortingShelfShowcaseBuilder
             ValidateSourceGlass(beerSource, beer);
 
             Camera camera = BuildCamera();
-            BuildEventSystem();
+            // The Royal source scene is open additively while this hierarchy is built.
+            // Move host-owned objects explicitly so a Unity version change cannot place
+            // them in the source scene and silently strip the screen-canvas reference.
+            SceneManager.MoveGameObjectToScene(camera.gameObject, scene);
+            GameObject eventSystem = BuildEventSystem();
+            SceneManager.MoveGameObjectToScene(eventSystem, scene);
 
             var root = new GameObject("Portrait Design Frame 720x1280 - Hand Authored");
 
@@ -538,6 +568,12 @@ public static class SortingShelfShowcaseBuilder
             // editor's Game View happened to have into the scene.
             AttachSafeAreaFitter(camera, root.transform);
 
+            // Reassert both camera-space canvas bindings immediately before saving and
+            // previewing. The portable prefab intentionally clears these references
+            // later, after the authored scene and preview are complete.
+            strip.Canvas.worldCamera = camera;
+            controls.Canvas.worldCamera = camera;
+
             if (!EditorSceneManager.SaveScene(scene, ScenePath))
                 throw new IOException("Could not save " + ScenePath);
 
@@ -591,6 +627,14 @@ public static class SortingShelfShowcaseBuilder
         public readonly Sprite OrderCardRail = Load<Sprite>(OrderCardRailPath);
         public readonly Sprite OrderChipFill = Load<Sprite>(OrderCardChipFillPath);
         public readonly Sprite OrderChipRim = Load<Sprite>(OrderCardChipRimPath);
+        public readonly Sprite SettingsPanel = Load<Sprite>(SettingsPanelPath);
+        public readonly Sprite SettingsFrame = Load<Sprite>(SettingsFramePath);
+        public readonly Sprite SettingsIcon = Load<Sprite>(SettingsIconPath);
+        public readonly Sprite SettingsSound = Load<Sprite>(SettingsSoundPath);
+        public readonly Sprite SettingsMusic = Load<Sprite>(SettingsMusicPath);
+        public readonly Sprite SettingsVibration = Load<Sprite>(SettingsVibrationPath);
+        public readonly Sprite SettingsExit = Load<Sprite>(SettingsExitPath);
+        public readonly Sprite SettingsMuteSlash = Load<Sprite>(SettingsMuteSlashPath);
         public readonly Sprite CardPanel =
             BartenderUiArtFactory.Load(BartenderUiArtFactory.CardPanelPath);
         public readonly Sprite CardEdge =
@@ -640,11 +684,12 @@ public static class SortingShelfShowcaseBuilder
     /// does: a host scene owns exactly one event system and the prefab must not bring a
     /// second one with it.
     /// </summary>
-    private static void BuildEventSystem()
+    private static GameObject BuildEventSystem()
     {
         var go = new GameObject("Event System - Host Provided");
         go.AddComponent<EventSystem>();
         go.AddComponent<StandaloneInputModule>();
+        return go;
     }
 
     private static void BuildBackdrop(Transform parent, Material material)
@@ -1128,7 +1173,6 @@ public static class SortingShelfShowcaseBuilder
         public GameObject PauseOverlay;
         public GameObject SettingsCard;
         public GameObject ExitCard;
-        public Button ResumeButton;
         public Button CloseButton;
         public Button ExitButton;
         public Button MusicButton;
@@ -1154,9 +1198,10 @@ public static class SortingShelfShowcaseBuilder
         // centimetre inside the bezel reads as a bug, not as a design. Anchoring the two
         // bars to the safe area instead puts them where the hardware actually ends,
         // while the board keeps the proportions it was drawn at.
-        Transform canvas = BuildSafeArea(controls.Canvas.transform).transform;
+        Transform screenCanvas = controls.Canvas.transform;
+        Transform safeArea = BuildSafeArea(screenCanvas).transform;
 
-        Transform topBar = BuildEdgeBar(canvas, "01 Top Bar", true,
+        Transform topBar = BuildEdgeBar(safeArea, "01 Top Bar", true,
             Px(CameraHalfHeight - TopBarCenterY), Px(TopBarHeight));
         RectTransform badge = BuildRect(topBar, "Level Badge - Level Controlled",
             Vector2.zero, new Vector2(Px(2.90f), Px(TopBarHeight)));
@@ -1169,11 +1214,12 @@ public static class SortingShelfShowcaseBuilder
             Vector2.zero, badge.sizeDelta, Mathf.RoundToInt(Px(0.44f)), BadgeText);
         controls.LevelBadgeRoot = badge.gameObject;
 
-        controls.SettingsButton = BuildRoundButton(topBar, "Settings Button", art,
-            art.GlyphGear, Vector2.zero, BottomButtonDiameter * 0.86f,
-            new Vector2(Px(FrameHalfWidth - 0.62f), 0f));
+        controls.SettingsButton = BuildSettingsArtButton(screenCanvas, "PauseButton", art,
+            art.SettingsIcon,
+            new Vector2(-SettingsRightInset, -SettingsTopInset),
+            false, 1.06f, 0.92f, out _);
 
-        Transform bottomBar = BuildEdgeBar(canvas, "02 Bottom Controls", false,
+        Transform bottomBar = BuildEdgeBar(safeArea, "02 Bottom Controls", false,
             Px(BottomBarCenterY + CameraHalfHeight), Px(BottomButtonDiameter));
         controls.UndoButton = BuildRoundButton(bottomBar, "Undo Button", art, art.GlyphUndo,
             Vector2.zero, BottomButtonDiameter,
@@ -1184,7 +1230,7 @@ public static class SortingShelfShowcaseBuilder
             art.GlyphShuffle, Vector2.zero, BottomButtonDiameter,
             new Vector2(Px(BottomButtonSpacing), 0f));
 
-        BuildPauseOverlay(canvas, art, font, controls);
+        BuildPauseOverlay(screenCanvas, art, font, controls);
         return controls;
     }
 
@@ -1266,62 +1312,43 @@ public static class SortingShelfShowcaseBuilder
     }
 
     /// <summary>
-    /// The card behind the gear. It is built even though no mock-up covers it, because a
-    /// gear that pauses the game with nothing on screen is a trap: the player would have
-    /// no way back to a running board.
+    /// Exact scaled port of GameplayPauseCanvas from BartenderSort-Simay.  Closed, the
+    /// settings disc sits at the top-right.  Open, the same disc is replaced in place by
+    /// Close and four 92 px options descend at a 104 px step.  There is deliberately no
+    /// visible card or dim behind the stack in the source design.
     /// </summary>
     private static void BuildPauseOverlay(Transform canvas, StageArt art, Font font,
                                           ScreenControls controls)
     {
         RectTransform overlay = Stretch(BuildRect(canvas,
-            "03 Pause Overlay - Flow Controlled", Vector2.zero, Vector2.zero));
+            "PauseSettingsOverlay", Vector2.zero, Vector2.zero));
         controls.PauseOverlay = overlay.gameObject;
-        // Stretched past the safe area on purpose: the dim has to reach the bezel, or a
-        // notched phone shows a lit strip above a paused game.
-        RectTransform dim = Stretch(BuildImage(overlay, "Dim", null, OverlayDim,
-            Vector2.zero, Vector2.zero, Image.Type.Simple).rectTransform);
-        dim.offsetMin = new Vector2(0f, -DesignHeight);
-        dim.offsetMax = new Vector2(0f, DesignHeight);
-        dim.GetComponent<Image>().raycastTarget = true;
+        RectTransform blocker = Stretch(BuildImage(overlay, "RaycastBlocker", null,
+            Color.clear, Vector2.zero, Vector2.zero, Image.Type.Simple).rectTransform);
+        blocker.GetComponent<Image>().raycastTarget = true;
 
-        var cardSize = new Vector2(Px(5.20f), Px(4.60f));
-        RectTransform card = BuildRect(overlay, "Settings Card", Vector2.zero, cardSize);
+        var cardSize = new Vector2(SettingsButtonSize, SettingsCardHeight);
+        RectTransform card = BuildRect(overlay, "SettingsCard",
+            new Vector2(-SettingsRightInset, -SettingsTopInset), cardSize);
+        card.anchorMin = Vector2.one;
+        card.anchorMax = Vector2.one;
+        card.pivot = Vector2.one;
         controls.SettingsCard = card.gameObject;
-        BuildImage(card, "Card Rim", art.CardPanel, ButtonRim, Vector2.zero,
-            cardSize + new Vector2(Px(0.14f), Px(0.14f)), Image.Type.Sliced);
-        BuildImage(card, "Card Panel", art.CardPanel, BadgeFace, Vector2.zero, cardSize,
-            Image.Type.Sliced);
-        BuildText(card, "Title", font, "AYARLAR",
-            new Vector2(0f, cardSize.y * 0.36f), new Vector2(cardSize.x, Px(0.60f)),
-            Mathf.RoundToInt(Px(0.52f)), BadgeText);
 
-        float toggleDiameter = BottomButtonDiameter * 0.92f;
-        controls.MusicButton = BuildRoundButton(card, "Music Button", art, null,
-            Vector2.zero, toggleDiameter, PxPoint(new Vector2(-1.30f, 0.55f)));
-        controls.SoundButton = BuildRoundButton(card, "Sound Button", art, null,
-            Vector2.zero, toggleDiameter, PxPoint(new Vector2(0f, 0.55f)));
-        controls.VibrationButton = BuildRoundButton(card, "Vibration Button", art, null,
-            Vector2.zero, toggleDiameter, PxPoint(new Vector2(1.30f, 0.55f)));
-        BuildText(controls.MusicButton.transform, "Label", font, "MÜZİK", Vector2.zero,
-            new Vector2(Px(1.20f), Px(0.40f)), Mathf.RoundToInt(Px(0.26f)), ButtonGlyph);
-        BuildText(controls.SoundButton.transform, "Label", font, "SES", Vector2.zero,
-            new Vector2(Px(1.20f), Px(0.40f)), Mathf.RoundToInt(Px(0.26f)), ButtonGlyph);
-        BuildText(controls.VibrationButton.transform, "Label", font, "TİTREŞİM",
-            Vector2.zero, new Vector2(Px(1.20f), Px(0.40f)), Mathf.RoundToInt(Px(0.24f)),
-            ButtonGlyph);
-        controls.MusicOffMark = BuildOffMark(controls.MusicButton.transform, art);
-        controls.SoundOffMark = BuildOffMark(controls.SoundButton.transform, art);
-        controls.VibrationOffMark = BuildOffMark(controls.VibrationButton.transform, art);
-
-        controls.ResumeButton = BuildPillButton(card, "Resume Button", art, font, "DEVAM",
-            PxPoint(new Vector2(0f, -0.70f)), new Vector2(Px(3.20f), Px(0.86f)));
-        controls.ExitButton = BuildPillButton(card, "Exit Button", art, font, "ÇIKIŞ",
-            PxPoint(new Vector2(0f, -1.70f)), new Vector2(Px(3.20f), Px(0.86f)));
-        controls.CloseButton = BuildRoundButton(card, "Close Button", art, null,
-            Vector2.zero, BottomButtonDiameter * 0.66f,
-            new Vector2(cardSize.x * 0.5f - Px(0.18f), cardSize.y * 0.5f - Px(0.18f)));
-        BuildText(controls.CloseButton.transform, "Label", font, "X", Vector2.zero,
-            new Vector2(Px(0.60f), Px(0.60f)), Mathf.RoundToInt(Px(0.40f)), ButtonGlyph);
+        controls.CloseButton = BuildSettingsArtButton(card, "CloseButton", art,
+            art.SettingsIcon, Vector2.zero, false, 1.05f, 0.90f, out _);
+        controls.SoundButton = BuildSettingsArtButton(card, "SoundButton", art,
+            art.SettingsSound, new Vector2(0f, -SettingsButtonStep), true,
+            1.05f, 0.90f, out controls.SoundOffMark);
+        controls.MusicButton = BuildSettingsArtButton(card, "MusicButton", art,
+            art.SettingsMusic, new Vector2(0f, -SettingsButtonStep * 2f), true,
+            1.05f, 0.90f, out controls.MusicOffMark);
+        controls.VibrationButton = BuildSettingsArtButton(card, "VibrationButton", art,
+            art.SettingsVibration, new Vector2(0f, -SettingsButtonStep * 3f), false,
+            1.05f, 0.90f, out controls.VibrationOffMark);
+        controls.ExitButton = BuildSettingsArtButton(card, "ExitButton", art,
+            art.SettingsExit, new Vector2(0f, -SettingsButtonStep * 4f), false,
+            1.05f, 0.90f, out _);
 
         var confirmSize = new Vector2(Px(4.80f), Px(2.60f));
         RectTransform confirm = BuildRect(overlay, "Exit Confirmation Card", Vector2.zero,
@@ -1347,15 +1374,53 @@ public static class SortingShelfShowcaseBuilder
         controls.PauseOverlay.SetActive(false);
     }
 
-    private static GameObject BuildOffMark(Transform parent, StageArt art)
+    private static Button BuildSettingsArtButton(Transform parent, string name,
+        StageArt art, Sprite icon, Vector2 anchoredPosition, bool includeMuteSlash,
+        float hoverScale, float pressedScale, out GameObject muteSlash)
     {
-        Image mark = BuildImage(parent, "Off Mark", art.Chip,
-            new Color(0.92f, 0.29f, 0.26f, 0.92f), Vector2.zero,
-            new Vector2(Px(0.86f), Px(0.14f)), Image.Type.Simple);
-        mark.rectTransform.localRotation = Quaternion.Euler(0f, 0f, -32f);
-        mark.raycastTarget = false;
-        mark.gameObject.SetActive(false);
-        return mark.gameObject;
+        var size = new Vector2(SettingsButtonSize, SettingsButtonSize);
+        RectTransform rect = BuildRect(parent, name, anchoredPosition, size);
+        rect.anchorMin = Vector2.one;
+        rect.anchorMax = Vector2.one;
+        rect.pivot = Vector2.one;
+
+        var hitTarget = rect.gameObject.AddComponent<Image>();
+        hitTarget.color = Color.clear;
+        hitTarget.raycastTarget = true;
+
+        AddSettingsLayer(rect, "PanelBlue", art.SettingsPanel, size);
+        AddSettingsLayer(rect, "FrameGold", art.SettingsFrame, size);
+        AddSettingsLayer(rect, "Icon", icon, size);
+
+        muteSlash = null;
+        if (includeMuteSlash)
+        {
+            Image slash = AddSettingsLayer(rect, "MuteSlash", art.SettingsMuteSlash, size);
+            muteSlash = slash.gameObject;
+            muteSlash.SetActive(false);
+        }
+
+        var button = rect.gameObject.AddComponent<Button>();
+        button.targetGraphic = hitTarget;
+        button.transition = Selectable.Transition.ColorTint;
+        Navigation navigation = button.navigation;
+        navigation.mode = Navigation.Mode.None;
+        button.navigation = navigation;
+
+        var feedback = rect.gameObject.AddComponent<BartenderSettingsButtonFeedback>();
+        feedback.Configure(hoverScale, pressedScale, 0.15f);
+        return button;
+    }
+
+    private static Image AddSettingsLayer(Transform parent, string name, Sprite sprite,
+                                          Vector2 size)
+    {
+        Image image = BuildImage(parent, name, sprite, Color.white, Vector2.zero, size,
+            Image.Type.Simple);
+        Stretch(image.rectTransform);
+        image.preserveAspect = true;
+        image.raycastTarget = false;
+        return image;
     }
 
     // ---- Level rig --------------------------------------------------------------
@@ -1372,7 +1437,9 @@ public static class SortingShelfShowcaseBuilder
         public OrderStripPresenter Strip;
         public LevelBadgePresenter LevelBadge;
         public BoosterBarPresenter Boosters;
+        public AudioSource SettingsAudio;
         public BartenderPausePresenter Pause;
+        public ScreenControls Controls;
     }
 
     private static LevelRig BuildLevelRig(Transform systems, Transform layoutSpace,
@@ -1387,6 +1454,7 @@ public static class SortingShelfShowcaseBuilder
         List<OrderCardView.GlassIcon> icons, ShelfSolve solve)
     {
         var rig = new LevelRig();
+        rig.Controls = controls;
         GameObject host = systems.gameObject;
 
         var streamObject = new GameObject("Pour Stream - Portable Rig Link");
@@ -1448,6 +1516,11 @@ public static class SortingShelfShowcaseBuilder
         rig.Boosters.ConfigureSceneBindings(rig.Controller, rig.ShelfView, rig.Interaction,
             controls.UndoButton, controls.ExtraGlassButton, controls.ShuffleButton);
 
+        rig.SettingsAudio = host.AddComponent<AudioSource>();
+        rig.SettingsAudio.playOnAwake = false;
+        rig.SettingsAudio.loop = false;
+        rig.SettingsAudio.spatialBlend = 0f;
+
         rig.Pause = host.AddComponent<BartenderPausePresenter>();
         SerializedObject pause = new SerializedObject(rig.Pause);
         SetRef(pause, "session", rig.Session);
@@ -1456,7 +1529,6 @@ public static class SortingShelfShowcaseBuilder
         SetRef(pause, "settingsOverlay", controls.PauseOverlay);
         SetRef(pause, "settingsCard", controls.SettingsCard);
         SetRef(pause, "closeButton", controls.CloseButton);
-        SetRef(pause, "resumeButton", controls.ResumeButton);
         SetRef(pause, "exitButton", controls.ExitButton);
         SetRef(pause, "musicButton", controls.MusicButton);
         SetRef(pause, "soundButton", controls.SoundButton);
@@ -1464,15 +1536,16 @@ public static class SortingShelfShowcaseBuilder
         SetRef(pause, "musicOffMark", controls.MusicOffMark);
         SetRef(pause, "soundOffMark", controls.SoundOffMark);
         SetRef(pause, "vibrationOffMark", controls.VibrationOffMark);
+        SetRef(pause, "settingsAudioSource", rig.SettingsAudio);
+        SetRef(pause, "buttonClick", Load<AudioClip>(SettingsClickPath));
         SetRef(pause, "exitConfirmationCard", controls.ExitCard);
         SetRef(pause, "confirmExitButton", controls.ConfirmExitButton);
         SetRef(pause, "cancelExitButton", controls.CancelExitButton);
         pause.ApplyModifiedPropertiesWithoutUndo();
 
-        // The order strip lives in the world composition, so it needs an event camera and
-        // resolves one itself: writing the authoring camera here would be a reference out
-        // of the prefab root, which the prefab save silently drops. The screen-space HUD
-        // canvas needs no camera at all.
+        // Both camera-space canvases resolve the host camera at runtime. Writing the
+        // authoring camera into the portable prefab would create an out-of-root link and
+        // Unity drops it while saving.
         strip.Canvas.GetComponent<WorldCanvasCameraBinder>().ConfigureSceneBindings(null);
         controls.Canvas.GetComponent<WorldCanvasCameraBinder>()
             .ConfigureSceneBindings(null);
@@ -2034,6 +2107,13 @@ public static class SortingShelfShowcaseBuilder
             throw new InvalidOperationException(levelBadgeError);
         if (!rig.Boosters.ValidateBindings(out string boosterError))
             throw new InvalidOperationException(boosterError);
+        if (rig.SettingsAudio == null || rig.SettingsAudio.playOnAwake
+            || rig.SettingsAudio.spatialBlend != 0f
+            || rig.Pause == null || rig.Pause.SettingsAudioSource != rig.SettingsAudio
+            || rig.Pause.ButtonClick != Load<AudioClip>(SettingsClickPath))
+            throw new InvalidOperationException(
+                "The minimal settings-button audio link is incomplete.");
+        ValidateSettingsStack(rig.Controls, art);
         if (!rig.ShelfView.Ready || rig.ShelfView.ActiveGlassCount != 6
             || rig.ShelfView.VisibleShelfRows != 2)
             throw new InvalidOperationException(
@@ -2127,6 +2207,90 @@ public static class SortingShelfShowcaseBuilder
         if (oldSandboxBoards != 0)
             throw new InvalidOperationException(
                 "WaterSortBoard must not coexist with the Bartender level-system view.");
+    }
+
+    private static void ValidateSettingsStack(ScreenControls controls, StageArt art)
+    {
+        if (controls == null || controls.SettingsButton == null
+            || controls.PauseOverlay == null || controls.SettingsCard == null
+            || controls.CloseButton == null || controls.SoundButton == null
+            || controls.MusicButton == null || controls.VibrationButton == null
+            || controls.ExitButton == null)
+            throw new InvalidOperationException(
+                "The Bartender settings stack is missing a required control.");
+
+        AssertTopRightRect((RectTransform)controls.SettingsButton.transform,
+            new Vector2(-SettingsRightInset, -SettingsTopInset),
+            new Vector2(SettingsButtonSize, SettingsButtonSize), "PauseButton");
+        AssertTopRightRect((RectTransform)controls.SettingsCard.transform,
+            new Vector2(-SettingsRightInset, -SettingsTopInset),
+            new Vector2(SettingsButtonSize, SettingsCardHeight), "SettingsCard");
+        AssertTopRightRect((RectTransform)controls.CloseButton.transform, Vector2.zero,
+            new Vector2(SettingsButtonSize, SettingsButtonSize), "CloseButton");
+        AssertTopRightRect((RectTransform)controls.SoundButton.transform,
+            new Vector2(0f, -SettingsButtonStep),
+            new Vector2(SettingsButtonSize, SettingsButtonSize), "SoundButton");
+        AssertTopRightRect((RectTransform)controls.MusicButton.transform,
+            new Vector2(0f, -SettingsButtonStep * 2f),
+            new Vector2(SettingsButtonSize, SettingsButtonSize), "MusicButton");
+        AssertTopRightRect((RectTransform)controls.VibrationButton.transform,
+            new Vector2(0f, -SettingsButtonStep * 3f),
+            new Vector2(SettingsButtonSize, SettingsButtonSize), "VibrationButton");
+        AssertTopRightRect((RectTransform)controls.ExitButton.transform,
+            new Vector2(0f, -SettingsButtonStep * 4f),
+            new Vector2(SettingsButtonSize, SettingsButtonSize), "ExitButton");
+
+        ValidateSettingsButtonArt(controls.SettingsButton, art.SettingsIcon, null, art);
+        ValidateSettingsButtonArt(controls.CloseButton, art.SettingsIcon, null, art);
+        ValidateSettingsButtonArt(controls.SoundButton, art.SettingsSound,
+            controls.SoundOffMark, art);
+        ValidateSettingsButtonArt(controls.MusicButton, art.SettingsMusic,
+            controls.MusicOffMark, art);
+        ValidateSettingsButtonArt(controls.VibrationButton, art.SettingsVibration,
+            controls.VibrationOffMark, art);
+        ValidateSettingsButtonArt(controls.ExitButton, art.SettingsExit, null, art);
+
+        Image blocker = controls.PauseOverlay.transform.Find("RaycastBlocker")
+            ?.GetComponent<Image>();
+        if (blocker == null || !blocker.raycastTarget || blocker.color.a != 0f
+            || controls.SettingsCard.GetComponent<Graphic>() != null
+            || controls.PauseOverlay.activeSelf || controls.ExitCard.activeSelf)
+            throw new InvalidOperationException(
+                "The settings stack must rest closed over a transparent raycast blocker.");
+    }
+
+    private static void ValidateSettingsButtonArt(Button button, Sprite expectedIcon,
+        GameObject expectedMuteSlash, StageArt art)
+    {
+        Transform root = button.transform;
+        Image panel = root.Find("PanelBlue")?.GetComponent<Image>();
+        Image frame = root.Find("FrameGold")?.GetComponent<Image>();
+        Image icon = root.Find("Icon")?.GetComponent<Image>();
+        Transform slash = root.Find("MuteSlash");
+        if (panel == null || panel.sprite != art.SettingsPanel
+            || frame == null || frame.sprite != art.SettingsFrame
+            || icon == null || icon.sprite != expectedIcon
+            || button.GetComponent<BartenderSettingsButtonFeedback>() == null
+            || (expectedMuteSlash == null) != (slash == null)
+            || (expectedMuteSlash != null
+                && (slash.gameObject != expectedMuteSlash
+                    || slash.GetComponent<Image>().sprite != art.SettingsMuteSlash
+                    || slash.gameObject.activeSelf)))
+            throw new InvalidOperationException(
+                button.name + " lost a required source-art layer or feedback component.");
+    }
+
+    private static void AssertTopRightRect(RectTransform rect, Vector2 position,
+        Vector2 size, string label)
+    {
+        const float tolerance = 0.001f;
+        if (Vector2.Distance(rect.anchorMin, Vector2.one) > tolerance
+            || Vector2.Distance(rect.anchorMax, Vector2.one) > tolerance
+            || Vector2.Distance(rect.pivot, Vector2.one) > tolerance
+            || Vector2.Distance(rect.anchoredPosition, position) > tolerance
+            || Vector2.Distance(rect.sizeDelta, size) > tolerance)
+            throw new InvalidOperationException(
+                label + " no longer matches the scaled 1080x1920 source geometry.");
     }
 
     /// <summary>

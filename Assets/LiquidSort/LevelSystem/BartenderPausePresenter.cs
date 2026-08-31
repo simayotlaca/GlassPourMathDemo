@@ -35,7 +35,7 @@ namespace LiquidSort.Levels
         [SerializeField] private Button pauseButton = null;
 
         [Header("Ayarlar kartı")]
-        [Tooltip("Karartma dahil bütün overlay kökü. Oyun duraklarken açılır.")]
+        [Tooltip("Ayar düğmelerini taşıyan şeffaf overlay kökü. Oyun duraklarken açılır.")]
         [SerializeField] private GameObject settingsOverlay = null;
         [Tooltip("Kartın kendisi. Overlay ile aynı obje ise boş bırakılabilir.")]
         [SerializeField] private GameObject settingsCard = null;
@@ -51,6 +51,11 @@ namespace LiquidSort.Levels
         [SerializeField] private GameObject musicOffMark = null;
         [SerializeField] private GameObject soundOffMark = null;
         [SerializeField] private GameObject vibrationOffMark = null;
+
+        [Header("Ayar sesi")]
+        [Tooltip("Yalnız ayar düğmelerinin kısa tıklama sesini çalar.")]
+        [SerializeField] private AudioSource settingsAudioSource = null;
+        [SerializeField] private AudioClip buttonClick = null;
 
         [Header("Çıkış onayı")]
         [SerializeField] private GameObject exitConfirmationCard = null;
@@ -71,10 +76,12 @@ namespace LiquidSort.Levels
         public bool MusicOn { get; private set; } = true;
         public bool SoundOn { get; private set; } = true;
         public bool VibrationOn { get; private set; } = true;
+        public AudioSource SettingsAudioSource => settingsAudioSource;
+        public AudioClip ButtonClick => buttonClick;
 
         /// <summary>
-        /// Ayar değerleri değişti. Bu projede henüz ses sistemi yok; değer saklanıyor
-        /// ve yayımlanıyor, tüketen tarafı sonra bağlanacak.
+        /// Ayar değerleri değişti. Tercihler saklanır; bu dar port yalnız kaynakta
+        /// gerçekten bulunan ayar tıklama sesini tüketir.
         /// </summary>
         public event Action SettingsChanged;
 
@@ -89,6 +96,7 @@ namespace LiquidSort.Levels
             ResolveDependencies();
             HookButtons();
             Subscribe();
+            ResolveOffMarks();
             ApplySettingsMarks();
             Project(session != null ? session.State : BsFlowState.Menu);
         }
@@ -104,6 +112,34 @@ namespace LiquidSort.Levels
             if (session == null) session = GetComponent<BartenderSession>();
             if (controller == null && session != null) controller = session.Controller;
             if (controller == null) controller = GetComponent<BartenderLevelController>();
+            if (settingsAudioSource == null) settingsAudioSource = GetComponent<AudioSource>();
+            if (buttonClick == null)
+                buttonClick = Resources.Load<AudioClip>("Audio/SFX_ButtonClick");
+        }
+
+        private void ResolveOffMarks()
+        {
+            if (soundOffMark == null && soundButton != null)
+                soundOffMark = FindOffMark(soundButton);
+            if (musicOffMark == null && musicButton != null)
+                musicOffMark = FindOffMark(musicButton);
+            if (vibrationOffMark != null || vibrationButton == null) return;
+
+            vibrationOffMark = FindOffMark(vibrationButton);
+            if (vibrationOffMark != null) return;
+
+            GameObject template = soundOffMark != null ? soundOffMark : musicOffMark;
+            if (template == null) return;
+            vibrationOffMark = Instantiate(template, vibrationButton.transform, false);
+            vibrationOffMark.name = "MuteSlash";
+            vibrationOffMark.transform.SetAsLastSibling();
+            vibrationOffMark.SetActive(false);
+        }
+
+        private static GameObject FindOffMark(Button button)
+        {
+            Transform mark = button.transform.Find("MuteSlash");
+            return mark != null ? mark.gameObject : null;
         }
 
         // ---- Komutlar -------------------------------------------------------------
@@ -159,6 +195,7 @@ namespace LiquidSort.Levels
 
         public void ToggleMusic()
         {
+            PlaySettingsClick();
             MusicOn = !MusicOn;
             PlayerPrefs.SetInt(MusicKey, MusicOn ? 1 : 0);
             CommitSettings();
@@ -166,16 +203,27 @@ namespace LiquidSort.Levels
 
         public void ToggleSound()
         {
+            // Kapatırken mute uygulanmadan önce, açarken mute kalktıktan sonra bir kez
+            // çal: kaynak oyundaki işitsel geri bildirim sırası budur.
+            if (SoundOn) PlaySettingsClick();
             SoundOn = !SoundOn;
+            if (SoundOn) PlaySettingsClick();
             PlayerPrefs.SetInt(SoundKey, SoundOn ? 1 : 0);
             CommitSettings();
         }
 
         public void ToggleVibration()
         {
+            PlaySettingsClick();
             VibrationOn = !VibrationOn;
             PlayerPrefs.SetInt(VibrationKey, VibrationOn ? 1 : 0);
             CommitSettings();
+        }
+
+        private void PlaySettingsClick()
+        {
+            if (!SoundOn || settingsAudioSource == null || buttonClick == null) return;
+            settingsAudioSource.PlayOneShot(buttonClick);
         }
 
         private void CommitSettings()
@@ -280,8 +328,6 @@ namespace LiquidSort.Levels
                 confirmExitButton.onClick.AddListener(ConfirmExitToMainMenu);
             if (cancelExitButton)
                 cancelExitButton.onClick.AddListener(CancelExitToMainMenu);
-            // Kaynak projede bu üçü hiçbir şeye bağlı değildi, yalnız interactable
-            // yapılıyordu. Burada bağlandılar; değeri saklanıyor, tüketeni sonra gelecek.
             if (musicButton) musicButton.onClick.AddListener(ToggleMusic);
             if (soundButton) soundButton.onClick.AddListener(ToggleSound);
             if (vibrationButton) vibrationButton.onClick.AddListener(ToggleVibration);

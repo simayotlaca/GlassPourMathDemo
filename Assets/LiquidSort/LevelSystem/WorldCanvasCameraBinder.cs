@@ -37,7 +37,9 @@ namespace LiquidSort.Levels
         {
             // Sahne değişebilir, kamera yeniden yaratılabilir. Karşılaştırma bir referans
             // testi; her karede yapılması bedava.
-            if (canvas != null && canvas.worldCamera != null) return;
+            if (canvas == null) canvas = GetComponent<Canvas>();
+            if (canvas == null || canvas.renderMode == RenderMode.ScreenSpaceOverlay
+                || canvas.worldCamera != null) return;
             Bind();
         }
 
@@ -51,7 +53,10 @@ namespace LiquidSort.Levels
         private void Bind()
         {
             if (canvas == null) canvas = GetComponent<Canvas>();
-            if (canvas == null || canvas.renderMode != RenderMode.WorldSpace) return;
+            // Both World Space and Screen Space - Camera canvases need a camera.  The
+            // portable prefab intentionally drops the scene camera reference on save,
+            // so either mode must be rebound when the prefab enters its host scene.
+            if (canvas == null || canvas.renderMode == RenderMode.ScreenSpaceOverlay) return;
             Camera resolved = explicitCamera != null ? explicitCamera : Camera.main;
             if (resolved != null) canvas.worldCamera = resolved;
         }
